@@ -1,12 +1,11 @@
 {
-  "appId": "local.almaandroid.app",
-  "appName": "Alma",
-  "webDir": "www",
+  "appId": "local.almaandroid.herdr",
+  "appName": "Herdr Remote",
+  "webDir": "client-dist",
   "android": {
     "allowMixedContent": false,
-    "adjustMarginsForEdgeToEdge": "force"
+    "adjustMarginsForEdgeToEdge": "force",
+    "webContentsDebuggingEnabled": false
   },
-  "server": {
-    "androidScheme": "https"
-  }
+  "server": { "androidScheme": "https" }
 }

@@ -64,12 +64,12 @@ public class MainActivity extends BridgeActivity {
 
     private final androidx.activity.result.ActivityResultLauncher<String> cameraPermission =
         registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
-            // 用户授予或拒绝都无需额外处理：授予后 WebView 的下一次
-            // PermissionRequest 会被 Capacitor 放行；拒绝则扫码功能不可用（可再申请）。
+            // The next getUserMedia call re-enters the bridge once the user answers.
         });
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(HerdrVaultPlugin.class);
         super.onCreate(savedInstanceState);
 
         webView = getBridge() != null ? getBridge().getWebView() : null;
@@ -79,12 +79,12 @@ public class MainActivity extends BridgeActivity {
             attachImeInsetsListener();
             allowLandscapeCutout();
             attachAppInsets();
+            installCameraBridge();
         }
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-                != PackageManager.PERMISSION_GRANTED) {
-            cameraPermission.launch(Manifest.permission.CAMERA);
-        }
+        createAlertChannel();
+        // Camera is requested lazily when the user opens the QR scanner, so
+        // node setup by pasting a link never needs it.
 
         // 系统语言：Android WebView 的 navigator.language 不随系统语言（Capacitor
         // 长期已知问题，常返 en-US），renderer 的语言检测因此误判。原生侧提供权威
@@ -104,7 +104,7 @@ public class MainActivity extends BridgeActivity {
         try {
             webView.addJavascriptInterface(new LocaleBridge(), "__almaAndroidLocale");
             webView.addJavascriptInterface(new UiBridge(), "__almaAndroidUi");
-            webView.addJavascriptInterface(new UpdateBridge(), "__almaAndroidUpdate");
+            // No upstream updater bridge: this fork has its own application identity.
         } catch (Throwable t) {
             // 同上
         }
@@ -115,6 +115,63 @@ public class MainActivity extends BridgeActivity {
         // 「安装包已损坏」，SUCCESSFUL ≠ 文件有效）。改为应用内
         // HttpURLConnection 直下：写盘前校验状态码/Content-Type/zip 魔数。
     }
+
+    /**
+     * Notification channel for "agent needs you" alerts. Must exist before the
+     * first schedule() call or Android silently drops the notification.
+     */
+    private void createAlertChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        try {
+            android.app.NotificationManager manager = getSystemService(android.app.NotificationManager.class);
+            if (manager == null || manager.getNotificationChannel(CHANNEL_ID) != null) return;
+            android.app.NotificationChannel channel = new android.app.NotificationChannel(
+                    CHANNEL_ID,
+                    getString(R.string.alert_channel_name),
+                    android.app.NotificationManager.IMPORTANCE_DEFAULT);
+            channel.setDescription(getString(R.string.alert_channel_description));
+            channel.enableVibration(true);
+            manager.createNotificationChannel(channel);
+        } catch (Throwable t) {
+            // A missing channel only silences alerts; never block startup.
+        }
+    }
+
+
+    /**
+     * Capacitor owns the WebChromeClient. Wrap it so a camera request is
+     * granted immediately when the runtime permission already exists; a
+     * pending activity-result round trip can otherwise leave getUserMedia
+     * waiting forever.
+     */
+    private void installCameraBridge() {
+        if (webView == null) return;
+        final android.webkit.WebChromeClient original = webView.getWebChromeClient();
+        webView.setWebChromeClient(new android.webkit.WebChromeClient() {
+            @Override
+            public void onPermissionRequest(final android.webkit.PermissionRequest request) {
+                boolean wantsVideo = false;
+                for (String resource : request.getResources()) {
+                    if (resource.contains("VIDEO_CAPTURE")) wantsVideo = true;
+                }
+                if (!wantsVideo) {
+                    if (original != null) original.onPermissionRequest(request);
+                    else request.deny();
+                    return;
+                }
+                boolean granted = ContextCompat.checkSelfPermission(MainActivity.this,
+                        Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+                if (granted) {
+                    request.grant(request.getResources());
+                } else {
+                    cameraPermission.launch(Manifest.permission.CAMERA);
+                    request.deny();
+                }
+            }
+        });
+    }
+
+    private static final String CHANNEL_ID = "herdr-alerts";
 
     // ── 主题底色 / 系统栏外观 ────────────────────────────────────────────
 

@@ -1,12 +1,16 @@
 {
-  "name": "alma-android",
+  "name": "alma-herdr-android",
   "version": "0.1.0",
   "private": true,
-  "description": "Alma for Android — Capacitor 壳 + Alma 官方 renderer（与官方 iOS 端同构）",
+  "type": "module",
+  "description": "Independent multi-host Herdr client in the nanami Android shell",
   "scripts": {
-    "assets": "bash scripts/sync-assets.sh",
-    "android": "cap sync android && cap open android",
-    "build:web": "echo 'www/ 直接使用 Alma 官方 renderer 产物，无需构建'"
+    "dev": "vite --host 127.0.0.1 --port 5174",
+    "build:web": "tsc --noEmit && vite build",
+    "test": "tsx --test client-tests/*.test.ts",
+    "check": "npm run test && npm run build:web",
+    "android:sync": "npm run build:web && cap sync android",
+    "android:build": "npm run android:sync && cd android && ./gradlew assembleDebug"
   },
   "dependencies": {
     "@capacitor/android": "^7.0.0",
@@ -15,10 +19,24 @@
     "@capacitor/clipboard": "^7.0.4",
     "@capacitor/core": "^7.0.0",
     "@capacitor/haptics": "^7.0.0",
+    "@capacitor/local-notifications": "^7.0.7",
     "@capacitor/preferences": "^7.0.0",
-    "@capacitor/share": "^7.0.0"
+    "@capacitor/share": "^7.0.0",
+    "jsqr": "^1.4.0",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
-    "@capacitor/cli": "^7.0.0"
+    "@capacitor/cli": "^7.0.0",
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.3",
+    "vite": "^6.4.1"
   }
 }
