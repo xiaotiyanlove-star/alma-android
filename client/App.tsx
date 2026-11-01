@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { FormEvent, KeyboardEvent, ReactNode } from 'react';
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown,
@@ -8,6 +8,8 @@ import {
 import { controller } from './controller';
 import { ScanPairing } from './ScanPairs';
 import { AlertTracker, localNotifier } from './notify';
+import { applyKeepAlive, keepAliveEnabled, setKeepAliveEnabled } from './keepalive';
+import { parsePrompt } from './prompt';
 import type { AppState, ChatItem, HostState, Pane, SessionState } from './model';
 import './styles.css';
 
@@ -177,11 +179,15 @@ function HostSettings({ hosts, onClose, onOpen }: { hosts: HostState[]; onClose:
       <section className="settings-block">
         <h2>通知</h2>
         <label className="toggle-row">
-          <span><strong>agent 需要你或已完成时提醒</strong><small>只在应用运行时检查状态，不会上传任何内容。</small></span>
+          <span><strong>agent 需要你或已完成时提醒</strong><small>不会上传任何内容。</small></span>
           <input type="checkbox" defaultChecked={notificationsEnabled()} onChange={event => {
             try { localStorage.setItem(ALERTS_KEY, event.target.checked ? 'on' : 'off') } catch { /* storage blocked */ }
             if (event.target.checked) void localNotifier.request()
           }} />
+        </label>
+        <label className="toggle-row">
+          <span><strong>后台保持连接</strong><small>退出应用后仍能收到提醒。通知栏会常驻一条状态提示。</small></span>
+          <input type="checkbox" defaultChecked={keepAliveEnabled()} onChange={event => { setKeepAliveEnabled(event.target.checked); void applyKeepAlive(event.target.checked) }} />
         </label>
         <button type="button" className="secondary-button" onClick={() => void localNotifier.notify({ hostId: 'test', hostName: '本机', paneId: 'test', title: '测试通知 · Herdr', body: '如果你看到这条，通知功能正常。', kind: 'done' }).catch(() => undefined)}>发送测试通知</button>
       </section>
@@ -351,6 +357,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   const composer = useRef<HTMLTextAreaElement>(null);
   const ready = canUseHost(host);
   const terminal = session.unsupported || mode === 'terminal';
+  const prompt = useMemo(() => terminal ? null : parsePrompt(stripAnsi(session.screen ?? '')), [terminal, session.screen]);
   const pane = host?.snapshot?.panes.find(item => item.pane_id === session.paneId);
   const disabled = !ready || busy || session.sending || session.loading || Boolean(session.uncertain);
 
@@ -425,6 +432,16 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     } finally { setBusy(false); actionLock.current = false; }
   }
 
+  async function answer(optionNumber: number) {
+    if (!prompt || busy || session.sending || session.uncertain) return
+    actionLock.current = true
+    setBusy(true)
+    setLocalError('')
+    try { await controller.answerPrompt(prompt, optionNumber) }
+    catch { setLocalError('选择未确认送达。请核对终端画面后再操作。') }
+    finally { setBusy(false); actionLock.current = false }
+  }
+
   function composerKey(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing && !composing.current && event.keyCode !== 229) {
       event.preventDefault();
@@ -470,6 +487,23 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
       {session.error && <Notice error>{session.error}</Notice>}
       {localError && <Notice error>{localError}</Notice>}
     </div>
+    {prompt && !terminal && <div className="prompt-card" role="group" aria-label="需要你选择">
+      <div className="prompt-head"><CircleAlert size={16} aria-hidden="true" /><span>需要你选择</span></div>
+      <p className="prompt-question">{prompt.question}</p>
+      <div className="prompt-options">
+        {prompt.options.map(option => <button
+          type="button"
+          key={option.number}
+          className={`prompt-option${option.selected ? ' is-current' : ''}`}
+          disabled={busy || session.sending || Boolean(session.uncertain) || !ready}
+          onClick={() => void answer(option.number)}
+        >
+          <span className="prompt-number">{option.checked !== null ? (option.checked ? '✓' : '○') : option.number}</span>
+          <span className="prompt-label">{option.label}</span>
+        </button>)}
+      </div>
+      <p className="prompt-hint">点击后会重新核对终端内容，若问题已变化将取消。也可以在终端里直接操作。</p>
+    </div>}
     <div className="transcript-shell">
       <div ref={scroll} id="session-content" className={`transcript-scroll ${terminal ? 'terminal-scroll' : ''}`} role="tabpanel" aria-labelledby={terminal ? 'terminal-tab' : 'messages-tab'} aria-busy={session.loading} onScroll={trackScroll} tabIndex={0}>
         {terminal ? <>{session.loading && !session.screen && <Loading label="正在读取终端…" />}{session.screen ? <pre className={`terminal-screen ${wrap ? 'is-wrapped' : ''}`} tabIndex={0} aria-label="终端画面">{stripAnsi(session.screen)}</pre> : !session.loading && <EmptyState icon={<Terminal size={28} />} title={session.error ? '终端画面暂不可用' : '尚无终端画面'}><button className="secondary-button" disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={16} />读取终端</button></EmptyState>}</> : <>
@@ -502,6 +536,8 @@ export function App() {
   const state = useSyncExternalStore(subscribe, getSnapshot);
   const [view, setView] = useState<'sessions' | 'hosts'>('sessions');
   useEffect(initialize, []);
+  // Reconcile the foreground service with the saved preference on every launch.
+  useEffect(() => { void applyKeepAlive(); }, []);
   useAlerts(state.hosts);
   const showHosts = view === 'hosts' || (!state.loading && state.hosts.length === 0);
   const sessionHost = state.hosts.find(item => item.host.id === state.session?.hostId);

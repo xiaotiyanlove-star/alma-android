@@ -1,5 +1,6 @@
 import type { AppState, ChatItem, Host, SessionState, Snapshot } from './model'
 import { parsePairing } from './pairing'
+import { moveKeys, needsSpace, parsePrompt, samePrompt, type Prompt } from './prompt'
 import { hostStorage, type HostStorage } from './storage'
 import { EncryptedTunnel, OperationUncertainError, type Transport, type TunnelSocket } from './transport'
 
@@ -205,6 +206,54 @@ export class Controller {
       if (epoch !== this.sessionEpoch || identity !== this.sessionIdentity || page.session_id !== this.state.session?.sessionId) return
       this.patchSession(epoch, { items: merge(this.state.session!.items, page.page?.items ?? [], true), start: page.page?.start ?? 0 })
     } catch (error) { if (identity === this.sessionIdentity) this.patchSession(epoch, { error: message(error) }) } finally { this.patchSession(epoch, { loadingOlder: false }) }
+  }
+  /**
+   * Answers a numbered agent prompt.
+   *
+   * The screen shown when the user tapped may already be stale, so this
+   * re-reads the terminal and requires the parsed menu to match exactly
+   * (same question, same labels, same highlighted row) before sending keys.
+   * On drift it aborts and refreshes instead of guessing.
+   */
+  answerPrompt = async (expected: Prompt, optionNumber: number) => {
+    const session = this.state.session, epoch = this.sessionEpoch
+    if (!session) throw new Error('没有打开的会话')
+    if (session.sending) return
+    if (session.uncertain) throw new Error(session.uncertain)
+    const option = expected.options.find((item) => item.number === optionNumber)
+    if (!option) throw new Error('选项不存在')
+
+    const fresh = await this.rpc<{ read?: { text?: string } }>(session.hostId, 'pane.read', { pane_id: session.paneId, source: 'visible', format: 'text' })
+    if (epoch !== this.sessionEpoch) return
+    const screen = fresh.read?.text ?? ''
+    const current = parsePrompt(screen)
+    this.patchSession(epoch, { screen })
+    if (!samePrompt(current, expected) || !current) {
+      this.patchSession(epoch, { error: '终端内容已变化，已取消本次选择。请确认最新问题后再点。' })
+      return
+    }
+    const target = current.options.findIndex((item) => item.number === optionNumber)
+    if (target < 0) { this.patchSession(epoch, { error: '选项已不存在，请刷新后重试。' }); return }
+
+    this.patchSession(epoch, { sending: true, error: undefined })
+    try {
+      const keys: string[] = []
+      if (current.cursor >= 0 && current.cursor !== target) {
+        const moves = moveKeys(current.cursor, target)
+        if (!moves) throw new Error('无法确定光标位置')
+        keys.push(...moves)
+      }
+      // Multi-select toggles with space (and a lone number works too);
+      // single-choice commits when the cursor moves and Enter is pressed.
+      if (needsSpace(current.options[target]) && current.cursor === target) keys.push(' ')
+      else if (current.cursor >= 0 && current.cursor !== target) keys.push('enter')
+      else keys.push(String(optionNumber))
+      await this.rpc(session.hostId, 'pane.send_keys', { pane_id: session.paneId, keys: keys.map((key) => key === ' ' ? 'space' : key) })
+      if (epoch === this.sessionEpoch) await this.readScreen()
+    } catch (error) {
+      this.patchSession(epoch, { error: message(error), ...(error instanceof OperationUncertainError ? { uncertain: message(error) } : {}) })
+      throw error
+    } finally { this.patchSession(epoch, { sending: false }) }
   }
   private async rpc<T>(hostId: string, method: string, params: Record<string, unknown>): Promise<T> {
     const runtime = this.runtimes.get(hostId)

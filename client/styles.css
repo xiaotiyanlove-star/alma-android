@@ -206,6 +206,16 @@ pre { max-width: 100%; }
 .queued-message .message-meta > span:last-child { display: inline-flex; align-items: center; gap: 5px; }
 .new-content-button { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); white-space: nowrap; box-shadow: 0 2px 8px rgb(20 30 25 / 7%); font-size: 12px; min-height: 36px; }
 .terminal-scroll { padding: 0; background: #f8f9f9; }
+.prompt-card { flex-shrink: 0; margin: 10px 14px 0; padding: 12px; border: 1px solid #e4c37a; border-radius: 8px; background: #fffaf0; max-height: 45%; overflow-y: auto; }
+.prompt-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: #8a6212; }
+.prompt-question { margin: 6px 0 10px; font-size: 13.5px; line-height: 1.5; color: #3f4348; overflow-wrap: anywhere; }
+.prompt-options { display: flex; flex-direction: column; gap: 6px; }
+.prompt-option { display: flex; width: 100%; align-items: flex-start; gap: 9px; min-height: 44px; padding: 10px 11px; border: 1px solid #e2e5e6; border-radius: 6px; background: #fff; text-align: left; font-size: 13px; line-height: 1.45; }
+.prompt-option.is-current { border-color: #9db9a7; background: #f4f8f5; }
+.prompt-option:disabled { opacity: .55; }
+.prompt-number { flex: 0 0 auto; min-width: 18px; color: #6b7378; font-variant-numeric: tabular-nums; }
+.prompt-label { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.prompt-hint { margin-top: 9px; font-size: 11.5px; color: #7b8388; }
 .terminal-screen { min-height: 100%; min-width: 100%; width: max-content; padding: 16px; color: #30383b; white-space: pre; }
 .terminal-screen.is-wrapped { width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
 .terminal-keys { display: flex; gap: 5px; flex-shrink: 0; overflow-x: auto; border-top: 1px solid var(--line); background: #fafbfb; padding: 8px 12px; overscroll-behavior-x: contain; }
