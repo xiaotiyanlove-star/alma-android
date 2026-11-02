@@ -3,6 +3,14 @@ import { App } from './App'
 import './styles.css'
 import { controller } from './controller'
 import { back, setExitHandler } from './router'
+import { applyTheme } from './prefs'
+
+// Before the first paint: a light frame around a dark page (or the reverse)
+// shows up as a flash on every launch.
+applyTheme()
+try {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme())
+} catch { /* older WebView */ }
 
 /**
  * The Android shell asks this before falling back to the system.

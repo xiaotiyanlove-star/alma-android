@@ -9,6 +9,46 @@ export type TimeZoneChoice = 'system' | string
 export const LOCALE_KEY = 'herdr.prefs.locale'
 export const TIMEZONE_KEY = 'herdr.prefs.timezone'
 export const MARKDOWN_KEY = 'herdr.prefs.markdown'
+export const THEME_KEY = 'herdr.prefs.theme'
+
+export type ThemeChoice = 'system' | 'light' | 'dark'
+
+/** The saved appearance choice; `system` is the default and stores nothing. */
+export function themeChoice(): ThemeChoice {
+  const value = read(THEME_KEY)
+  return value === 'light' || value === 'dark' ? value : 'system'
+}
+export function setThemeChoice(value: ThemeChoice) {
+  write(THEME_KEY, value === 'system' ? '' : value)
+  applyTheme()
+}
+
+/** The appearance in force right now, after resolving `system`. */
+export function resolvedTheme(): 'light' | 'dark' {
+  const choice = themeChoice()
+  if (choice !== 'system') return choice
+  try {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  } catch { return 'light' }
+}
+
+/**
+ * Puts the appearance on the document and tells the native shell.
+ *
+ * The page and the Android window have to agree: the WebView's own background,
+ * the status bar and the system bar icons are native, so a dark page over a
+ * white window frame shows as flashes and unreadable bars.
+ */
+export function applyTheme() {
+  // Called from tests too, where there is no document or window.
+  try {
+    const theme = resolvedTheme()
+    document.documentElement.dataset.theme = theme
+    document.documentElement.style.colorScheme = theme
+    const bridge = (window as unknown as { __almaAndroidUi?: { setTheme?(mode: string): void } }).__almaAndroidUi
+    bridge?.setTheme?.(themeChoice())
+  } catch { /* web preview, or no DOM */ }
+}
 
 /** Rendered markdown is the default; the toggle switches to raw source. */
 export function markdownEnabled(): boolean {

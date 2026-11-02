@@ -6,6 +6,9 @@ const link = (n: number) => `alma://connect?u=https://relay.invalid&k=${base64ur
 
 const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
 const context = await browser.newContext({ viewport: { width: 390, height: 844 } })
+// The labels below are the Chinese source strings; pin the language rather
+// than depending on the machine's locale.
+await context.addInitScript({ content: `try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch (error) {}` })
 const page = await context.newPage()
 const errors: string[] = []
 page.on('pageerror', (error: Error) => errors.push(error.message))

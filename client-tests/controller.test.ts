@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import './locale.ts'
 import { Controller, agentLaunchCommand, transcriptGap } from '../client/controller.ts'
 import type { Host } from '../client/model.ts'
 import type { HostStorage } from '../client/storage.ts'

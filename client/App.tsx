@@ -25,7 +25,7 @@ import { agentLook, statusTone, statusWord } from './agents';
 import { timeline } from './timeline';
 import { backgroundAgents } from './subagents';
 import { commandsFor, filterCommands, slashQuery } from './commands';
-import { formatTime, localeChoice, setLocaleChoice, timeZoneChoice, setTimeZoneChoice, resolvedTimeZone, resolvedLocale, COMMON_ZONES, markdownEnabled, setMarkdownEnabled, type LocaleChoice } from './prefs';
+import { formatTime, localeChoice, setLocaleChoice, timeZoneChoice, setTimeZoneChoice, resolvedTimeZone, resolvedLocale, COMMON_ZONES, markdownEnabled, setMarkdownEnabled, themeChoice, setThemeChoice, resolvedTheme, type LocaleChoice, type ThemeChoice } from './prefs';
 import type { AppState, ChatItem, HostState, Pane, SessionState, Snapshot } from './model';
 import './styles.css';
 
@@ -78,6 +78,7 @@ export function tabLabelOf(snapshot: Snapshot | undefined, pane?: Pane): string 
 }
 
 function hostStatus(host: HostState): string {
+  if (host.status === 'disabled') return t('已关闭');
   if (host.status === 'connecting') return t('连接中');
   if (host.status === 'error') return t('连接失败');
   if (host.status !== 'online') return t('未连接');
@@ -95,7 +96,7 @@ function canUseHost(host?: HostState): boolean {
 function Status({ host, compact = false }: { host: HostState; compact?: boolean }) {
   const ready = canUseHost(host);
   const label = hostStatus(host);
-  return <span className={`connection-status ${ready ? 'is-online' : host.status === 'error' ? 'is-error' : ''}${compact && ready ? ' is-compact' : ''}`} title={label}>
+  return <span className={`connection-status ${ready ? 'is-online' : host.status === 'error' ? 'is-error' : host.status === 'disabled' ? 'is-disabled' : ''}${compact && ready ? ' is-compact' : ''}`} title={label}>
     <span className={`status-dot ${host.status === 'connecting' ? 'is-pending' : ''}`} aria-hidden="true" />
     {compact && ready ? <span className="sr-only">{label}</span> : label}
   </span>;
@@ -367,14 +368,28 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
           {visibleHosts.map(host => <li className="host-row" key={host.host.id}>
             <Server size={21} className="muted" aria-hidden="true" />
             <button className="host-open" onClick={() => onOpen(host.host.id)}><strong>{host.host.name}</strong><Status host={host} /></button>
-            <button className="icon-button" title={tWith('重命名 {name}', { name: host.host.name })} aria-label={tWith('重命名 {name}', { name: host.host.name })} onClick={() => { setRenaming(host.host.id); setRenameValue(host.host.name); setError(''); openOverlay({ kind: 'rename' }) }}><Pencil size={17} /></button>
-            <button className="icon-button" title={tWith('重新连接 {name}', { name: host.host.name })} aria-label={tWith('重新连接 {name}', { name: host.host.name })} disabled={host.status === 'connecting'} onClick={() => controller.retryHost(host.host.id)}><RefreshCw size={18} className={host.status === 'connecting' ? 'spin' : ''} /></button>
+            {/* The three actions stay one unit: split across two lines they
+                stopped looking like a row and one button drifted left. */}
+            <div className="host-actions">
+              {/* Turning a desktop off releases its tunnel and stops retries:
+                  that is the point of the switch, so it lives with the node
+                  rather than in a submenu. */}
+              <button className="icon-button" title={tWith('重命名 {name}', { name: host.host.name })} aria-label={tWith('重命名 {name}', { name: host.host.name })} onClick={() => { setRenaming(host.host.id); setRenameValue(host.host.name); setError(''); openOverlay({ kind: 'rename' }) }}><Pencil size={17} /></button>
+              <button className="icon-button" title={tWith('重新连接 {name}', { name: host.host.name })} aria-label={tWith('重新连接 {name}', { name: host.host.name })} disabled={host.status === 'connecting' || host.host.enabled === false} onClick={() => controller.retryHost(host.host.id)}><RefreshCw size={18} className={host.status === 'connecting' ? 'spin' : ''} /></button>
+              <button className="icon-button danger-button" title={tWith('忘记 {name}', { name: host.host.name })} aria-label={tWith('忘记 {name}', { name: host.host.name })} onClick={() => { setForgetting(host.host.id); openOverlay({ kind: 'forget' }) }}><Trash2 size={18} /></button>
+              <span className="switch host-switch">
+                <input type="checkbox" role="switch" checked={host.host.enabled !== false} aria-label={tWith('启用 {name}', { name: host.host.name })} onChange={(event) => { void controller.setHostEnabled(host.host.id, event.target.checked).catch(() => setError(t('未能切换节点状态，请重试。'))) }} />
+                <span className="switch-track" aria-hidden="true" />
+              </span>
+            </div>
+            {/* Full-width rows come after every button: a 100%-wide item in a
+                wrapping flex row pushes whatever follows it onto a new line,
+                which is how the delete button ended up below the icons. */}
             {host.stopReason && <span className="host-stopped">
               {stopMessage(host.stopReason)}
               <button type="button" className="inline-button" onClick={() => controller.retryHost(host.host.id)}>{t('立即重试')}</button>
             </span>}
             {!host.stopReason && host.status !== 'online' && typeof host.retriesLeft === 'number' && host.retriesLeft > 0 && host.status === 'error' && <span className="host-retries">{t('剩余重试')} {host.retriesLeft}</span>}
-            <button className="icon-button danger-button" title={tWith('忘记 {name}', { name: host.host.name })} aria-label={tWith('忘记 {name}', { name: host.host.name })} onClick={() => { setForgetting(host.host.id); openOverlay({ kind: 'forget' }) }}><Trash2 size={18} /></button>
             {host.error && <div className="host-row-error"><Notice error>{host.error}</Notice></div>}
           </li>)}
         </ul> : <EmptyState icon={<Server size={26} />} title={t('尚未添加节点')}><button type="button" className="primary-button" onClick={() => push({ name: 'addHost' })}><Plus size={17} />{t('添加节点')}</button></EmptyState>}
@@ -385,6 +400,14 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
 
       <section className="settings-group">
         <h2 className="group-title">{t('显示')}</h2>
+        <label className="select-row">
+          <span><strong>{t('外观')}</strong><small>{t('当前值')}: {resolvedTheme() === 'dark' ? t('深色') : t('浅色')}</small></span>
+          <select defaultValue={themeChoice()} onChange={event => { setThemeChoice(event.target.value as ThemeChoice); bump() }}>
+            <option value="system">{t('跟随系统')}</option>
+            <option value="light">{t('浅色')}</option>
+            <option value="dark">{t('深色')}</option>
+          </select>
+        </label>
         <label className="select-row">
           <span><strong>{t('语言')}</strong><small>{t('当前值')}: {resolvedLocale()}</small></span>
           <select defaultValue={localeChoice()} onChange={event => { setLocaleChoice(event.target.value as LocaleChoice); bump(); onLocaleChange() }}>
@@ -402,7 +425,7 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
         </label>
         <label className="toggle-row">
           <span><strong>{t('渲染 Markdown')}</strong><small>{t('关闭后显示模型输出的原始文本，可在会话里随时切换。')}</small></span>
-          <input type="checkbox" defaultChecked={markdownEnabled()} onChange={event => setMarkdownEnabled(event.target.checked)} />
+          <span className="switch"><input type="checkbox" defaultChecked={markdownEnabled()} onChange={event => setMarkdownEnabled(event.target.checked)} aria-label={t('渲染 Markdown')} /><span className="switch-track" aria-hidden="true" /></span>
         </label>
       </section>
 
@@ -410,14 +433,14 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
         <h2 className="group-title">{t('通知与后台')}</h2>
         <label className="toggle-row">
           <span><strong>{t('agent 需要你或已完成时提醒')}</strong><small>{t('不会上传任何内容。')}</small></span>
-          <input type="checkbox" defaultChecked={notificationsEnabled()} onChange={event => {
+          <span className="switch"><input type="checkbox" defaultChecked={notificationsEnabled()} onChange={event => {
             setNotificationsEnabled(event.target.checked)
             if (event.target.checked) void localNotifier.request()
-          }} />
+          }} aria-label={t('agent 需要你或已完成时提醒')} /><span className="switch-track" aria-hidden="true" /></span>
         </label>
         <label className="toggle-row">
           <span><strong>{t('后台保持连接')}</strong><small>{t('退出应用后仍能收到提醒。通知栏会常驻一条状态提示。')}</small></span>
-          <input type="checkbox" defaultChecked={keepAliveEnabled()} onChange={event => { setKeepAliveEnabled(event.target.checked); void applyKeepAlive(event.target.checked) }} />
+          <span className="switch"><input type="checkbox" defaultChecked={keepAliveEnabled()} onChange={event => { setKeepAliveEnabled(event.target.checked); void applyKeepAlive(event.target.checked) }} aria-label={t('后台保持连接')} /><span className="switch-track" aria-hidden="true" /></span>
         </label>
         <button type="button" className="secondary-button" onClick={() => void localNotifier.notify({ hostId: 'test', hostName: '本机', paneId: 'test', title: '测试通知 · Herdr', body: '如果你看到这条，通知功能正常。', kind: 'done' }).catch(() => undefined)}>{t('发送测试通知')}</button>
       </section>
@@ -653,14 +676,18 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
     <div className="page-scroll">
       {openError && <Notice error>{openError}</Notice>}
       {host?.error && <Notice error>{host.error}</Notice>}
-      {host && !ready && <div className="connection-action"><span>{host.status === 'connecting' ? t('正在连接节点…') : host.status === 'online' ? t('远端 Herdr 当前不在线') : t('节点当前未连接')}</span><button className="secondary-button" disabled={host.status === 'connecting'} onClick={() => controller.retryHost(host.host.id)}><RefreshCw size={16} className={host.status === 'connecting' ? 'spin' : ''} />{t('重新连接')}</button></div>}
+      {host && !ready && <div className="connection-action"><span>{host.status === 'disabled' ? t('这台桌面已关闭，不会自动连接。') : host.status === 'connecting' ? t('正在连接节点…') : host.status === 'online' ? t('远端 Herdr 当前不在线') : t('节点当前未连接')}</span>
+        {host.status === 'disabled'
+          ? <button className="secondary-button" onClick={() => void controller.setHostEnabled(host.host.id, true).catch(() => undefined)}>{t('启用')}</button>
+          : <button className="secondary-button" disabled={host.status === 'connecting'} onClick={() => controller.retryHost(host.host.id)}><RefreshCw size={16} className={host.status === 'connecting' ? 'spin' : ''} />{t('重新连接')}</button>}
+      </div>}
       {state.loading ? <Loading label={t('正在读取节点…')} />
         : !state.hosts.length ? <EmptyState icon={<Server size={30} />} title={t('尚未添加节点')}><button className="primary-button" onClick={onSettings}><Plus size={17} />{t('添加节点')}</button></EmptyState>
         : !host ? <div className="pick-host">
             <p className="pick-host-title">{t('选择一个节点')}</p>
-            <p className="pick-host-hint">已配对 {state.hosts.length} 台桌面，选择要继续的那台。</p>
+            <p className="pick-host-hint">{tWith('已配对 {count} 台桌面，选择要继续的那台。', { count: state.hosts.length })}</p>
             <ul className="pick-host-list">{state.hosts.map(item => <li key={item.host.id}>
-              <button type="button" className="pick-host-row" onClick={() => controller.selectHost(item.host.id)}>
+              <button type="button" className="pick-host-row" disabled={item.host.enabled === false} onClick={() => controller.selectHost(item.host.id)}>
                 <Server size={19} aria-hidden="true" />
                 <span className="pick-host-copy"><strong>{item.host.name}</strong><Status host={item} /></span>
                 <ArrowRight size={17} className="muted" aria-hidden="true" />
@@ -901,7 +928,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     setBusy(true)
     setLocalError('')
     try { await controller.answerPrompt(prompt, optionNumber) }
-    catch { setLocalError('选择未确认送达。请核对终端画面后再操作。') }
+    catch { setLocalError(t('选择未确认送达。请核对终端画面后再操作。')) }
     finally { setBusy(false); actionLock.current = false }
   }
 
@@ -954,7 +981,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
         </span>
       </p></div>{host && <Status host={host} compact />}</header>
     <div className="view-toolbar"><div className="view-tabs" role="tablist" aria-label={t('会话视图')}><button role="tab" id="messages-tab" aria-controls="session-content" aria-selected={!terminal} disabled={noMessages} className={!terminal ? 'is-active' : ''} onClick={() => switchMode('messages')}><MessageSquare size={16} />{t('消息')}</button><button role="tab" id="terminal-tab" aria-controls="session-content" aria-selected={terminal} className={terminal ? 'is-active' : ''} onClick={() => switchMode('terminal')}><Terminal size={16} />{t('终端')}</button></div>{terminal ? <div className="terminal-options"><button className={`icon-button ${wrap ? 'is-active' : ''}`} title={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-label={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-pressed={wrap} onClick={() => setWrap(value => !value)}><WrapText size={18} /></button><button className="icon-button" title={t('刷新终端')} aria-label={t('刷新终端')} disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={18} className={refreshing ? 'spin' : ''} /></button></div>
-      : <div className="message-options"><button className="text-toggle" aria-pressed={markdown} title={markdown ? '显示 Markdown 源码' : '渲染 Markdown'} onClick={() => { const next = !markdown; setMarkdown(next); setMarkdownEnabled(next) }}>{markdown ? <FileCode size={15} /> : <FileText size={15} />}{markdown ? '源码' : '渲染'}</button></div>}</div>
+      : <div className="message-options"><button className="text-toggle" aria-pressed={markdown} title={t(markdown ? '显示 Markdown 源码' : '渲染 Markdown')} onClick={() => { const next = !markdown; setMarkdown(next); setMarkdownEnabled(next) }}>{markdown ? <FileCode size={15} /> : <FileText size={15} />}{t(markdown ? '源码' : '渲染')}</button></div>}</div>
     <div className="session-notices">
       {!ready && <Notice error>{t(host?.status === 'connecting' ? '连接恢复中，暂时无法发送。' : '节点未连接，暂时无法发送。')}{host && host.status !== 'connecting' && <button className="inline-button" onClick={() => controller.retryHost(host.host.id)}>{t('重新连接')}</button>}</Notice>}
       {session.unsupported && (gap === 'terminal'
@@ -1051,11 +1078,11 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
             user from queueing files for the next message. */}
         <button type="button" className="attach-button" title={t('添加附件')} aria-label={t('添加附件')} disabled={!ready || attachments.length >= MAX_ATTACHMENTS} onClick={() => fileInput.current?.click()}><Paperclip size={20} /></button>
       </>}
-      <label className="sr-only" htmlFor="message-input">{terminal ? '终端输入' : '消息'}</label>
-      <textarea ref={composer} id="message-input" rows={1} value={draft} onChange={event => setDraft(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={composerKey} placeholder={!ready ? '节点连接后可发送' : terminal ? '输入终端内容…' : '发送消息…'} disabled={!ready} />
-      <button type="submit" className="send-button" title={busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送'} aria-label={busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送'} disabled={disabled || (!draft.trim() && attachments.length === 0)}>{busy || session.sending ? <Loader2 size={20} className="spin" /> : <Send size={20} />}</button>
+      <label className="sr-only" htmlFor="message-input">{t(terminal ? '终端输入' : '消息')}</label>
+      <textarea ref={composer} id="message-input" rows={1} value={draft} onChange={event => setDraft(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={composerKey} placeholder={t(!ready ? '节点连接后可发送' : terminal ? '输入终端内容…' : '发送消息…')} disabled={!ready} />
+      <button type="submit" className="send-button" title={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} aria-label={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} disabled={disabled || (!draft.trim() && attachments.length === 0)}>{busy || session.sending ? <Loader2 size={20} className="spin" /> : <Send size={20} />}</button>
     </form>
-    <div className="composer-status" role="status">{busy || session.sending ? <><Loader2 size={12} className="spin" />{t('正在发送')}</> : session.queued.length ? `${session.queued.length} 条待发送` : session.uncertain ? '操作结果未确认，发送已暂停' : ready ? <><Check size={12} />{host?.host.name}</> : '发送不可用'}</div>
+    <div className="composer-status" role="status">{busy || session.sending ? <><Loader2 size={12} className="spin" />{t('正在发送')}</> : session.queued.length ? tWith('{count} 条待发送', { count: session.queued.length }) : session.uncertain ? t('操作结果未确认，发送已暂停') : ready ? <><Check size={12} />{host?.host.name}</> : t('发送不可用')}</div>
   </section>;
 }
 
@@ -1122,11 +1149,21 @@ export function App() {
     const onOnline = () => controller.retryStopped()
     document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('online', onOnline)
-    const timer = setInterval(() => apply('tick'), 60_000)
+    // The tick only matters while hidden, and a timer that wakes the page
+    // every minute for nothing costs battery. Run it only then.
+    let timer: ReturnType<typeof setInterval> | undefined
+    const syncTimer = () => {
+      if (document.visibilityState === 'hidden' && !timer) timer = setInterval(() => apply('tick'), 60_000)
+      if (document.visibilityState !== 'hidden' && timer) { clearInterval(timer); timer = undefined }
+    }
+    syncTimer()
+    const onVisibilityAndTimer = () => { onVisibility(); syncTimer() }
+    document.removeEventListener('visibilitychange', onVisibility)
+    document.addEventListener('visibilitychange', onVisibilityAndTimer)
     return () => {
-      document.removeEventListener('visibilitychange', onVisibility)
+      document.removeEventListener('visibilitychange', onVisibilityAndTimer)
       window.removeEventListener('online', onOnline)
-      clearInterval(timer)
+      if (timer) clearInterval(timer)
     }
   }, []);
   useAlerts(state.hosts);

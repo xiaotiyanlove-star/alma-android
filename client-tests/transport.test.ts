@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import './locale.ts'
 import { EncryptedTunnel, OperationUncertainError, type SocketLike } from '../client/transport.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openBytes, openFrame, sealBytes, sealFrame } from '../client/crypto.ts'
 import { decodeInnerFrame, encodeInnerFrame } from '../client/frames.ts'

@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import './locale.ts'
 import { Controller } from '../client/controller.ts'
 import type { Host } from '../client/model.ts'
 import type { Transport } from '../client/transport.ts'

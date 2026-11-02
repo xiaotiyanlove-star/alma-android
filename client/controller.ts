@@ -100,8 +100,15 @@ export class Controller {
       const selected = remembered && hosts.some((host) => host.id === remembered)
         ? remembered
         : hosts.length === 1 ? hosts[0].id : undefined
-      this.publish({ hosts: hosts.map((host) => ({ host, status: 'offline', herdrOnline: false })), loading: false, selectedHostId: selected, storageWarning: this.storage.persistent ? undefined : t('浏览器预览仅在内存中保存节点；关闭页面后需要重新配对。') })
-      for (const host of hosts) this.attach(host)
+      // A desktop the user switched off is reported as such, and never dialled:
+      // the point of the switch is not spending a connection on it.
+      this.publish({
+        hosts: hosts.map((host) => ({ host, status: host.enabled === false ? 'disabled' as const : 'offline' as const, herdrOnline: false })),
+        loading: false,
+        selectedHostId: selected,
+        storageWarning: this.storage.persistent ? undefined : t('浏览器预览仅在内存中保存节点；关闭页面后需要重新配对。'),
+      })
+      for (const host of hosts) if (host.enabled !== false) this.attach(host)
     } catch { this.publish({ loading: false, error: t('无法读取安全存储，未覆盖已有节点。请重新打开应用。') }) }
   }
   /** Builds a runtime with a fresh transport; a closed transport never reopens. */
@@ -192,7 +199,12 @@ export class Controller {
   private async addHostNow(name: string, link: string) {
     const host = await parsePairing(name, link)
     const old = this.state.hosts.find((item) => item.host.id === host.id)?.host
-    if (old) host.addedAt = old.addedAt
+    if (old) {
+      host.addedAt = old.addedAt
+      // Pairing again updates the credential, not the user's switch. Keeping
+      // it off also keeps the code path below from dialling a disabled desktop.
+      if (old.enabled === false) host.enabled = false
+    }
     const hosts = [...this.state.hosts.filter((item) => item.host.id !== host.id).map((item) => item.host), host]
     await this.storage.save(hosts)
     const previous = this.runtimes.get(host.id)
@@ -200,8 +212,11 @@ export class Controller {
     if (previous) { clearTimeout(previous.retry); previous.hub?.close(); previous.transport.close() }
     // Always close the open session: the selected host changes, so an old pane must not stay as the mutation target.
     if (this.state.session) this.stopSession()
-    this.publish({ hosts: hosts.map((item) => item.id === host.id ? { host, status: 'offline', herdrOnline: false } : this.state.hosts.find((state) => state.host.id === item.id)!), selectedHostId: host.id, selectedPaneId: undefined, session: undefined, error: undefined })
-    this.attach(host)
+    this.publish({
+      hosts: hosts.map((item) => item.id === host.id ? { host, status: host.enabled === false ? 'disabled' as const : 'offline' as const, herdrOnline: false } : this.state.hosts.find((state) => state.host.id === item.id)!),
+      selectedHostId: host.id, selectedPaneId: undefined, session: undefined, error: undefined,
+    })
+    if (host.enabled !== false) this.attach(host)
   }
   /**
    * Uploads one file to the desktop and returns its absolute path.
@@ -319,6 +334,44 @@ export class Controller {
         snapshot: { ...snapshot, tabs: (snapshot.tabs ?? []).map((tab) => tab.tab_id === pane.tab_id ? { ...tab, label: trimmed } : tab) },
       })
     }
+  }
+
+  /**
+   * Turns connection attempts for one desktop on or off.
+   *
+   * This is the user's own decision, saved with the pairing: a desktop that is
+   * off, or one they do not want on mobile data, stops being dialled and stops
+   * scheduling retries until they turn it back on. Nothing else re-enables it,
+   * so it cannot quietly undo the choice.
+   */
+  setHostEnabled = async (id: string, enabled: boolean) => {
+    if (!this.initializedStorage) throw new Error(t('安全存储尚未就绪'))
+    await this.serialize(async () => {
+      const target = this.state.hosts.find((item) => item.host.id === id)
+      if (!target) throw new Error(t('节点不存在'))
+      const hosts = this.state.hosts.map((item) => item.host.id === id ? { ...item.host, enabled } : item.host)
+      await this.storage.save(hosts)
+      this.publish({ hosts: this.state.hosts.map((item) => item.host.id === id ? { ...item, host: { ...item.host, enabled } } : item) })
+      if (!enabled) {
+        this.stopHost(id)
+        this.patchHost(id, { status: 'disabled', herdrOnline: false, error: undefined, retriesLeft: undefined, stopReason: undefined })
+      } else {
+        this.attach(this.state.hosts.find((item) => item.host.id === id)!.host)
+      }
+    })
+  }
+
+  /** Releases one desktop: sockets, retries and any session open on it. */
+  private stopHost(id: string) {
+    const runtime = this.runtimes.get(id)
+    if (this.state.session?.hostId === id) this.stopSession()
+    this.publish({ ...(this.state.session?.hostId === id ? { session: undefined, selectedPaneId: undefined } : {}) })
+    if (!runtime) return
+    // Drop it before closing, so the close's 'offline' cannot schedule a retry.
+    this.cancelRetry(runtime)
+    this.runtimes.delete(id)
+    runtime.hub?.close()
+    runtime.transport.close()
   }
 
   /** Renames a paired desktop. The credential and connection are untouched. */
@@ -448,6 +501,9 @@ export class Controller {
    */
   resume = (rebuild: boolean) => {
     for (const state of this.state.hosts) {
+      // A switched-off desktop was never released, so there is nothing to
+      // resume — and bringing it back would defeat the switch.
+      if (state.host.enabled === false) continue
       const id = state.host.id
       const existing = this.runtimes.get(id)
       if (existing && !rebuild) continue

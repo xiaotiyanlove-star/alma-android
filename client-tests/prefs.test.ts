@@ -68,3 +68,15 @@ test('markdown preference round-trips', () => {
   setMarkdownEnabled(true)
   assert.equal(markdownEnabled(), true)
 })
+
+test('the appearance choice stores nothing when it follows the system', async () => {
+  const { themeChoice, setThemeChoice, resolvedTheme } = await import('../client/prefs.ts')
+  setThemeChoice('dark')
+  assert.equal(themeChoice(), 'dark')
+  assert.equal(resolvedTheme(), 'dark', 'an explicit choice wins over the system')
+  setThemeChoice('light')
+  assert.equal(resolvedTheme(), 'light')
+  setThemeChoice('system')
+  assert.equal(themeChoice(), 'system')
+  assert.equal(localStorage.getItem('herdr.prefs.theme'), null, 'the default leaves no key behind')
+})

@@ -1,4 +1,17 @@
-export interface Host { id: string; name: string; relayUrl: string; connectCode: string; addedAt: number }
+export interface Host {
+  id: string
+  name: string
+  relayUrl: string
+  connectCode: string
+  addedAt: number
+  /**
+   * Whether the client keeps a tunnel to this desktop. `false` is the user's
+   * own decision — a machine that is off, or on a network they do not want to
+   * pay for — so it survives restarts and is never undone automatically.
+   * Absent means enabled, so hosts saved before this field existed still work.
+   */
+  enabled?: boolean
+}
 export interface Pane { pane_id: string; workspace_id: string; tab_id: string; label?: string; tab_label?: string; agent?: string; agent_status?: string; terminal_title_stripped?: string; cwd?: string; agent_session?: { value?: string; agent?: string } }
 export interface Workspace { workspace_id: string; label?: string; name?: string; cwd?: string }
 export interface Tab { tab_id: string; workspace_id: string; label?: string }
@@ -19,7 +32,8 @@ export type TranscriptGap = 'terminal' | 'waiting' | 'integration' | 'transcript
 export interface SessionState { hostId: string; paneId: string; sessionId?: string; items: ChatItem[]; start: number; end: number; queued: { id: string; text: string }[]; loading: boolean; loadingOlder: boolean; screen: string; error?: string; unsupported: boolean; gap?: TranscriptGap; sentMessage: boolean; sending: boolean; uncertain?: string }
 export interface HostState {
   host: Host
-  status: 'offline' | 'connecting' | 'online' | 'error'
+  /** `disabled` is the user's switch, not a connection result. */
+  status: 'offline' | 'connecting' | 'online' | 'error' | 'disabled'
   herdrOnline: boolean
   snapshot?: Snapshot
   error?: string
