@@ -52,7 +52,7 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
 const screenshots = '/private/tmp/alma-android-dev/test-artifacts'
 await mkdir(screenshots, { recursive: true })
 try {
-  await page.goto('http://127.0.0.1:5174')
+  await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await expect(page.getByText('尚未添加节点').first()).toBeVisible()
   await page.screenshot({ path: `${screenshots}/nodes-empty.png` })
   for (let index = 0; index < 2; index++) {
@@ -66,7 +66,7 @@ try {
   }
   await page.getByRole('button', { name: '当前节点' }).click()
   await page.getByRole('dialog', { name: '选择节点' }).getByRole('button', { name: new RegExp(names[0]) }).click()
-  await page.getByRole('button', { name: /中文长会话标题/ }).click()
+  await page.locator('.session-row').filter({ hasText: '中文长会话标题' }).click()
   await expect(page.getByText(/测试历史：中文长路径/)).toBeVisible()
   await page.screenshot({ path: `${screenshots}/chat-phone.png` })
   await page.getByRole('textbox', { name: '消息', exact: true }).fill('合成消息')

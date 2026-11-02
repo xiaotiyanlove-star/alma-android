@@ -66,9 +66,9 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
 })
 
 try {
-  await page.goto('http://127.0.0.1:5174')
+  await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await addDesktop(page, 'md', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
-  await page.getByRole('button', { name: /Markdown 测试/ }).click()
+  await page.locator('.session-row').filter({ hasText: 'Markdown 测试' }).click()
   await page.locator('.markdown-body').waitFor({ timeout: 20000 })
   await page.screenshot({ path: 'test-artifacts/md-rendered.png' })
 

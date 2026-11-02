@@ -113,7 +113,10 @@ pre { max-width: 100%; }
 .list-heading { display: flex; align-items: center; gap: 8px; padding: 21px 0 10px; }
 .list-heading span { color: var(--muted); font-size: 12px; }
 .session-list > li { border-bottom: 1px solid var(--line); }
+.session-item { display: flex; align-items: center; gap: 4px; }
 .session-row { display: flex; width: 100%; min-width: 0; align-items: center; gap: 12px; background: transparent; text-align: left; padding: 16px 0; }
+/* Its own tap target, so renaming never opens the session by accident. */
+.session-rename { flex: 0 0 auto; color: var(--muted); }
 .session-icon { align-self: flex-start; display: grid; place-items: center; width: 32px; height: 32px; color: #65706b; flex: 0 0 32px; }
 .session-row-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
 .session-row-copy strong { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }

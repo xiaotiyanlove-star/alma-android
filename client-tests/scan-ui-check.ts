@@ -11,7 +11,7 @@ await context.addInitScript(() => {
 const page = await context.newPage()
 const errors: string[] = []
 page.on('pageerror', (e) => errors.push(e.message))
-await page.goto('http://127.0.0.1:5174')
+await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
 await page.getByLabel('节点名称', { exact: true }).fill('扫码测试')
 await page.getByRole('button', { name: '扫码' }).click()
 await page.getByRole('dialog', { name: '扫描二维码' }).waitFor()

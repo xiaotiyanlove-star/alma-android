@@ -9,7 +9,7 @@ const context = await browser.newContext({ viewport: { width: 390, height: 844 }
 const page = await context.newPage()
 const errors: string[] = []
 page.on('pageerror', (error: Error) => errors.push(error.message))
-await page.goto('http://127.0.0.1:5174')
+await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
 
 // Two pairings, chosen deliberately so the "no auto-pick" path is exercised.
 for (const [index, name] of ['工作电脑', '家里 Mac'].entries()) {
