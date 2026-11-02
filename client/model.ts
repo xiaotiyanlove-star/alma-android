@@ -4,7 +4,19 @@ export interface Workspace { workspace_id: string; label?: string; name?: string
 export interface Tab { tab_id: string; workspace_id: string; label?: string }
 export interface Snapshot { panes: Pane[]; workspaces: Workspace[]; tabs?: Tab[] }
 export interface ChatItem { id: string; kind: string; text?: string; summary?: string; from?: string; tool?: { id?: string; name?: string; input?: unknown; output?: unknown; done?: boolean; background?: boolean }; time?: string }
-export interface SessionState { hostId: string; paneId: string; sessionId?: string; items: ChatItem[]; start: number; end: number; queued: { id: string; text: string }[]; loading: boolean; loadingOlder: boolean; screen: string; error?: string; unsupported: boolean; sending: boolean; uncertain?: string }
+/**
+ * Why a pane has no transcript to read.
+ *
+ * `terminal` is a plain shell, which never has one. `waiting` is an agent that
+ * has not reported its session id yet, which is the normal state for a moment
+ * after it starts. `integration` is an agent that has already been given work
+ * and still has no session id, which means the Herdr integration never
+ * reported one. `transcript` is an agent whose id was reported but whose
+ * transcript the desktop cannot find where it looks. `unsupported` is an
+ * agent whose transcript this desktop cannot read at all.
+ */
+export type TranscriptGap = 'terminal' | 'waiting' | 'integration' | 'transcript' | 'unsupported'
+export interface SessionState { hostId: string; paneId: string; sessionId?: string; items: ChatItem[]; start: number; end: number; queued: { id: string; text: string }[]; loading: boolean; loadingOlder: boolean; screen: string; error?: string; unsupported: boolean; gap?: TranscriptGap; sentMessage: boolean; sending: boolean; uncertain?: string }
 export interface HostState {
   host: Host
   status: 'offline' | 'connecting' | 'online' | 'error'

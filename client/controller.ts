@@ -1,4 +1,4 @@
-import type { AppState, ChatItem, Host, SessionState, Snapshot } from './model'
+import type { AppState, ChatItem, Host, Pane, SessionState, Snapshot, TranscriptGap } from './model'
 import { parsePairing } from './pairing'
 import { t } from './i18n'
 import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, stopMessage } from './backoff'
@@ -22,6 +22,35 @@ const message = (error: unknown) => error instanceof Error ? error.message : t('
 export function agentLaunchCommand(kind: string): string[] {
   const executable = /^[a-z][a-z0-9-]{0,31}$/.test(kind) ? kind : 'claude'
   return ['/bin/sh', '-lc', `${executable}; exec "\${SHELL:-/bin/sh}" -il`]
+}
+
+/**
+ * Why a pane has no transcript, given the error Alma reported for it.
+ *
+ * The two codes say different things, which is the whole point of telling
+ * them apart:
+ *
+ * - `no_agent_session` means Herdr has no session id for the pane — which is
+ *   also what a plain shell reports, so the pane itself decides whether an
+ *   agent is there. A missing id is normal for a moment after an agent starts,
+ *   because its integration reports the id when the session begins. It is only
+ *   the integration's fault once the agent has been given work — it is
+ *   working, or finished, or blocked — and still no id ever arrived.
+ * - `transcript_not_found` means the id exists but the transcript is not where
+ *   Alma looks. That is not an install problem either: it is typically a CLI
+ *   whose session lives elsewhere, such as one behind SSH or in a container.
+ * - `unsupported_agent` means Alma has no reader for that agent at all, which
+ *   is never something the user can install their way out of.
+ */
+export function transcriptGap(code: string, pane: Pane | undefined, sentMessage: boolean): TranscriptGap {
+  if (code === 'unsupported_agent') return 'unsupported'
+  if (code === 'transcript_not_found') return 'transcript'
+  // Without a snapshot there is no way to tell a shell from an agent, so say
+  // the harmless thing; the next refresh classifies it once the list arrives.
+  if (!pane) return 'waiting'
+  if (!pane.agent && !pane.agent_session?.agent) return 'terminal'
+  const worked = sentMessage || ['working', 'done', 'blocked'].includes(pane.agent_status ?? '')
+  return worked ? 'integration' : 'waiting'
 }
 
 /**
@@ -399,7 +428,7 @@ export class Controller {
     const hostId = this.state.selectedHostId
     if (!hostId || !this.runtimes.has(hostId)) return
     this.stopSession()
-    this.publish({ selectedPaneId: paneId, session: { hostId, paneId, items: [], start: -1, end: 0, queued: [], loading: true, loadingOlder: false, screen: '', unsupported: false, sending: false } })
+    this.publish({ selectedPaneId: paneId, session: { hostId, paneId, items: [], start: -1, end: 0, queued: [], loading: true, loadingOlder: false, screen: '', unsupported: false, sentMessage: false, sending: false } })
     await this.refreshSession()
   }
   /** Manual retry: drop any scheduled attempt and reload now. */
@@ -440,17 +469,20 @@ export class Controller {
         // land here: a plain terminal (nothing to show) and an agent whose integration has
         // not reported its native session id yet, where a transcript will appear shortly.
         // Neither is an error, and the second one must keep retrying.
-        if (['unsupported_agent', 'no_session', 'no_agent_session', 'transcript_not_found'].includes(page.error.code || '')) {
+        const code = page.error.code || ''
+        if (['unsupported_agent', 'no_session', 'no_agent_session', 'transcript_not_found'].includes(code)) {
           const pane = this.state.hosts.find((item) => item.host.id === session.hostId)?.snapshot?.panes.find((item) => item.pane_id === session.paneId)
-          const hasAgent = Boolean(pane?.agent)
-          this.patchSession(epoch, { unsupported: true, loading: false, error: undefined })
-          this.later(epoch, hasAgent ? 4000 : 15_000)
+          const gap = transcriptGap(code, pane, session.sentMessage)
+          this.patchSession(epoch, { unsupported: true, gap, loading: false, error: undefined })
+          // An agent can still report its id, or its transcript can appear, so
+          // keep asking; nothing changes on its own for a shell, so look rarely.
+          this.later(epoch, gap === 'terminal' || gap === 'unsupported' ? 15_000 : 4000)
         } else throw new Error(page.error.message || t('无法读取会话'))
       } else {
         const same = session.sessionId === page.session_id
         const items = same ? session.items : merge([], page.page?.items ?? [])
         const cursor = same ? session.end : page.page?.end ?? 0
-        this.patchSession(epoch, { items, sessionId: page.session_id, start: same && session.start >= 0 ? session.start : page.page?.start ?? 0, end: cursor, queued: page.queued ?? [], loading: false, unsupported: false })
+        this.patchSession(epoch, { items, sessionId: page.session_id, start: same && session.start >= 0 ? session.start : page.page?.start ?? 0, end: cursor, queued: page.queued ?? [], loading: false, unsupported: false, gap: undefined })
         const chat = runtime.transport.subscribe(`/ws/herdr/chat?pane=${encodeURIComponent(session.paneId)}&from=${cursor}`, (event) => {
           if (epoch !== this.sessionEpoch || !this.state.session) return
           if (event.type === 'items' && Array.isArray(event.items)) this.patchSession(epoch, { items: merge(this.state.session.items, event.items), end: Number(event.end) || this.state.session.end })
@@ -541,17 +573,28 @@ export class Controller {
     try { const result = await this.rpc<{ read?: { text?: string } }>(session.hostId, 'pane.read', { pane_id: session.paneId, source: 'visible', format: 'text' }); this.patchSession(epoch, { screen: result.read?.text ?? '' }) }
     catch (error) { this.patchSession(epoch, { error: message(error) }) }
   }
-  private async mutate(method: string, params: (session: SessionState) => Record<string, unknown>) {
+  /** True when the call was actually made; false when one was already in flight. */
+  private async mutate(method: string, params: (session: SessionState) => Record<string, unknown>): Promise<boolean> {
     const session = this.state.session, epoch = this.sessionEpoch
     if (!session) throw new Error(t('没有打开的会话'))
-    if (session.sending) return
+    if (session.sending) return false
     if (session.uncertain) throw new Error(session.uncertain)
     this.patchSession(epoch, { sending: true, error: undefined })
-    try { await this.rpc(session.hostId, method, params(session)); if (epoch === this.sessionEpoch) await this.readScreen() }
+    try { await this.rpc(session.hostId, method, params(session)); if (epoch === this.sessionEpoch) await this.readScreen(); return true }
     catch (error) { this.patchSession(epoch, { error: message(error), ...(error instanceof OperationUncertainError ? { uncertain: message(error) } : {}) }); throw error }
     finally { this.patchSession(epoch, { sending: false }) }
   }
-  sendMessage = async (text: string) => { if (text.trim()) await this.mutate('agent.prompt', (s) => ({ target: s.paneId, text })) }
+  /**
+   * Records that the user has handed this pane work. That is what turns a
+   * missing session id from "the agent is still starting" into "nothing is
+   * going to report one", so the pane can say which of the two it is.
+   */
+  private markSent(epoch: number) { if (epoch === this.sessionEpoch) this.patchSession(epoch, { sentMessage: true }) }
+  sendMessage = async (text: string) => {
+    if (!text.trim()) return
+    const epoch = this.sessionEpoch
+    if (await this.mutate('agent.prompt', (s) => ({ target: s.paneId, text }))) this.markSent(epoch)
+  }
   /**
    * Runs one of the agent's own slash commands.
    *
@@ -593,6 +636,7 @@ export class Controller {
       textSent = true
       await this.rpc(session.hostId, 'pane.send_keys', { pane_id: session.paneId, keys: ['enter'] })
       if (epoch === this.sessionEpoch) await this.readScreen()
+      this.markSent(epoch)
     } catch (error) {
       const uncertain = error instanceof OperationUncertainError || textSent
       this.patchSession(epoch, { error: message(error), ...(uncertain ? { uncertain: t('终端输入可能已部分执行，请核对画面后重新打开会话。') } : {}) })

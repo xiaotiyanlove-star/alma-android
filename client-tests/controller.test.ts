@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Controller, agentLaunchCommand } from '../client/controller.ts'
+import { Controller, agentLaunchCommand, transcriptGap } from '../client/controller.ts'
 import type { Host } from '../client/model.ts'
 import type { HostStorage } from '../client/storage.ts'
 import type { Transport } from '../client/transport.ts'
@@ -214,5 +214,92 @@ test('a desktop without the layout API still creates a session', async () => {
     assert.equal(paneId, 'w1:p5')
     const methods = transport.calls.map((call) => (call.body as any)?.method).filter(Boolean)
     assert.deepEqual(methods.slice(-2), ['tab.create', 'agent.start'])
+  } finally { controller.dispose() }
+})
+
+// ── a pane with no transcript ───────────────────────────────────────────
+test('a freshly started agent waits for its session id instead of blaming the integration', () => {
+  // Alma recognises the agent but the integration has not reported an id yet.
+  assert.equal(transcriptGap('no_agent_session', { pane_id: 'p', workspace_id: 'w', tab_id: 't', agent: 'claude' }, false), 'waiting')
+})
+
+test('a known session id with no transcript in place is not an install problem', () => {
+  // Alma had an id and looked for the file, so nothing was missing from the
+  // integration; the CLI just keeps its transcript somewhere else.
+  assert.equal(transcriptGap('transcript_not_found', { pane_id: 'p', workspace_id: 'w', tab_id: 't', agent: 'claude', agent_status: 'working' }, true), 'transcript')
+})
+
+test('an agent that has done work and still has no session id needs the integration', () => {
+  const pane = { pane_id: 'p', workspace_id: 'w', tab_id: 't', agent: 'claude', agent_status: 'working' } as const
+  assert.equal(transcriptGap('no_agent_session', pane, false), 'integration', 'the status line already says it started')
+  assert.equal(transcriptGap('no_agent_session', { ...pane, agent_status: 'idle' }, true), 'integration', 'or the user sent it a message')
+  assert.equal(transcriptGap('no_agent_session', { ...pane, agent_status: 'done' }, false), 'integration')
+})
+
+test('a shell reports no_agent_session too, so the pane decides', () => {
+  // The chat endpoint answers no_agent_session for a shell as well; blaming
+  // the integration there would send the user chasing an agent that is not
+  // running.
+  assert.equal(transcriptGap('no_agent_session', { pane_id: 'p', workspace_id: 'w', tab_id: 't' }, false), 'terminal')
+  // Before the snapshot arrives nothing can be told apart; stay silent.
+  assert.equal(transcriptGap('no_agent_session', undefined, true), 'waiting')
+})
+
+test('an agent Alma cannot read is not an integration problem', () => {
+  assert.equal(transcriptGap('unsupported_agent', { pane_id: 'p', workspace_id: 'w', tab_id: 't', agent: 'pi', agent_status: 'working' }, true), 'unsupported')
+})
+
+test('sending a message turns the wait into a missing integration', async () => {
+  const { controller, transports } = setup()
+  try {
+    await controller.initialize(); await wait()
+    controller.selectHost('A')
+    const transport = transports.get('A')!
+    // An agent painted on the pane, but the chat endpoint has nothing for it.
+    transport.subscriptions.find((sub) => sub.path === '/ws/herdr')?.receive({
+      type: 'snapshot',
+      snapshot: { workspaces: [{ workspace_id: 'w1' }], panes: [{ pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'claude', agent_status: 'idle' }] },
+    })
+    transport.request = async (path: string, body?: unknown): Promise<any> => {
+      transport.calls.push({ path, body })
+      if (path === '/api/herdr/info') return { online: true }
+      if (path.startsWith('/api/herdr/chat')) return { error: { code: 'no_agent_session' } }
+      return { result: { read: { text: '' } } }
+    }
+    await controller.selectPane('w1:p1')
+    assert.equal(controller.getState().session?.gap, 'waiting', 'nothing has been sent yet')
+    assert.equal(controller.getState().session?.unsupported, true)
+    assert.equal(controller.getState().session?.sentMessage, false)
+
+    await controller.sendMessage('synthetic message')
+    assert.equal(controller.getState().session?.sentMessage, true)
+    await controller.reloadSession()
+    assert.equal(controller.getState().session?.gap, 'integration')
+  } finally { controller.dispose() }
+})
+
+test('the id arriving after the wait restores the conversation', async () => {
+  const { controller, transports } = setup()
+  try {
+    await controller.initialize(); await wait()
+    controller.selectHost('A')
+    const transport = transports.get('A')!
+    let missing = true
+    transport.request = async (path: string, body?: unknown): Promise<any> => {
+      transport.calls.push({ path, body })
+      if (path === '/api/herdr/info') return { online: true }
+      if (path.startsWith('/api/herdr/chat')) {
+        if (missing) return { error: { code: 'no_agent_session' } }
+        return { session_id: 's1', page: { start: 0, end: 1, items: [{ id: 'm1', kind: 'assistant', text: 'hello' }] } }
+      }
+      return { result: { read: { text: '' } } }
+    }
+    await controller.selectPane('w1:p1')
+    assert.equal(controller.getState().session?.unsupported, true)
+    missing = false
+    await controller.reloadSession()
+    assert.equal(controller.getState().session?.unsupported, false)
+    assert.equal(controller.getState().session?.gap, undefined)
+    assert.equal(controller.getState().session?.items[0].text, 'hello')
   } finally { controller.dispose() }
 })

@@ -653,8 +653,16 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
 }
 
 function Session({ session, host }: { session: SessionState; host?: HostState }) {
+  // Set only while there is no transcript; says which kind of "no transcript" it is.
+  const gap = session.gap ?? 'terminal';
+  // An agent is still a chat the user can write to even when its transcript
+  // cannot be read — prompts go to the agent, not to the transcript — so only
+  // a pane that has no chat at all is taken away from the message view.
+  const noMessages = session.unsupported && (gap === 'terminal' || gap === 'unsupported');
   // Start on messages unless this pane is known to have no transcript.
-  const [mode, setMode] = useState<'messages' | 'terminal'>(() => session.unsupported ? 'terminal' : 'messages');
+  const [mode, setMode] = useState<'messages' | 'terminal'>(() => noMessages ? 'terminal' : 'messages');
+  // A pane that turns out to have no transcript at all moves to the terminal.
+  useEffect(() => { if (noMessages) setMode('terminal'); }, [noMessages]);
   // Once a transcript finally arrives, leave the terminal view automatically.
   useEffect(() => { if (!session.unsupported && session.items.length > 0) setMode('messages'); }, [session.unsupported, session.items.length]);
   const [wrap, setWrap] = useState(true);
@@ -680,7 +688,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   const olderAnchor = useRef<{ top: number; height: number } | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const ready = canUseHost(host);
-  const terminal = session.unsupported || mode === 'terminal';
+  const terminal = noMessages || mode === 'terminal';
   // Any newly arrived item means the agent has produced something.
   const info = useMemo(() => parseSessionInfo(stripAnsi(session.screen ?? '')), [session.screen]);
   const agents = useMemo(() => backgroundAgents(session.items), [session.items]);
@@ -881,13 +889,22 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
           <span className="agents-dot" aria-hidden="true" />{agents.length} {t('个 agent 运行中')}
         </button>}
       </p></div>{host && <Status host={host} />}</header>
-    <div className="view-toolbar"><div className="view-tabs" role="tablist" aria-label={t('会话视图')}><button role="tab" id="messages-tab" aria-controls="session-content" aria-selected={!terminal} disabled={session.unsupported} className={!terminal ? 'is-active' : ''} onClick={() => switchMode('messages')}><MessageSquare size={16} />{t('消息')}</button><button role="tab" id="terminal-tab" aria-controls="session-content" aria-selected={terminal} className={terminal ? 'is-active' : ''} onClick={() => switchMode('terminal')}><Terminal size={16} />{t('终端')}</button></div>{terminal ? <div className="terminal-options"><button className={`icon-button ${wrap ? 'is-active' : ''}`} title={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-label={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-pressed={wrap} onClick={() => setWrap(value => !value)}><WrapText size={18} /></button><button className="icon-button" title={t('刷新终端')} aria-label={t('刷新终端')} disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={18} className={refreshing ? 'spin' : ''} /></button></div>
+    <div className="view-toolbar"><div className="view-tabs" role="tablist" aria-label={t('会话视图')}><button role="tab" id="messages-tab" aria-controls="session-content" aria-selected={!terminal} disabled={noMessages} className={!terminal ? 'is-active' : ''} onClick={() => switchMode('messages')}><MessageSquare size={16} />{t('消息')}</button><button role="tab" id="terminal-tab" aria-controls="session-content" aria-selected={terminal} className={terminal ? 'is-active' : ''} onClick={() => switchMode('terminal')}><Terminal size={16} />{t('终端')}</button></div>{terminal ? <div className="terminal-options"><button className={`icon-button ${wrap ? 'is-active' : ''}`} title={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-label={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-pressed={wrap} onClick={() => setWrap(value => !value)}><WrapText size={18} /></button><button className="icon-button" title={t('刷新终端')} aria-label={t('刷新终端')} disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={18} className={refreshing ? 'spin' : ''} /></button></div>
       : <div className="message-options"><button className="text-toggle" aria-pressed={markdown} title={markdown ? '显示 Markdown 源码' : '渲染 Markdown'} onClick={() => { const next = !markdown; setMarkdown(next); setMarkdownEnabled(next) }}>{markdown ? <FileCode size={15} /> : <FileText size={15} />}{markdown ? '源码' : '渲染'}</button></div>}</div>
     <div className="session-notices">
-      {!ready && <Notice error>{host?.status === 'connecting' ? '连接恢复中，暂时无法发送。' : '节点未连接，暂时无法发送。'}{host && host.status !== 'connecting' && <button className="inline-button" onClick={() => controller.retryHost(host.host.id)}>{t('重新连接')}</button>}</Notice>}
-      {session.unsupported && <Notice>{pane?.agent
-        ? <>{t('Herdr 还没收到这个 agent 的会话 ID，暂时读不到聊天记录。已在终端视图，读到后会自动切回。')}<button className="inline-button" onClick={() => void controller.reloadSession()}>{t('立即重试')}</button></>
-        : '这是一个普通终端会话，没有聊天记录，可直接在终端操作。'}</Notice>}
+      {!ready && <Notice error>{t(host?.status === 'connecting' ? '连接恢复中，暂时无法发送。' : '节点未连接，暂时无法发送。')}{host && host.status !== 'connecting' && <button className="inline-button" onClick={() => controller.retryHost(host.host.id)}>{t('重新连接')}</button>}</Notice>}
+      {session.unsupported && (gap === 'terminal'
+        ? <Notice>{t('这是一个普通终端会话，没有聊天记录，可直接在终端操作。')}</Notice>
+        : gap === 'unsupported'
+          ? <Notice>{t('这个桌面暂时读不了这个 agent 的聊天记录，可以直接用终端。')}</Notice>
+          : gap === 'transcript'
+            ? <Notice>{t('已经拿到会话 ID，但桌面端在原来的位置找不到记录——常见于通过 SSH 或在容器里运行的 agent。会在终端视图继续重试。')}</Notice>
+            : <Notice>
+              {gap === 'integration'
+                ? t('对话已经开始，但仍读不到聊天记录。请确认桌面端已为这个 agent 安装并启用 Herdr integration——它在会话开始时上报会话 ID，没有它只能一直用终端。')
+                : t('Herdr 还没收到这个 agent 的会话 ID，聊天记录会在收到后出现。现在就可以发消息。')}
+              <button className="inline-button" onClick={() => void controller.reloadSession()}>{t('立即重试')}</button>
+            </Notice>)}
       {session.uncertain && <Notice error><strong>{t('操作结果不确定')}</strong><p>{session.uncertain}</p><p>{t('请先核对消息或终端内容，避免重复操作。')}</p></Notice>}
       {session.error && <Notice error>{session.error}</Notice>}
       {localError && <Notice error>{localError}</Notice>}

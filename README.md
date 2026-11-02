@@ -82,8 +82,10 @@ and time zone that follow the system unless you override them.
 
 No remote desktop, no browser control, no client for Alma's own threads, no model or
 provider configuration, and no cloud push. Chat history depends on the agent reporting a
-native session id through its Herdr integration; where it does not, the client says so
-and offers the terminal instead. Refresh tokens, conversation history and agent
+native session id through its Herdr integration. A newly started agent has no id for a
+moment and that is normal, so the message view stays open and says it is waiting; only
+an agent that starts working — or gets a message — and still never reports an id is
+reported as missing its integration. Refresh tokens, conversation history and agent
 configuration are never stored on the phone beyond what the desktop sends.
 
 ## Requirements
