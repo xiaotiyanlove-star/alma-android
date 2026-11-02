@@ -148,6 +148,14 @@ export class EncryptedTunnel implements Transport {
     const epoch = this.epoch
     const next = this.outgoing.then(async () => {
       if (!this.ready || !this.keys || !this.ws || epoch !== this.epoch) throw new Error(t('连接已断开'))
+      // A socket that died without firing `close` — the page was frozen when
+      // the relay dropped it — still looks open here. Sending into it is a
+      // silent no-op, so the request would sit until its timeout; report the
+      // failure now, while the caller can still reconnect promptly.
+      if (this.ws.readyState !== 1) {
+        this.fail(new TunnelError('network', t('连接已断开')))
+        throw new Error(t('连接已断开'))
+      }
       const wire = await sealBytes(this.keys.c2s, this.counter++, encodeInnerFrame(frame, this.binary))
       if (epoch !== this.epoch || !this.ready) throw new Error(t('连接已断开'))
       this.ws.send(wire)

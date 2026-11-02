@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
 
 /**
  * Opens the add-desktop screen and fills in the form.
@@ -15,7 +15,16 @@ export async function addDesktop(page: Page, name: string, link: string) {
   }
   await nameField.fill(name)
   await page.getByLabel('配对链接', { exact: true }).fill(link)
-  await page.getByRole('button', { name: '添加节点', exact: true }).last().click()
+  // The form is controlled by React; a dev-server reload can land between the
+  // fill and the state update, leaving the submit button disabled.
+  const submit = page.getByRole('button', { name: '添加节点', exact: true }).last()
+  for (let attempt = 0; attempt < 3 && await submit.isDisabled().catch(() => true); attempt++) {
+    await nameField.fill(name)
+    await page.getByLabel('配对链接', { exact: true }).fill(link)
+    await page.waitForTimeout(200)
+  }
+  await expect(submit).toBeEnabled({ timeout: 10000 })
+  await submit.click()
   await page.waitForTimeout(500)
 }
 

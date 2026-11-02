@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { MAX_RETRIES, RETRY_DELAYS, isPermanentFailure, nextDelay, retriesLeft } from '../client/backoff.ts'
-import { DROP_AFTER_MS, KEEP_WARM_MS, initialState, step } from '../client/lifecycle.ts'
+import { DROP_AFTER_MS, KEEP_WARM_MS, RECONNECT_AFTER_MS, VERIFY_AFTER_MS, initialState, step } from '../client/lifecycle.ts'
 
 test('retry delays stay under 30 seconds and stop after three', () => {
   assert.equal(MAX_RETRIES, 3)
@@ -63,12 +63,38 @@ test('returning after a suspend asks for a reconnect', () => {
   assert.equal(r.state.hiddenAt, null)
 })
 
-test('returning after a short absence does not reconnect', () => {
+test('returning at once keeps the live socket', () => {
+  // A permission prompt or the file picker hides the page for a moment; the
+  // connection was never at risk and should not even be probed.
   let s = step(initialState(), 'hidden', 0).state
-  s = step(s, 'tick', KEEP_WARM_MS).state
-  const r = step(s, 'visible', KEEP_WARM_MS + 1000)
-  assert.equal(r.action, 'none', 'the socket was never released')
+  const r = step(s, 'visible', VERIFY_AFTER_MS - 500)
+  assert.equal(r.action, 'none')
   assert.equal(r.state.hiddenAt, null)
+})
+
+test('a switch long enough to freeze the page probes the existing socket', () => {
+  let s = step(initialState(), 'hidden', 0).state
+  const r = step(s, 'visible', VERIFY_AFTER_MS + 5000)
+  assert.equal(r.action, 'verify', 'the socket may be dead without anything noticing')
+  assert.equal(r.awayMs, VERIFY_AFTER_MS + 5000)
+})
+
+test('returning after the page was frozen rebuilds the tunnel', () => {
+  // Android freezes the WebView while hidden: timers stop, and the relay has
+  // already closed the socket the page still believes in. Nothing reports the
+  // disconnection, so the length of the absence is the only signal.
+  let s = step(initialState(), 'hidden', 0).state
+  s = step(s, 'tick', RECONNECT_AFTER_MS - 1000).state
+  const r = step(s, 'visible', RECONNECT_AFTER_MS + 5000)
+  assert.equal(r.action, 'resume')
+  assert.equal(s.suspended, false, 'this is not the suspend path; nothing was released')
+})
+
+test('a hidden page that was suspended resumes even after a short gap', () => {
+  let s = step(initialState(), 'hidden', 0).state
+  s = step(s, 'tick', DROP_AFTER_MS).state
+  const r = step(s, 'visible', DROP_AFTER_MS + 1)
+  assert.equal(r.action, 'resume')
 })
 
 test('ticks while visible are ignored', () => {

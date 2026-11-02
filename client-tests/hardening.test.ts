@@ -19,6 +19,8 @@ class CountingTransport implements TransportLike {
   async request<T>(path: string): Promise<T> { if (path === '/api/herdr/info') return { online: true } as T; return { result: {} } as T }
   subscribe() { return { close() {} } }
   close() { this.stop = true; this.closed = true; this.sink('offline') }
+  /** Simulates the transport noticing a dead connection on its own. */
+  die() { this.stop = true; this.sink('offline') }
 }
 interface TransportLike { connect(): Promise<void>; request<T>(p: string, b?: unknown, i?: unknown): Promise<T>; subscribe(p: string, r: (f: any) => void, c: () => void): { close(): void }; close(): void }
 
@@ -144,3 +146,84 @@ function fromBase64urlOf(text: string): Uint8Array {
   const binary = atob(padded)
   return Uint8Array.from(binary, (c) => c.charCodeAt(0))
 }
+
+test('coming back after a long absence rebuilds a tunnel that still looks open', async () => {
+  // Android froze the page while hidden, so nothing marked this transport
+  // closed; the relay has dropped the socket all the same.
+  const made: CountingTransport[] = []
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const controller = new Controller(storage, (_h, sink) => { const t = new CountingTransport(sink as any); made.push(t); return t as any })
+  try {
+    await controller.initialize(); await new Promise((r) => setTimeout(r, 5))
+    assert.equal(controller.getState().hosts[0].status, 'online')
+
+    controller.resume(true)
+    await new Promise((r) => setTimeout(r, 5))
+    assert.equal(made[0].closed, true, 'the stale transport is released')
+    assert.equal(made.length, 2)
+    assert.equal(made[1].connections, 1)
+    assert.equal(controller.getState().hosts[0].status, 'online')
+    assert.equal(controller.getState().hosts[0].retriesLeft, 3, 'the ladder starts over')
+  } finally { controller.dispose() }
+})
+
+test('a quick app switch keeps the tunnel it already has', async () => {
+  const made: CountingTransport[] = []
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const controller = new Controller(storage, (_h, sink) => { const t = new CountingTransport(sink as any); made.push(t); return t as any })
+  try {
+    await controller.initialize(); await new Promise((r) => setTimeout(r, 5))
+    controller.resume(false); await new Promise((r) => setTimeout(r, 5))
+    assert.equal(made.length, 1)
+    assert.equal(made[0].closed, false)
+  } finally { controller.dispose() }
+})
+
+test('a dead socket that never reported its death is replaced on return', async () => {
+  // The page was frozen when the relay dropped the socket, so no close event
+  // ran: the transport still believes it is online. Only a read can tell.
+  const made: CountingTransport[] = []
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const controller = new Controller(storage, (_h, sink) => { const t = new CountingTransport(sink as any); made.push(t); return t as any })
+  try {
+    await controller.initialize(); await new Promise((r) => setTimeout(r, 5))
+    // A real transport reports the failure before rejecting; the runtime is
+    // what schedules the retry, so the status has to change with it.
+    made[0].request = async (path: string) => {
+      if (path === '/api/herdr/info') { made[0].die(); throw new Error('connection closed') }
+      return {} as any
+    }
+    await controller.verify()
+    await new Promise((r) => setTimeout(r, 10))
+    assert.equal(made.length, 2, 'the unanswerable transport is replaced')
+    assert.equal(controller.getState().hosts[0].status, 'online')
+  } finally { controller.dispose() }
+})
+
+test('a working socket is left alone when the app returns', async () => {
+  const made: CountingTransport[] = []
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const controller = new Controller(storage, (_h, sink) => { const t = new CountingTransport(sink as any); made.push(t); return t as any })
+  try {
+    await controller.initialize(); await new Promise((r) => setTimeout(r, 5))
+    await controller.verify()
+    await new Promise((r) => setTimeout(r, 10))
+    assert.equal(made.length, 1, 'no reconnect for a healthy tunnel')
+    assert.equal(controller.getState().hosts[0].status, 'online')
+  } finally { controller.dispose() }
+})
+
+test('a request on a socket that died silently fails at once instead of timing out', async () => {
+  // The relay closed the socket while the page was frozen, so no close event
+  // ran and `ready` is still true. Sending would go nowhere; waiting for the
+  // 20 s timeout would leave the UI dead for the whole wait.
+  let socket!: FakeSocket
+  const tunnel = new EncryptedTunnel(host, () => {}, () => socket = new FakeSocket(), 1000)
+  try {
+    await tunnel.connect()
+    socket.readyState = 3
+    const started = Date.now()
+    await assert.rejects(tunnel.request('/api/herdr/info', undefined, { kind: 'read' }))
+    assert.ok(Date.now() - started < 500, 'fails immediately, not on the timeout')
+  } finally { tunnel.close() }
+})

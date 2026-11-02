@@ -19,6 +19,7 @@ export function decodeFrame(data: Uint8ClampedArray, width: number, height: numb
 export function ScanPairing({ open, onClose, onScanned }: { open: boolean; onClose(): void; onScanned(link: string): void }) {
   const [error, setError] = useState('')
   const [starting, setStarting] = useState(true)
+  const [live, setLive] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
   const done = useRef(false)
 
@@ -30,6 +31,7 @@ export function ScanPairing({ open, onClose, onScanned }: { open: boolean; onClo
     done.current = false
     setError('')
     setStarting(true)
+    setLive(false)
 
     const canvas = document.createElement('canvas')
     const context = canvas.getContext('2d', { willReadFrequently: true })
@@ -67,7 +69,7 @@ export function ScanPairing({ open, onClose, onScanned }: { open: boolean; onClo
         const video = videoRef.current
         if (!video) return
         video.srcObject = media
-        return video.play().then(() => { setStarting(false); frame = requestAnimationFrame(tick) })
+        return video.play().then(() => { setStarting(false); setLive(true); frame = requestAnimationFrame(tick) })
       })
       .catch((reason: unknown) => {
         if (cancelled) return
@@ -88,17 +90,19 @@ export function ScanPairing({ open, onClose, onScanned }: { open: boolean; onClo
   if (!open) return null
   return <div className="scan-backdrop" role="dialog" aria-modal="true" aria-label="扫描二维码">
     <div className="scan-sheet">
-      <header className="scan-header">
-        <h2>扫描二维码</h2>
-        <button type="button" className="icon-button" aria-label="关闭扫描" onClick={onClose}><X size={20} /></button>
-      </header>
-      <div className="scan-viewport">
+      <div className={`scan-viewport${live ? ' is-live' : ''}`}>
         <video ref={videoRef} className="scan-video" muted playsInline aria-label="相机预览" />
         <div className="scan-frame" aria-hidden="true" />
+        {/* The header sits on the preview the way a camera app does, so the
+            working area is the picture rather than a white dialog. */}
+        <header className="scan-header">
+          <h2>扫描二维码</h2>
+          <button type="button" className="icon-button scan-close" aria-label="关闭扫描" onClick={onClose}><X size={20} /></button>
+        </header>
         {starting && <div className="scan-status"><Loader2 className="spin" size={18} />正在打开相机…</div>}
         {error && <div className="scan-status is-error"><Camera size={18} />{error}</div>}
+        <p className="scan-hint">把 Alma「远程访问」里的二维码放进方框内。也可以直接粘贴配对链接。</p>
       </div>
-      <p className="scan-hint">把 Alma「远程访问」里的二维码放进方框内。也可以直接粘贴配对链接。</p>
     </div>
   </div>
 }

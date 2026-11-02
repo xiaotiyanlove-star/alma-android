@@ -148,16 +148,39 @@ pre { max-width: 100%; }
 .toggle-row small { font-size: 12px; color: var(--muted); }
 .toggle-row input { flex: 0 0 auto; width: 22px; height: 22px; margin-top: 2px; accent-color: var(--green); }
 
-.scan-backdrop { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 16px; background: #101413f2; }
-.scan-sheet { display: flex; width: 100%; max-width: 460px; max-height: calc(100dvh - 32px); flex-direction: column; gap: 12px; padding: 14px; border-radius: 12px; background: #fff; }
-.scan-header { display: flex; align-items: center; justify-content: space-between; }
-.scan-header h2 { font-size: 15px; }
-.scan-viewport { position: relative; display: flex; min-height: 240px; align-items: center; justify-content: center; aspect-ratio: 1; overflow: hidden; border-radius: 8px; background: #0d1110; }
-.scan-video { width: 100%; height: 100%; object-fit: cover; }
-.scan-frame { position: absolute; inset: 14%; border: 2px solid #ffffffcc; border-radius: 10px; box-shadow: 0 0 0 999px rgb(0 0 0 / 35%); }
-.scan-status { position: absolute; bottom: 14px; display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-radius: 999px; background: #101413cc; color: #f2f5f3; font-size: 13px; }
-.scan-status.is-error { background: #7d1d22e6; }
-.scan-hint { font-size: 12px; color: var(--muted); }
+/*
+ * The scanner is a camera view, not a form: one dark surface, the preview
+ * filling it, and the few controls floating over the picture. A white card
+ * around a grey empty box looked like a broken image for the second before
+ * the camera came up.
+ */
+.scan-backdrop { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 0; background: #0b0f0d; }
+.scan-sheet { position: relative; display: flex; width: 100%; height: 100%; max-width: 520px; max-height: 100dvh; overflow: hidden; background: #0b0f0d; }
+.scan-viewport { position: relative; display: flex; flex: 1; align-items: center; justify-content: center; overflow: hidden; background: radial-gradient(circle at 50% 42%, #1b2320 0%, #0b0f0d 72%); }
+/* A video with no stream yet paints the browser's own media placeholder — a
+   grey box with a play triangle. Keep it invisible until it is actually live. */
+.scan-video { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .25s ease; }
+/* The backdrop shadow only makes sense over a picture; on the empty surface
+   it just darkens the placeholder message. */
+.scan-viewport.is-live .scan-video { opacity: 1; }
+.scan-viewport:not(.is-live) .scan-frame { box-shadow: none; }
+/* Four corner brackets, drawn as gradients so there is no border to mistake
+   for a crop frame and nothing to align by hand. */
+.scan-frame { position: absolute; top: 50%; left: 50%; width: min(64vw, 260px); height: min(64vw, 260px); transform: translate(-50%, -50%); border-radius: 18px; box-shadow: 0 0 0 999px rgb(4 8 6 / 58%); background:
+  linear-gradient(#fff, #fff) left top / 34px 3px no-repeat,
+  linear-gradient(#fff, #fff) left top / 3px 34px no-repeat,
+  linear-gradient(#fff, #fff) right top / 34px 3px no-repeat,
+  linear-gradient(#fff, #fff) right top / 3px 34px no-repeat,
+  linear-gradient(#fff, #fff) left bottom / 34px 3px no-repeat,
+  linear-gradient(#fff, #fff) left bottom / 3px 34px no-repeat,
+  linear-gradient(#fff, #fff) right bottom / 34px 3px no-repeat,
+  linear-gradient(#fff, #fff) right bottom / 3px 34px no-repeat; }
+.scan-header { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 26px 20px; background: linear-gradient(180deg, rgb(4 8 6 / 78%) 0%, rgb(4 8 6 / 0%) 100%); }
+.scan-header h2 { font-size: 16px; color: #f4f7f5; }
+.scan-close { color: #f4f7f5; background: rgb(255 255 255 / 12%); border-radius: 999px; }
+.scan-status { position: absolute; top: 50%; left: 50%; display: flex; align-items: center; gap: 8px; transform: translate(-50%, -50%); padding: 10px 16px; border-radius: 999px; background: rgb(20 26 23 / 88%); color: #f2f5f3; font-size: 13px; white-space: nowrap; backdrop-filter: blur(6px); }
+.scan-status.is-error { max-width: calc(100% - 48px); border-radius: 14px; white-space: normal; text-align: left; line-height: 1.5; background: #7d1d22e6; }
+.scan-hint { position: absolute; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); left: 24px; right: 24px; color: #d3dad6; font-size: 12.5px; line-height: 1.6; text-align: center; text-shadow: 0 1px 6px rgb(0 0 0 / 60%); }
 .add-host-form .primary-button { align-self: flex-start; }
 .confirm-dialog { width: calc(100% - 40px); max-width: 390px; max-height: calc(100dvh - 40px); border: 1px solid #dce0e1; border-radius: 8px; padding: 24px; color: #25282b; background: #fff; overflow: auto; }
 .confirm-dialog::backdrop { background: rgb(20 24 26 / 36%); }

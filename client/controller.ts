@@ -365,6 +365,43 @@ export class Controller {
   }
 
   /**
+   * Checks that every open tunnel still carries traffic.
+   *
+   * A socket can be dead while both ends' state says it is fine, because the
+   * close event never ran — the page was frozen when the relay dropped it. One
+   * short read settles it; a transport that cannot answer rebuilds itself and
+   * reports offline, which starts the usual retry ladder.
+   */
+  verify = async () => {
+    for (const [id, runtime] of this.runtimes) {
+      if (runtime.stopped) continue
+      try {
+        await runtime.transport.request<{ online: boolean }>('/api/herdr/info', undefined, { kind: 'read' })
+      } catch { /* the transport has already reported the failure */ }
+      if (this.runtimes.get(id) !== runtime) continue
+      // A request that failed on a dead socket leaves the runtime offline;
+      // rebuilding now turns a stale "online" into a real connection.
+      if (this.state.hosts.find((item) => item.host.id === id)?.status !== 'online') this.rebuild(id, runtime)
+    }
+  }
+  /** Replaces a runtime whose transport is known to be dead. */
+  private rebuild(id: string, runtime: Runtime) {
+    if (this.runtimes.get(id) !== runtime) return
+    const host = this.state.hosts.find((item) => item.host.id === id)?.host
+    if (!host) return
+    this.cancelRetry(runtime)
+    // Drop it first: closing reports offline, and a replaced runtime must not
+    // schedule a retry of its own.
+    this.runtimes.delete(id)
+    runtime.hub?.close()
+    runtime.transport.close()
+    const fresh = this.makeRuntime(host)
+    this.runtimes.set(id, fresh)
+    this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined, error: undefined })
+    void this.connectHost(id, fresh)
+  }
+
+  /**
    * Retry everything that gave up, without disturbing the ones that are fine.
    * Used when the app returns to the foreground or the network comes back.
    */
@@ -401,17 +438,30 @@ export class Controller {
   }
 
   /**
-   * Coming back from a suspend reconnects on a fresh ladder. A short absence
-   * needs nothing: the sockets were never released.
+   * Coming back to the app reconnects on a fresh ladder.
+   *
+   * `rebuild` replaces the transports even when they look open. Android
+   * freezes the page in the background, so after a real absence the socket in
+   * hand is one the relay has already dropped, and only a new one will do.
+   * Without `rebuild`, only a suspended runtime is rebuilt; a quick app switch
+   * keeps the live socket.
    */
-  resume = (wasSuspended: boolean) => {
-    if (!wasSuspended) return
+  resume = (rebuild: boolean) => {
     for (const state of this.state.hosts) {
       const id = state.host.id
-      if (this.runtimes.has(id)) continue
+      const existing = this.runtimes.get(id)
+      if (existing && !rebuild) continue
+      // Drop the runtime before closing it: closing reports 'offline', and a
+      // runtime that is no longer current must not schedule a retry of its own.
+      if (existing) {
+        this.cancelRetry(existing)
+        this.runtimes.delete(id)
+        existing.hub?.close()
+        existing.transport.close()
+      }
       const runtime = this.makeRuntime(state.host)
       this.runtimes.set(id, runtime)
-      this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined })
+      this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined, error: undefined })
       void this.connectHost(id, runtime)
     }
   }

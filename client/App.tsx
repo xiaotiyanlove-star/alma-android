@@ -17,7 +17,7 @@ import { APP_VERSION, APP_ID, BUILD_TIME } from './version';
 import { t, tWith } from './i18n';
 import { loadDraft, saveDraft } from './drafts';
 import { back, closeOverlay, openOverlay, push, replace, useOverlay, useRoute } from './router';
-import { DROP_AFTER_MS, initialState, step } from './lifecycle';
+import { initialState, step } from './lifecycle';
 import { stopMessage } from './backoff';
 import { parseSessionInfo } from './session-info';
 import { backgroundAgents } from './subagents';
@@ -1045,7 +1045,11 @@ export function App() {
       const result = step(state, event, Date.now())
       state = result.state
       if (result.action === 'suspend') controller.suspend()
+      // A return replaces the tunnel: the page was frozen, so whatever socket
+      // it still holds may be one the relay already closed.
       if (result.action === 'resume') controller.resume(true)
+      // Short of that, a read proves the existing tunnels still carry traffic.
+      if (result.action === 'verify') void controller.verify()
       if (event === 'visible') controller.retryStopped()
     }
     const onVisibility = () => apply(document.visibilityState === 'hidden' ? 'hidden' : 'visible')
