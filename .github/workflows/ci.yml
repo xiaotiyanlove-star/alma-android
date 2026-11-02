@@ -1,0 +1,148 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only by default. The build job needs nothing else; a release job would
+# add `contents: write` explicitly rather than widening this.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Tests, types, web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  android:
+    name: Debug APK
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      # variables.gradle pins compileSdk/targetSdk to 36, so both the platform
+      # and matching build-tools must be installed; the runner image does not
+      # ship them.
+      - name: Install SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - run: npm ci
+
+      - name: Build web application
+        run: npm run build:web
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
+      - name: Assemble debug APK
+        run: ./android/gradlew -p android assembleDebug
+
+      # The APK is debug-signed with the throwaway Android debug key, so it
+      # installs but is not suitable for distribution. It is here so a change
+      # can be tried on a phone without a local toolchain.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alma-herdr-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  # A release build needs the keystore, which lives in repository secrets.
+  # Until those exist this job would silently produce nothing, so it is gated
+  # on the secret being present rather than failing every run.
+  android-release:
+    name: Release APK (signed, tags only)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - run: npm ci
+
+      - name: Decode keystore
+        if: env.HAS_KEYSTORE == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/keystore"
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode \
+            > "$RUNNER_TEMP/keystore/release.jks"
+
+      - name: Build signed release APK
+        if: env.HAS_KEYSTORE == 'true'
+        env:
+          ALMA_RELEASE_STORE_FILE: ${{ runner.temp }}/keystore/release.jks
+          ALMA_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ALMA_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ALMA_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          npm run build:web
+          npx cap sync android
+          ./android/gradlew -p android assembleRelease
+
+      - name: Verify the APK is signed with a release key
+        if: env.HAS_KEYSTORE == 'true'
+        run: |
+          set -euo pipefail
+          apk=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          test -n "$apk" || { echo "no release APK produced" >&2; exit 1; }
+          apksigner verify --verbose --print-certs "$apk"
+
+      - name: Note the missing keystore
+        if: env.HAS_KEYSTORE != 'true'
+        run: |
+          echo "::notice::Release APK skipped: ANDROID_KEYSTORE_BASE64 is not set."
+
+      - uses: actions/upload-artifact@v4
+        if: env.HAS_KEYSTORE == 'true'
+        with:
+          name: alma-herdr-release-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error

@@ -1,5 +1,18 @@
 apply plugin: 'com.android.application'
 
+// Release signing comes from the environment, never from the repository: CI
+// decodes the keystore from secrets, and a local release run sets the same four
+// variables. With any of them missing the config is skipped and `assembleRelease`
+// produces an unsigned APK, which the CI verification step rejects on purpose.
+def signingValue = { String envName, String propName ->
+    System.getenv(envName) ?: (project.hasProperty(propName) ? project.property(propName) : null)
+}
+def releaseStore = signingValue('ALMA_RELEASE_STORE_FILE', 'almaReleaseStoreFile')
+def releaseStorePassword = signingValue('ALMA_RELEASE_STORE_PASSWORD', 'almaReleaseStorePassword')
+def releaseAlias = signingValue('ALMA_RELEASE_KEY_ALIAS', 'almaReleaseKeyAlias')
+def releaseKeyPassword = signingValue('ALMA_RELEASE_KEY_PASSWORD', 'almaReleaseKeyPassword')
+def hasReleaseSigning = [releaseStore, releaseStorePassword, releaseAlias, releaseKeyPassword].every { it }
+
 android {
     namespace "local.almaandroid.app"
     compileSdk rootProject.ext.compileSdkVersion
@@ -16,8 +29,19 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseStore)
+                storePassword releaseStorePassword
+                keyAlias releaseAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
     buildTypes {
         release {
+            if (hasReleaseSigning) signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
