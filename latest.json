@@ -1,8 +1,0 @@
-{
-  "tag": "v0.4.213-21",
-  "apk": "alma-android-v0.4.213-21.apk",
-  "notes": "终端 extra keys 按键条：ESC/TAB/CTRL/ALT/←↑↓→/HOME/END/PGUP/PGDN。CTRL/ALT 为 sticky 修饰键，ALT 按 readline meta 语义（ESC 前缀）展开；全部按键经 CDP 字节级验证。",
-  "mirrors": [
-    "https://gh-proxy.com/https://github.com/nanami-0713/alma-android/releases/download/v0.4.213-21/alma-android-v0.4.213-21.apk"
-  ]
-}

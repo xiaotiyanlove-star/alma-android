@@ -2,16 +2,15 @@
 
 ## Alma Android (nanami-0713) — this fork's base
 
-The Android shell, platform bridge patches, and bundled Alma renderer in `www/` come from
+The Android shell and Capacitor project come from
 [nanami-0713/alma-android](https://github.com/nanami-0713/alma-android),
 pinned at `v0.4.213-21` (`121e3fcdc94b3d3c1caf6a076b8f7ae8d7272b73`).
 
 MIT License, Copyright (c) 2026 yetone.
 
-That repository states the bundled renderer is included with the Alma author's permission under
-MIT. This fork does not extend that permission to anything outside its stated scope, and does not
-claim that the Alma application is otherwise open source. The legacy `www/` renderer is kept
-unchanged for reference and is not the entry point of the new client.
+This fork replaces that project's bundled Alma renderer with an independently written
+client under `client/`. The bundled renderer, its platform shims and the upstream release
+scripts have been removed from this repository; nothing from them is shipped here.
 
 ## Alma Android (lazyeo)
 
@@ -21,8 +20,8 @@ unchanged for reference and is not the entry point of the new client.
 
 MIT License, Copyright (c) 2026 lazyeo and contributors.
 
-The E2E handshake, routing-token derivation, and AEAD framing in `client/transport.ts` were written
-for this fork against the same wire protocol, with that file used as reference.
+The E2E handshake, routing-token derivation, and AEAD framing in `client/transport.ts` were
+written for this fork against the same wire protocol, with that file used as reference.
 
 ## Herdr
 

@@ -22,3 +22,7 @@ test-artifacts/
 
 # npm 缓存
 .npm-cache/
+
+# Local-only probes: hardcoded CDP ports and emulator paths, not useful to others
+client-tests/device-*.mjs
+client-tests/live-*.ts
