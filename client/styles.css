@@ -117,11 +117,29 @@ pre { max-width: 100%; }
 .session-row { display: flex; width: 100%; min-width: 0; align-items: center; gap: 12px; background: transparent; text-align: left; padding: 16px 0; }
 /* Its own tap target, so renaming never opens the session by accident. */
 .session-rename { flex: 0 0 auto; color: var(--muted); }
-.session-icon { align-self: flex-start; display: grid; place-items: center; width: 32px; height: 32px; color: #65706b; flex: 0 0 32px; }
+.session-row .agent-badge { margin-right: -2px; }
+/* ── agents ──────────────────────────────────────────────────────────────
+   One mark per agent, on a tinted square. The point is discrimination at a
+   glance in a list and in the header, not decoration: each agent keeps the
+   same colour and glyph everywhere it appears. */
+.agent-badge { display: grid; place-items: center; width: 34px; height: 34px; flex: 0 0 34px; border-radius: 10px; border: 1px solid transparent; font-size: 16px; font-weight: 600; line-height: 1; font-variant-ligatures: none; }
+.agent-badge.is-md { width: 34px; height: 34px; flex-basis: 34px; }
+.agent-badge.is-sm { width: 22px; height: 22px; flex-basis: 22px; border-radius: 7px; font-size: 12px; }
+.agent-badge.is-clay { color: #a1552f; border-color: #f0dbcf; background: #fdf3ec; }
+.agent-badge.is-slate { color: #3d4c5c; border-color: #dbe2e8; background: #f2f5f8; }
+.agent-badge.is-green { color: #2b633f; border-color: #cfe3d7; background: #f1f8f3; }
+.agent-badge.is-plain { color: #5c666b; border-color: #e3e6e7; background: #f6f7f7; }
+.agent-badge.is-terminal { color: #65706b; border-color: #e3e6e7; background: #f6f7f7; }
+.agent-status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #b5bcc0; flex: 0 0 6px; }
+.agent-status-dot.is-busy { background: #247545; animation: status-pulse 1.6s ease-in-out infinite; }
+.agent-status-dot.is-waiting { background: #c07a15; }
+.agent-status-dot.is-done { background: #4b7fa8; }
+@keyframes status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .agent-status-dot.is-busy { animation: none; } }
 .session-row-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
 .session-row-copy strong { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .session-path { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
-.session-row-meta { font-size: 11px; color: #70777b; overflow-wrap: anywhere; }
+.session-row-meta { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #70777b; overflow-wrap: anywhere; }
 
 .host-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 16px 0; border-bottom: 1px solid var(--line); }
 .host-row > svg { margin-right: 6px; flex-shrink: 0; }
@@ -189,9 +207,20 @@ pre { max-width: 100%; }
 .confirm-dialog .confirm-host { color: #343a3d; font-weight: 600; margin-bottom: 8px; }
 .dialog-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; margin-top: 24px; }
 
-.conversation-header { padding-left: 10px; }
+.conversation-header { padding-left: 10px; gap: 8px; }
 .conversation-header .connection-status { font-size: 11px; }
-.header-copy .session-host-name { display: flex; gap: 5px; align-items: baseline; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.conversation-header .connection-status.is-compact { gap: 0; padding: 0 2px; }
+.conversation-header .connection-status.is-compact .status-dot { width: 8px; height: 8px; }
+/* The title is the widest thing here; the badge and status may stay put. */
+.conversation-header .agent-badge { margin-top: 2px; }
+/* Desktop name stays put; the chips scroll beside it, so the header keeps one
+   height whether or not a model name or context figure is present. */
+.header-copy .session-host-name { display: flex; gap: 6px; align-items: center; min-width: 0; white-space: nowrap; }
+.session-host-id { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.session-host-id > svg { flex-shrink: 0; }
+.session-chips { display: flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.session-chips::-webkit-scrollbar { display: none; }
+.session-chips > * { flex: 0 0 auto; margin-left: 0; }
 .session-host-name > svg { flex-shrink: 0; }
 .view-toolbar { display: flex; align-items: center; justify-content: space-between; min-height: 48px; padding: 0 14px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .view-tabs { display: flex; align-self: stretch; gap: 16px; }
@@ -216,15 +245,37 @@ pre { max-width: 100%; }
 .message-error { color: var(--red); }
 .message-error .message-meta { color: var(--red); }
 .code-block { max-width: 100%; min-width: 0; border: 1px solid #e3e6e7; border-radius: 4px; background: #f5f6f6; margin: 12px 0; overflow: hidden; }
-.code-language { color: var(--muted); padding: 4px 12px; border-bottom: 1px solid #e3e6e7; font-size: 11px; overflow-wrap: anywhere; }
+.code-language { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); padding: 3px 6px 3px 12px; border-bottom: 1px solid #e3e6e7; font-size: 11px; overflow-wrap: anywhere; }
 .code-block pre { padding: 12px; overflow-x: auto; white-space: pre; }
-.tool-detail { margin-top: 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.tool-detail summary { display: flex; align-items: center; gap: 7px; min-height: 44px; padding: 8px 0; cursor: pointer; list-style: none; color: #525d62; font-size: 12px; }
+.tool-detail { border-top: 1px solid var(--line); }
+.tool-detail:last-child { border-bottom: 1px solid var(--line); }
+.tool-detail summary { display: flex; align-items: center; gap: 7px; min-height: 40px; padding: 6px 0; cursor: pointer; list-style: none; color: #525d62; font-size: 12px; }
 .tool-detail summary::-webkit-details-marker { display: none; }
-.tool-detail summary > span:first-of-type { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.tool-detail summary > svg { flex-shrink: 0; }
+.tool-detail summary > span:nth-of-type(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.tool-detail summary > svg { flex-shrink: 0; transition: transform .15s ease; }
 .tool-detail[open] summary > svg:last-child { transform: rotate(180deg); }
 .tool-state { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+/* A dot instead of a glyph: it carries the running animation, and a burst of
+   rows reads as a pulse rather than as a list of terminal icons. */
+.tool-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: #c3cacc; }
+.tool-dot.is-running { background: #247545; animation: tool-pulse 1.1s ease-in-out infinite; }
+@keyframes tool-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgb(36 117 69 / 45%); opacity: 1; } 50% { box-shadow: 0 0 0 4px rgb(36 117 69 / 0%); opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .tool-dot.is-running { animation: none; } }
+
+/* A folded run of tool calls: one line in place of a dozen. */
+.tool-group { margin: 10px 0; border: 1px solid var(--line); border-radius: 8px; background: #fbfcfc; overflow: hidden; }
+.tool-group > summary { display: flex; align-items: center; gap: 9px; min-height: 48px; padding: 8px 11px; cursor: pointer; list-style: none; }
+.tool-group > summary::-webkit-details-marker { display: none; }
+.tool-group > summary > svg { flex-shrink: 0; color: #7d868a; transition: transform .15s ease; }
+.tool-group[open] > summary > svg { transform: rotate(180deg); }
+.tool-group-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 1px; }
+.tool-group-copy strong { font-size: 12.5px; font-weight: 550; color: #3f4a4c; }
+.tool-group-copy small { overflow: hidden; color: #7a8387; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.tool-group-body { padding: 0 11px; border-top: 1px solid var(--line); background: #fff; }
+.tool-group-body .tool-detail:first-child { border-top: 0; }
+.tool-group-body .tool-section pre { max-height: 240px; }
+/* While tools run, the folded line breathes so a wait does not look frozen. */
+.tool-group:has(.tool-dot.is-running) { border-color: #cfe3d7; background: #f7fbf8; }
 .tool-section { min-width: 0; padding-bottom: 12px; }
 .field-label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 5px; }
 .tool-section pre { padding: 10px 12px; background: #f5f6f6; overflow: auto; max-height: 360px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -316,6 +367,14 @@ pre { max-width: 100%; }
 .markdown-body code { padding: .12em .35em; border-radius: 3px; background: #f1f3f3; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; overflow-wrap: anywhere; }
 .markdown-body pre { margin: .7em 0; padding: 12px; border: 1px solid #e3e6e7; border-radius: 6px; background: #f5f6f6; overflow-x: auto; }
 .markdown-body pre code { padding: 0; background: none; font-size: 12px; line-height: 1.6; }
+/* Fenced blocks carry their own frame so the header and the code share one
+   edge; the inner pre drops the border it would otherwise double up. */
+.md-code { margin: .7em 0; border: 1px solid #e3e6e7; border-radius: 7px; background: #f5f6f6; overflow: hidden; }
+.md-code-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 6px 4px 12px; border-bottom: 1px solid #e7eaeb; background: #eff2f2; }
+.md-code-lang { overflow: hidden; color: #7b8489; font-size: 10.5px; letter-spacing: .02em; text-overflow: ellipsis; white-space: nowrap; }
+.md-code-copy { display: inline-flex; align-items: center; gap: 4px; min-height: 30px; padding: 0 9px; border-radius: 5px; background: transparent; color: #55605f; font-size: 11.5px; }
+.md-code-copy:hover { background: #e4e8e8; }
+.md-code pre { margin: 0; padding: 11px 12px; border: 0; border-radius: 0; background: transparent; }
 .markdown-body a { color: #1f6b45; text-decoration: underline; text-underline-offset: 2px; }
 .markdown-body hr { margin: 1em 0; border: 0; border-top: 1px solid var(--line); }
 .md-table-wrap { max-width: 100%; margin: .7em 0; overflow-x: auto; }
@@ -364,7 +423,12 @@ pre { max-width: 100%; }
 
 /* Session header metadata chips */
 .session-chip { display: inline-block; margin-left: 6px; padding: 1px 6px; border: 1px solid #dfe3e4; border-radius: 999px; background: #fafbfb; font-size: 10.5px; color: #5c666b; white-space: nowrap; }
-.header-copy .session-host-name { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+/* The pane's live state, first in the row of chips so it reads as the headline. */
+.session-chip.is-status { display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; }
+.session-chip.is-status.is-busy { border-color: #cfe3d7; background: #f1f8f3; color: #2b633f; }
+.session-chip.is-status.is-waiting { border-color: #eddcbc; background: #fdf7ec; color: #8a5a10; }
+.session-chip.is-status.is-done { border-color: #d6e2ec; background: #f3f7fa; color: #3f6d91; }
+.header-copy .session-host-name { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; }
 
 /* "waiting for the first token" indicator */
 .thinking { display: flex; align-items: center; gap: 9px; padding: 14px 2px 4px; color: #6b7378; font-size: 12.5px; }
@@ -381,7 +445,12 @@ pre { max-width: 100%; }
 
 .host-toggle { align-self: flex-start; min-height: 34px; padding: 0 2px; font-size: 12.5px; color: #4a555b; }
 .rename-form { display: flex; flex-direction: column; gap: 8px; }
-.rename-form input { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #d9dddf; border-radius: 6px; background: #fff; font-size: 16px; }
+/* `.host-sheet h2` carries the sheet-title look, which is too quiet here; the
+   rename sheet is a single field and reads better with a proper title. */
+.rename-form h2 { padding: 4px 0 10px; font-size: 17px; font-weight: 650; color: #25282b; }
+.rename-form input { width: 100%; min-height: 46px; padding: 11px 12px; border: 1px solid #d9dddf; border-radius: 8px; background: #fff; font-size: 16px; }
+.rename-form input:focus { border-color: #9dc0aa; outline: none; box-shadow: 0 0 0 3px rgb(43 99 63 / 10%); }
+.rename-form .field-hint { margin: 2px 0 0; }
 .rename-form .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .rename-form .primary-button, .rename-form .secondary-button { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 6px; font-weight: 550; }
 .rename-form .primary-button { color: #fff; background: #2b633f; }

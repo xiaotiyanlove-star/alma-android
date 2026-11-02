@@ -22,6 +22,12 @@ export function ScanPairing({ open, onClose, onScanned }: { open: boolean; onClo
   const [live, setLive] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
   const done = useRef(false)
+  // The callback is a fresh closure on every render of the parent. Keeping it
+  // in a ref means the camera effect below depends only on `open` — otherwise
+  // each render tore the stream down and started it again, flashing "正在打开
+  // 相机…" over and over and re-requesting the camera.
+  const scanned = useRef(onScanned)
+  scanned.current = onScanned
 
   useEffect(() => {
     if (!open) return
@@ -53,7 +59,7 @@ export function ScanPairing({ open, onClose, onScanned }: { open: boolean; onClo
             const link = decodeFrame(pixels.data, canvas.width, canvas.height)
             if (link) {
               done.current = true
-              onScanned(link)
+              scanned.current(link)
               return
             }
           } catch { /* one bad frame must not stop the loop */ }
@@ -85,7 +91,7 @@ export function ScanPairing({ open, onClose, onScanned }: { open: boolean; onClo
       cancelAnimationFrame(frame)
       stream?.getTracks().forEach((track) => track.stop())
     }
-  }, [open, onScanned])
+  }, [open])
 
   if (!open) return null
   return <div className="scan-backdrop" role="dialog" aria-modal="true" aria-label="扫描二维码">

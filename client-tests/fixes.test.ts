@@ -1,13 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-const store = new Map<string, string>()
-;(globalThis as any).localStorage = {
-  getItem: (key: string) => store.get(key) ?? null,
-  setItem: (key: string, value: string) => void store.set(key, value),
-  removeItem: (key: string) => void store.delete(key),
-}
-Object.defineProperty(globalThis, 'navigator', { value: { language: 'en-US' }, configurable: true, writable: true })
+import { localeStore as store } from './locale.ts'
 
 const { loadDraft, saveDraft, clearDraft } = await import('../client/drafts.ts')
 const { parseSessionInfo } = await import('../client/session-info.ts')

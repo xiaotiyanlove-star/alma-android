@@ -1,5 +1,6 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { CodeBlock } from './CodeBlock'
 
 /**
  * Rendered markdown for agent replies.
@@ -18,7 +19,9 @@ export function Markdown({ text }: { text: string }) {
         img: ({ src, alt }) => typeof src === 'string' && src.startsWith('data:image/')
           ? <img src={src} alt={alt ?? ''} loading="lazy" />
           : <span className="md-image-blocked">[图片：{alt || '外部图片已隐藏'}]</span>,
-        pre: ({ children }) => <pre tabIndex={0}>{children}</pre>,
+        // Fenced blocks get a header with a copy button; an indented block
+        // (no language) still does, because copying is the reason to have one.
+        pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
         code: ({ className, children }) => <code className={className}>{children}</code>,
         table: ({ children }) => <div className="md-table-wrap"><table>{children}</table></div>,
       }}
