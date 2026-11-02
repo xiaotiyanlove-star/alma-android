@@ -9,6 +9,31 @@ import { EncryptedTunnel, OperationUncertainError, type Transport, type TunnelSo
 
 type Page = { session_id?: string; page?: { items?: ChatItem[]; start?: number; end?: number }; queued?: { id: string; text: string }[]; error?: { code?: string; message?: string } }
 const message = (error: unknown) => error instanceof Error ? error.message : t('请求失败')
+
+/**
+ * The argv Herdr should start for a new session.
+ *
+ * A login shell resolves the agent through the user's own PATH (Homebrew and
+ * version managers are usually configured in a login profile). The agent is
+ * not `exec`ed: when it exits — or a binary is missing — the trailing
+ * interactive login shell takes over, so the pane stays a usable terminal
+ * instead of closing (Herdr removes a pane whose process exits).
+ */
+export function agentLaunchCommand(kind: string): string[] {
+  const executable = /^[a-z][a-z0-9-]{0,31}$/.test(kind) ? kind : 'claude'
+  return ['/bin/sh', '-lc', `${executable}; exec "\${SHELL:-/bin/sh}" -il`]
+}
+
+/**
+ * Whether a failure means "this desktop does not know the method" rather than
+ * "the method ran and refused". Herdr reports the former as a request error
+ * naming the method, and a desktop too old for it may not answer at all.
+ */
+function isUnknownMethod(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error)
+  return /unknown variant|unknown method|unsupported|not_implemented|invalid_request/i.test(text)
+}
+
 function merge(current: ChatItem[], incoming: ChatItem[], prepend = false): ChatItem[] {
   const all = new Map(current.map((item) => [item.id, item]))
   for (const item of incoming) all.set(item.id, item)
@@ -171,26 +196,60 @@ export class Controller {
   }
 
   /**
-   * Creates a new session: a Herdr tab (which yields one root pane) and an
-   * agent started inside it. `cwd` defaults to the directory the user is
-   * already working in.
+   * Creates a new session: a Herdr tab whose root pane runs the agent.
+   *
+   * The agent must not be launched with `agent.start`. That command only checks
+   * that the shell owns the foreground, not that the shell finished its rc
+   * files; a prompt written by an rc file (oh-my-zsh's update question, a p10k
+   * wizard) is still reading, so the first character of the typed command is
+   * swallowed and the rest — `laude` instead of `claude` — runs as a command.
+   * `layout.apply` starts the process directly with its own argv, so nothing is
+   * typed into a shell that may still be prompting.
+   *
+   * The command is the agent wrapped in a login shell that stays after it
+   * exits: closing the agent must leave a usable terminal, not a dead tab
+   * (a pane whose process exits is removed by Herdr).
    */
   newSession = async (hostId: string, options: { kind: string; cwd?: string; workspaceId?: string; label?: string }): Promise<{ paneId: string; workspaceId: string }> => {
-    const runtime = this.runtimes.get(hostId)
-    if (!runtime) throw new Error(t('节点不存在'))
+    if (!this.runtimes.has(hostId)) throw new Error(t('节点不存在'))
+    const command = agentLaunchCommand(options.kind)
+    try {
+      const created = await this.rpc<{
+        tab_id?: string; workspace_id?: string; focused_pane_id?: string
+        layout?: { tab_id?: string; workspace_id?: string; focused_pane_id?: string }
+      }>(hostId, 'layout.apply', {
+        ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}),
+        ...(options.label ? { tab_label: options.label } : {}),
+        focus: false,
+        root: { type: 'pane', ...(options.cwd ? { cwd: options.cwd } : {}), command },
+      })
+      const paneId = created?.focused_pane_id ?? created?.layout?.focused_pane_id
+      const workspaceId = created?.workspace_id ?? created?.layout?.workspace_id ?? options.workspaceId ?? ''
+      if (!paneId) throw new Error(t('无法创建会话'))
+      return { paneId, workspaceId }
+    } catch (error) {
+      // Desktops older than the layout API have no other way to start an agent,
+      // so fall back to the previous path. It may lose the first character to a
+      // shell that is still reading its rc files, which is why it is only the
+      // fallback and not the default.
+      if (!isUnknownMethod(error)) throw error
+      return this.legacyNewSession(hostId, options)
+    }
+  }
+
+  /** The pre-`layout.apply` path: create the tab, then type the agent in. */
+  private async legacyNewSession(hostId: string, options: { kind: string; cwd?: string; workspaceId?: string; label?: string }) {
     const created = await this.rpc<{ tab?: { tab_id?: string; workspace_id?: string }; root_pane?: { pane_id?: string; workspace_id?: string } }>(
-      hostId, 'tab.create', { ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}), ...(options.cwd ? { cwd: options.cwd } : {}), focus: false },
+      hostId, 'tab.create', { ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}), ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.label ? { label: options.label } : {}), focus: false },
     )
     const paneId = created?.root_pane?.pane_id
     const workspaceId = created?.root_pane?.workspace_id ?? created?.tab?.workspace_id ?? options.workspaceId ?? ''
     if (!paneId) throw new Error(t('无法创建会话'))
-    // agent.start needs a pane sitting at a shell prompt; it appears a moment
-    // after the tab is created, so retry the documented "not an available shell".
     let lastError: unknown
     for (let attempt = 0; attempt < 6; attempt++) {
       try {
         await this.rpc(hostId, 'agent.start', {
-          name: options.label || `${options.kind}-${Math.random().toString(16).slice(2, 8)}`,
+          name: `${options.kind}-${Math.random().toString(16).slice(2, 8)}`,
           kind: options.kind,
           pane_id: paneId,
           timeout_ms: 60_000,
@@ -203,6 +262,27 @@ export class Controller {
       }
     }
     throw lastError instanceof Error ? lastError : new Error(t('无法创建会话'))
+  }
+
+  /**
+   * Renames a session. The label lives on the Herdr tab, so the desktop shows
+   * it too, and the pane keeps its own label untouched.
+   */
+  renameSession = async (hostId: string, paneId: string, label: string) => {
+    const trimmed = label.trim().slice(0, 80)
+    const pane = this.state.hosts.find((item) => item.host.id === hostId)?.snapshot?.panes.find((item) => item.pane_id === paneId)
+    if (!pane?.tab_id) throw new Error(t('找不到会话'))
+    // An empty name clears the label, which restores Herdr's own title.
+    if (label.trim() && !trimmed) throw new Error(t('名称不能为空'))
+    await this.rpc(hostId, 'tab.rename', { tab_id: pane.tab_id, label: trimmed })
+    // Herdr pushes a fresh snapshot after a rename, but the list must not look
+    // unchanged while that round trip is in flight.
+    const snapshot = this.state.hosts.find((item) => item.host.id === hostId)?.snapshot
+    if (snapshot) {
+      this.patchHost(hostId, {
+        snapshot: { ...snapshot, tabs: (snapshot.tabs ?? []).map((tab) => tab.tab_id === pane.tab_id ? { ...tab, label: trimmed } : tab) },
+      })
+    }
   }
 
   /** Renames a paired desktop. The credential and connection are untouched. */

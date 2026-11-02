@@ -6,7 +6,7 @@ const page = await context.newPage()
 const errors: string[] = []
 page.on('pageerror', (error: Error) => errors.push(error.message))
 
-await page.goto('http://127.0.0.1:5174')
+await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
 await page.screenshot({ path: 'test-artifacts/settings-top.png' })
 
 // The settings page is the node screen; language/timezone live under 显示.

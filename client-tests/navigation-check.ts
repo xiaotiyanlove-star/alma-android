@@ -17,7 +17,7 @@ await page.addInitScript(() => {
   ;(window as any).__herdrExitApp = () => { (window as any).__exitCount++ }
 })
 
-await page.goto('http://127.0.0.1:5174')
+await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
 await page.waitForTimeout(600)
 await addDesktop(page, '节点一', link(41))
 await page.waitForTimeout(400)
