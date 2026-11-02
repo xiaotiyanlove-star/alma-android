@@ -180,13 +180,17 @@ export function makeCounterIv(counter: bigint): Uint8Array {
   return iv
 }
 
-export async function sealFrame(
+/**
+ * Seals already-encoded plaintext: `[12-byte nonce][AES-GCM ciphertext]`.
+ * Callers build the plaintext with `encodeInnerFrame`; keeping the codec out of
+ * here means a binary frame is never round-tripped through a string.
+ */
+export async function sealBytes(
   key: CryptoKey,
   counter: bigint,
-  frame: unknown,
+  plaintext: Uint8Array,
 ): Promise<Uint8Array> {
   const iv = makeCounterIv(counter)
-  const plaintext = encoder.encode(JSON.stringify(frame))
   const encrypted = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv: source(iv) },
     key,
@@ -195,10 +199,12 @@ export async function sealFrame(
   return concatBytes(iv, new Uint8Array(encrypted))
 }
 
-export async function openFrame<T = unknown>(
+/** Opens a sealed frame and returns the inner plaintext untouched. */
+export async function openBytes(
   key: CryptoKey,
   wire: Uint8Array,
-): Promise<T> {
+): Promise<Uint8Array> {
+  // 12-byte nonce + at least a 16-byte GCM tag.
   if (wire.length < 29) throw new Error('Encrypted relay frame is too short')
   const iv = wire.slice(0, 12)
   const plaintext = await crypto.subtle.decrypt(
@@ -206,7 +212,23 @@ export async function openFrame<T = unknown>(
     key,
     source(wire.slice(12)),
   )
-  return JSON.parse(decoder.decode(plaintext)) as T
+  return new Uint8Array(plaintext)
+}
+
+/** JSON frames, for tests and one-off probes that do not use the tunnel. */
+export async function sealFrame(
+  key: CryptoKey,
+  counter: bigint,
+  frame: unknown,
+): Promise<Uint8Array> {
+  return sealBytes(key, counter, encoder.encode(JSON.stringify(frame)))
+}
+
+export async function openFrame<T = unknown>(
+  key: CryptoKey,
+  wire: Uint8Array,
+): Promise<T> {
+  return JSON.parse(decoder.decode(await openBytes(key, wire))) as T
 }
 
 export const utf8 = encoder

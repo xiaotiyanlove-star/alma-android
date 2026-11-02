@@ -1,4 +1,5 @@
-import { base64url, constantTimeEqual, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, routingId, sealFrame } from './crypto'
+import { base64url, constantTimeEqual, createKeyPair, deriveSessionKeys, fromBase64url, openBytes, routingId, sealBytes } from './crypto'
+import { BINARY_FRAMES_FIELD, decodeInnerFrame, encodeInnerFrame } from './frames'
 import type { Host } from './model'
 
 type Frame = Record<string, any>
@@ -34,6 +35,8 @@ export class EncryptedTunnel implements Transport {
   private nonce = new Uint8Array(16)
   private keyPair?: Awaited<ReturnType<typeof createKeyPair>>
   private counter = 0n
+  /** Both sides offered binary inner frames during the handshake. */
+  private binary = false
   private ready = false
   private stopped = false
   private epoch = 0
@@ -65,6 +68,7 @@ export class EncryptedTunnel implements Transport {
     this.keyPair = pair
     this.nonce = crypto.getRandomValues(new Uint8Array(16))
     this.counter = 0n
+    this.binary = false
     this.keys = undefined
     this.incoming = Promise.resolve()
     this.outgoing = Promise.resolve()
@@ -73,7 +77,7 @@ export class EncryptedTunnel implements Transport {
     this.ws = socket
     socket.onopen = () => {
       if (epoch !== this.epoch) return
-      socket.send(JSON.stringify({ t: 'hi', epk: base64url(pair.publicKey), n: base64url(this.nonce) }))
+      socket.send(JSON.stringify({ t: 'hi', epk: base64url(pair.publicKey), n: base64url(this.nonce), [BINARY_FRAMES_FIELD]: 1 }))
     }
     socket.onmessage = ({ data }) => {
       this.incoming = this.incoming.then(async () => {
@@ -87,7 +91,10 @@ export class EncryptedTunnel implements Transport {
           const keys = await deriveSessionKeys({ connectCode: this.host.connectCode, myPrivateKey: pair.privateKey, peerPublic: peer, initiatorPublic: pair.publicKey, responderPublic: peer, initiatorNonce: this.nonce, responderNonce: nonce })
           if (epoch !== this.epoch) return
           if (!constantTimeEqual(fromBase64url(hello.cr), keys.confirmResponder)) throw new Error('配对验证失败，请重新导入配对链接')
-          socket.send(JSON.stringify({ t: 'ok', ci: base64url(keys.confirmInitiator) }))
+          // The desktop echoes `bin: 1` only when it supports the binary form;
+          // without it we keep sending JSON, which every peer understands.
+          this.binary = hello[BINARY_FRAMES_FIELD] === 1
+          socket.send(JSON.stringify({ t: 'ok', ci: base64url(keys.confirmInitiator), ...(this.binary ? { [BINARY_FRAMES_FIELD]: 1 } : {}) }))
           this.keys = keys
           this.ready = true
           clearTimeout(this.handshakeTimer)
@@ -98,7 +105,7 @@ export class EncryptedTunnel implements Transport {
           if (typeof data === 'string') throw new Error('收到未加密的数据帧')
           const bytes = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : null
           if (!bytes || bytes.length > 32 * 1024 * 1024) throw new Error('数据帧无效或过大')
-          const frame = await openFrame(this.keys!.s2c, bytes)
+          const frame = decodeInnerFrame(await openBytes(this.keys!.s2c, bytes))
           if (epoch === this.epoch) this.handle(frame as Frame)
         }
       }).catch((error) => { if (epoch === this.epoch) this.fail(error instanceof Error ? error : new Error('加密数据错误')) })
@@ -110,7 +117,7 @@ export class EncryptedTunnel implements Transport {
     const epoch = this.epoch
     const next = this.outgoing.then(async () => {
       if (!this.ready || !this.keys || !this.ws || epoch !== this.epoch) throw new Error('连接已断开')
-      const wire = await sealFrame(this.keys.c2s, this.counter++, frame)
+      const wire = await sealBytes(this.keys.c2s, this.counter++, encodeInnerFrame(frame, this.binary))
       if (epoch !== this.epoch || !this.ready) throw new Error('连接已断开')
       this.ws.send(wire)
     })
@@ -133,7 +140,9 @@ export class EncryptedTunnel implements Transport {
       this.pending.set(id, pending)
       // Mark conservatively before send: a transport exception cannot prove non-delivery.
       pending.sent = true
-      void this.send({ t: 'hreq', id, method: mutation ? 'POST' : 'GET', path, headers: mutation ? { 'content-type': 'application/json' } : {}, ...(mutation ? { b: base64url(new TextEncoder().encode(JSON.stringify(body))) } : {}) }).catch(() => {
+      // The body stays bytes; `encodeInnerFrame` picks base64 or the binary form.
+      const payload = mutation ? new TextEncoder().encode(JSON.stringify(body)) : undefined
+      void this.send({ t: 'hreq', id, method: mutation ? 'POST' : 'GET', path, headers: mutation ? { 'content-type': 'application/json' } : {}, ...(payload ? { b: payload } : {}) }).catch(() => {
         if (!this.pending.delete(id)) return
         clearTimeout(timer)
         reject(mutation ? new OperationUncertainError() : new Error('请求未完成，连接已断开'))
@@ -157,8 +166,10 @@ export class EncryptedTunnel implements Transport {
     if (pending) {
       if (frame.t === 'hres') pending.status = Number(frame.status)
       if (frame.t === 'hchunk') {
-        pending.chunks.push(fromBase64url(frame.b))
-        if (pending.chunks.reduce((n, chunk) => n + chunk.length, 0) > 32 * 1024 * 1024) { this.fail(new Error('接口响应过大')); return }
+        const chunk = typeof frame.b === 'string' ? fromBase64url(frame.b) : frame.b
+        if (!(chunk instanceof Uint8Array)) { this.fail(new Error('接口响应格式无效')); return }
+        pending.chunks.push(chunk)
+        if (pending.chunks.reduce((n, part) => n + part.length, 0) > 32 * 1024 * 1024) { this.fail(new Error('接口响应过大')); return }
       }
       if (frame.t === 'hend' || frame.t === 'herr') {
         this.pending.delete(id); clearTimeout(pending.timer)
