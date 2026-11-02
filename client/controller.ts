@@ -448,6 +448,30 @@ export class Controller {
     finally { this.patchSession(epoch, { sending: false }) }
   }
   sendMessage = async (text: string) => { if (text.trim()) await this.mutate('agent.prompt', (s) => ({ target: s.paneId, text })) }
+  /**
+   * Runs one of the agent's own slash commands.
+   *
+   * The command is typed into the terminal, not sent as a prompt, so the agent
+   * handles it exactly as if the user had typed it. Anything it prints arrives
+   * on the screen stream, which is why the caller switches to the terminal.
+   */
+  runCommand = async (command: string) => {
+    const text = command.trim()
+    if (!text.startsWith('/')) throw new Error(t('只支持斜杠命令'))
+    const session = this.state.session, epoch = this.sessionEpoch
+    if (!session) throw new Error(t('没有打开的会话'))
+    if (session.sending) return
+    if (session.uncertain) throw new Error(session.uncertain)
+    this.patchSession(epoch, { sending: true, error: undefined })
+    try {
+      await this.rpc(session.hostId, 'pane.send_text', { pane_id: session.paneId, text })
+      if (epoch === this.sessionEpoch) await this.readScreen()
+    } catch (error) {
+      this.patchSession(epoch, { error: message(error), ...(error instanceof OperationUncertainError ? { uncertain: message(error) } : {}) })
+      throw error
+    } finally { this.patchSession(epoch, { sending: false }) }
+  }
+
   sendKeys = async (keys: string[]) => {
     const names: Record<string, string> = { Up: 'up', Down: 'down', Left: 'left', Right: 'right', Enter: 'enter', Escape: 'esc', 'C-c': 'ctrl+c' }
     if (!keys.length || keys.length > 20 || keys.some((key) => !names[key])) throw new Error(t('不支持的终端按键'))

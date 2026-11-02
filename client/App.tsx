@@ -19,6 +19,8 @@ import { back, closeOverlay, openOverlay, push, replace, useOverlay, useRoute } 
 import { DROP_AFTER_MS, initialState, step } from './lifecycle';
 import { stopMessage } from './backoff';
 import { parseSessionInfo } from './session-info';
+import { backgroundAgents } from './subagents';
+import { commandsFor, filterCommands, slashQuery } from './commands';
 import { formatTime, localeChoice, setLocaleChoice, timeZoneChoice, setTimeZoneChoice, resolvedTimeZone, resolvedLocale, COMMON_ZONES, markdownEnabled, setMarkdownEnabled, type LocaleChoice } from './prefs';
 import type { AppState, ChatItem, HostState, Pane, SessionState } from './model';
 import './styles.css';
@@ -581,6 +583,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   const [awaitingReply, setAwaitingReply] = useState(false);
   const [attachments, setAttachments] = useState<{ id: string; file: File; state: 'pending' | 'uploading' | 'done' | 'failed'; path?: string; error?: string }[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [agentsOpen, setAgentsOpen] = useState(false);
   const sentAtCount = useRef(-1);
   const composing = useRef(false);
   const actionLock = useRef(false);
@@ -592,6 +595,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   const terminal = session.unsupported || mode === 'terminal';
   // Any newly arrived item means the agent has produced something.
   const info = useMemo(() => parseSessionInfo(stripAnsi(session.screen ?? '')), [session.screen]);
+  const agents = useMemo(() => backgroundAgents(session.items), [session.items]);
   const itemCount = session.items.length;
   // Count captured when the message was sent; later growth clears the hint.
   useEffect(() => {
@@ -599,6 +603,13 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   }, [itemCount, awaitingReply]);
   const prompt = useMemo(() => terminal ? null : parsePrompt(stripAnsi(session.screen ?? '')), [terminal, session.screen]);
   const pane = host?.snapshot?.panes.find(item => item.pane_id === session.paneId);
+  // The picker appears only while the composer holds a bare `/word`.
+  const query = slashQuery(draft);
+  const availableCommands = useMemo(
+    () => filterCommands(commandsFor(pane?.agent ?? pane?.agent_session?.agent), query ?? ''),
+    [pane?.agent, pane?.agent_session?.agent, query],
+  );
+  const commandOpen = query !== null && availableCommands.length > 0 && !terminal;
   const disabled = !ready || busy || session.sending || session.loading || Boolean(session.uncertain);
 
   useLayoutEffect(() => {
@@ -716,6 +727,21 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     } finally { setBusy(false); actionLock.current = false; }
   }
 
+  async function runCommand(command: string) {
+    actionLock.current = true
+    setBusy(true)
+    setLocalError('')
+    try {
+      await controller.runCommand(command)
+      setDraft('')
+      saveDraft(session.hostId, session.paneId, '')
+      // The reply arrives on the terminal stream, so show it there.
+      switchMode('terminal')
+    } catch {
+      setLocalError(t('命令未能发送，请检查终端。'))
+    } finally { setBusy(false); actionLock.current = false }
+  }
+
   async function answer(optionNumber: number) {
     if (!prompt || busy || session.sending || session.uncertain) return
     actionLock.current = true
@@ -763,6 +789,9 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     <header className="page-header conversation-header"><button className="icon-button" title={t('返回会话')} aria-label={t('返回会话')} onClick={() => { controller.backToSessions(); back() }}><ArrowLeft size={21} /></button><div className="header-copy"><h1>{paneTitle(pane)}</h1><p className="session-host-name"><Server size={13} aria-hidden="true" />{host?.host.name || t('未知节点')}
         {info.model && <span className="session-chip" title={t('当前模型')}>{info.model}</span>}
         {info.contextLabel && <span className="session-chip" title={info.contextRatio === undefined ? t('上下文用量') : `${t('上下文已用')} ${Math.round((info.contextRatio ?? 0) * 100)}%`}>{t('上下文')} {info.contextLabel}</span>}
+        {agents.length > 0 && <button type="button" className="session-chip is-agents" onClick={() => setAgentsOpen(true)} title={t('查看运行中的 agent')}>
+          <span className="agents-dot" aria-hidden="true" />{agents.length} {t('个 agent 运行中')}
+        </button>}
       </p></div>{host && <Status host={host} />}</header>
     <div className="view-toolbar"><div className="view-tabs" role="tablist" aria-label={t('会话视图')}><button role="tab" id="messages-tab" aria-controls="session-content" aria-selected={!terminal} disabled={session.unsupported} className={!terminal ? 'is-active' : ''} onClick={() => switchMode('messages')}><MessageSquare size={16} />{t('消息')}</button><button role="tab" id="terminal-tab" aria-controls="session-content" aria-selected={terminal} className={terminal ? 'is-active' : ''} onClick={() => switchMode('terminal')}><Terminal size={16} />{t('终端')}</button></div>{terminal ? <div className="terminal-options"><button className={`icon-button ${wrap ? 'is-active' : ''}`} title={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-label={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-pressed={wrap} onClick={() => setWrap(value => !value)}><WrapText size={18} /></button><button className="icon-button" title={t('刷新终端')} aria-label={t('刷新终端')} disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={18} className={refreshing ? 'spin' : ''} /></button></div>
       : <div className="message-options"><button className="text-toggle" aria-pressed={markdown} title={markdown ? '显示 Markdown 源码' : '渲染 Markdown'} onClick={() => { const next = !markdown; setMarkdown(next); setMarkdownEnabled(next) }}>{markdown ? <FileCode size={15} /> : <FileText size={15} />}{markdown ? '源码' : '渲染'}</button></div>}</div>
@@ -792,6 +821,16 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
       </div>
       <p className="prompt-hint">{t('点击后会重新核对终端内容，若问题已变化将取消。也可以在终端里直接操作。')}</p>
     </div>}
+    {agentsOpen && <div className="sheet-backdrop" role="presentation" onClick={() => setAgentsOpen(false)}>
+      <div className="host-sheet" role="dialog" aria-modal="true" aria-label={t('运行中的 agent')} onClick={(event) => event.stopPropagation()}>
+        <h2>{agents.length} {t('个 agent 运行中')}</h2>
+        <ul className="agents-list">{agents.map((agent) => <li key={agent.id} className="agents-row">
+          <span className="agents-dot" aria-hidden="true" />
+          <span className="agents-copy"><strong>{agent.title}</strong>{agent.kind && <small>{agent.kind}</small>}</span>
+        </li>)}</ul>
+        <button type="button" className="secondary-button sheet-cancel" onClick={() => setAgentsOpen(false)}>{t('关闭')}</button>
+      </div>
+    </div>}
     <div className="transcript-shell">
       <div ref={scroll} id="session-content" className={`transcript-scroll ${terminal ? 'terminal-scroll' : ''}`} role="tabpanel" aria-labelledby={terminal ? 'terminal-tab' : 'messages-tab'} aria-busy={session.loading} onScroll={trackScroll} tabIndex={0}>
         {terminal ? <>{session.loading && !session.screen && <Loading label={t('正在读取终端…')} />}{session.screen ? <pre className={`terminal-screen ${wrap ? 'is-wrapped' : ''}`} tabIndex={0} aria-label={t('终端画面')}>{stripAnsi(session.screen)}</pre> : !session.loading && <EmptyState icon={<Terminal size={28} />} title={session.error ? t('终端画面暂不可用') : t('尚无终端画面')}><button className="secondary-button" disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={16} />{t('读取终端')}</button></EmptyState>}</> : <>
@@ -816,6 +855,15 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
       <button className="key-button" title={t('发送退出键')} disabled={disabled} onClick={() => void sendKey('Escape')}>Esc</button>
       <button className="key-button interrupt-key" title={t('中断当前终端任务')} disabled={disabled} onClick={() => void sendKey('C-c')}><Square size={13} /><span>Ctrl+C</span></button>
     </div>}
+    {commandOpen && <ul className="command-picker" role="listbox" aria-label={t('命令')}>
+      {availableCommands.map((command) => <li key={command.name}>
+        <button type="button" role="option" aria-selected={false} className="command-option" onClick={() => void runCommand(command.label)}>
+          <span className="command-label">{command.label}</span>
+          <span className="command-hint">{t(command.hint)}</span>
+          {command.risk === 'menu' && <span className="command-badge">{t('菜单')}</span>}
+        </button>
+      </li>)}
+    </ul>}
     {!terminal && attachments.length > 0 && <ul className="attachment-tray">
       {attachments.map((item) => <li key={item.id} className={`attachment-chip is-${item.state}`}>
         <Paperclip size={13} aria-hidden="true" />

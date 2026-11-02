@@ -51,7 +51,9 @@ export function checkFile(name: string, size: number, existing: number): string 
  */
 export function buildMessage(text: string, files: UploadedFile[]): string {
   if (!files.length) return text
+  // One path per line with a blank line before the list, so markdown renders
+  // it as its own block instead of running into the sentence above.
   const listing = files.map((file) => `- ${file.path}`).join('\n')
   const body = text.trim()
-  return body ? `${body}\n\n附件：\n${listing}` : `附件：\n${listing}`
+  return body ? `${body}\n\n附件：\n\n${listing}` : `附件：\n\n${listing}`
 }

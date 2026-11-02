@@ -28,7 +28,7 @@ test('the message carries the returned desktop paths', () => {
     { path: '/Users/x/cache/attachment-def.png', name: 'b.png', size: 2, renamed: true },
   ])
   assert.match(text, /^看下这个/)
-  assert.match(text, /\/Users\/x\/cache\/attachment-abc\.pdf/)
+  assert.match(text, /\n\n附件：\n\n- \/Users\/x\/cache\/attachment-abc\.pdf/)
   assert.match(text, /\/Users\/x\/cache\/attachment-def\.png/)
 })
 
