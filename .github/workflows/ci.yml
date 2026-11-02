@@ -3,11 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']   # a tag push is what publishes a Release
   pull_request:
   workflow_dispatch:
 
-# Read-only by default. The build job needs nothing else; a release job would
-# add `contents: write` explicitly rather than widening this.
+# Read-only by default; only the publishing job widens it, and only for itself.
 permissions:
   contents: read
 
@@ -31,6 +31,8 @@ jobs:
   android:
     name: Debug APK
     needs: check
+    # A tag run publishes its own APK; building a second one here is wasted work.
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,14 +77,15 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # A release build needs the keystore, which lives in repository secrets.
-  # Until those exist this job would silently produce nothing, so it is gated
-  # on the secret being present rather than failing every run.
+  # Publishing needs `contents: write` to create the Release. Scoped to this job
+  # only; the build jobs above stay read-only.
   android-release:
-    name: Release APK (signed, tags only)
+    name: Publish APK (tags only)
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: check
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
@@ -106,6 +109,12 @@ jobs:
 
       - run: npm ci
 
+      - name: Build web application
+        run: npm run build:web
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
       - name: Decode keystore
         if: env.HAS_KEYSTORE == 'true'
         run: |
@@ -114,6 +123,10 @@ jobs:
           echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode \
             > "$RUNNER_TEMP/keystore/release.jks"
 
+      # With a keystore: a properly signed release APK, which is what lets users
+      # upgrade in place across versions. Without one: the debug APK, which
+      # installs fine but is signed with the public debug key. An unsigned
+      # `assembleRelease` output would install nowhere, so it is never shipped.
       - name: Build signed release APK
         if: env.HAS_KEYSTORE == 'true'
         env:
@@ -121,28 +134,59 @@ jobs:
           ALMA_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ALMA_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ALMA_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          npm run build:web
-          npx cap sync android
-          ./android/gradlew -p android assembleRelease
+        run: ./android/gradlew -p android assembleRelease
 
-      - name: Verify the APK is signed with a release key
-        if: env.HAS_KEYSTORE == 'true'
-        run: |
-          set -euo pipefail
-          apk=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
-          test -n "$apk" || { echo "no release APK produced" >&2; exit 1; }
-          apksigner verify --verbose --print-certs "$apk"
-
-      - name: Note the missing keystore
+      - name: Build debug APK
         if: env.HAS_KEYSTORE != 'true'
         run: |
-          echo "::notice::Release APK skipped: ANDROID_KEYSTORE_BASE64 is not set."
+          echo "::notice::No keystore configured; publishing a debug-signed APK."
+          ./android/gradlew -p android assembleDebug
+
+      # Android refuses to install an APK with no signature at all, so this
+      # guards against a misconfigured signingConfig shipping a broken file.
+      - name: Verify the APK is signed
+        run: |
+          set -euo pipefail
+          if [ "$HAS_KEYSTORE" = "true" ]; then
+            apk=$(find android/app/build/outputs/apk/release -name 'app-release.apk' | head -1)
+            kind=release
+          else
+            apk=$(find android/app/build/outputs/apk/debug -name 'app-debug.apk' | head -1)
+            kind=debug
+          fi
+          test -n "$apk" || { echo "no $kind APK produced" >&2; exit 1; }
+          apksigner verify --verbose --print-certs "$apk"
+
+      - name: Collect APK
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [ "$HAS_KEYSTORE" = "true" ]; then
+            src=$(find android/app/build/outputs/apk/release -name 'app-release.apk' | head -1)
+            name="alma-android-${tag}.apk"
+          else
+            src=$(find android/app/build/outputs/apk/debug -name 'app-debug.apk' | head -1)
+            name="alma-android-${tag}-debug.apk"
+          fi
+          mkdir -p dist
+          cp "$src" "dist/$name"
+          ( cd dist && sha256sum "$name" > "$name.sha256" )
+          echo "APK_NAME=$name" >> "$GITHUB_ENV"
+
+      # A public Release asset: no login, no expiry, unlike an Actions artifact.
+      - name: Create release
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/${APK_NAME}#Android APK" \
+            "dist/${APK_NAME}.sha256#SHA-256 checksum" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/upload-artifact@v4
-        if: env.HAS_KEYSTORE == 'true'
         with:
-          name: alma-herdr-release-apk
-          path: android/app/build/outputs/apk/release/*.apk
+          name: alma-herdr-apk
+          path: dist/*
           if-no-files-found: error
