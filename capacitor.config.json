@@ -1,6 +1,6 @@
 {
   "appId": "local.almaandroid.herdr",
-  "appName": "Herdr Remote",
+  "appName": "Alma Android",
   "webDir": "client-dist",
   "android": {
     "allowMixedContent": false,

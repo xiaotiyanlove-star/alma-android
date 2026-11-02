@@ -1,5 +1,6 @@
 import { chromium, expect } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
+import { addDesktop } from './helpers.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, routingId, sealFrame } from '../client/crypto.ts'
 const codes = [base64url(new Uint8Array(32).fill(2)), base64url(new Uint8Array(32).fill(3))]
 const names = ['工作电脑 · 中文长名称与会话测试', '家用电脑']
@@ -7,7 +8,8 @@ const ids = await Promise.all(codes.map(routingId))
 const messages = ['测试历史：中文长路径 /Users/example/Projects/a-very-long-project-name-without-spaces-and-with-code，用于检查窄屏换行。\n```ts\nconst example = "long-code-line-without-wrapping";\n```', '来自第二台电脑的会话内容']
 const calls: { host: number; method: string; params: any }[] = []
 const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
-const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 })
+const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'zh-CN' })
+await context.addInitScript(() => { try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch {} })
 const page = await context.newPage()
 const errors: string[] = []
 page.on('pageerror', (error) => errors.push(error.message))
@@ -51,14 +53,15 @@ const screenshots = '/private/tmp/alma-android-dev/test-artifacts'
 await mkdir(screenshots, { recursive: true })
 try {
   await page.goto('http://127.0.0.1:5174')
-  await expect(page.getByText('尚未添加节点')).toBeVisible()
+  await expect(page.getByText('尚未添加节点').first()).toBeVisible()
   await page.screenshot({ path: `${screenshots}/nodes-empty.png` })
   for (let index = 0; index < 2; index++) {
-    if (index) { await page.getByRole('button', { name: '节点设置' }).click(); await page.getByRole('button', { name: '添加节点', exact: true }).first().click() }
-    await page.getByLabel('节点名称', { exact: true }).fill(names[index])
-    await page.getByLabel('配对链接', { exact: true }).fill(`alma://connect?u=https://relay.invalid&k=${codes[index]}&e2e=1`)
-    await page.getByRole('button', { name: '添加节点', exact: true }).last().click()
-    if (index) await page.getByRole('button', { name: '返回会话', exact: true }).click()
+    if (index) await page.getByRole('button', { name: '节点设置' }).click()
+    await addDesktop(page, names[index], `alma://connect?u=https://relay.invalid&k=${codes[index]}&e2e=1`)
+    // Saving returns to settings; go back to the list to check the current node.
+    if (await page.getByRole('button', { name: '返回会话', exact: true }).isVisible().catch(() => false)) {
+      await page.getByRole('button', { name: '返回会话', exact: true }).click()
+    }
     await expect(page.getByRole('button', { name: '当前节点' })).toContainText(names[index])
   }
   await page.getByRole('button', { name: '当前节点' }).click()

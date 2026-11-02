@@ -1,5 +1,6 @@
 import { base64url, constantTimeEqual, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, routingId, sealFrame } from './crypto'
 import type { Host } from './model'
+import { t } from './i18n'
 
 type Frame = Record<string, any>
 export interface SocketLike {
@@ -20,9 +21,11 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>; resolve(value: unknown): void; reject(error: Error): void
 }
 interface Subscription { path: string; receive(frame: Frame): void; onClose(): void }
+/** Extra options for requests whose payload is not a JSON body. */
+export interface RequestInit2 { raw?: Uint8Array; headers?: Record<string, string> }
 export interface Transport {
   connect(): Promise<void>
-  request<T>(path: string, body?: unknown): Promise<T>
+  request<T>(path: string, body?: unknown, init?: RequestInit2): Promise<T>
   subscribe(path: string, receive: (frame: Frame) => void, onClose: () => void): TunnelSocket
   close(): void
 }
@@ -55,7 +58,7 @@ export class EncryptedTunnel implements Transport {
     this.status('connecting')
     const promise = new Promise<void>((resolve, reject) => { this.connectResolve = resolve; this.connectReject = reject })
     this.connectPromise = promise
-    this.handshakeTimer = setTimeout(() => this.fail(new Error('加密连接超时，请检查桌面和中继是否在线')), this.timeoutMs)
+    this.handshakeTimer = setTimeout(() => this.fail(new Error(t('加密连接超时，请检查桌面和中继是否在线'))), this.timeoutMs)
     void this.dial(epoch).catch((error) => { if (epoch === this.epoch) this.fail(error instanceof Error ? error : new Error('连接失败')) })
     return promise
   }
@@ -81,12 +84,12 @@ export class EncryptedTunnel implements Transport {
         if (!this.ready) {
           if (typeof data !== 'string') throw new Error('无效的加密握手')
           const hello = JSON.parse(data)
-          if (hello.t !== 'hi' || typeof hello.epk !== 'string' || typeof hello.n !== 'string' || typeof hello.cr !== 'string') throw new Error('桌面拒绝或不支持此握手')
+          if (hello.t !== 'hi' || typeof hello.epk !== 'string' || typeof hello.n !== 'string' || typeof hello.cr !== 'string') throw new Error(t('桌面拒绝或不支持此握手'))
           const peer = fromBase64url(hello.epk), nonce = fromBase64url(hello.n)
           if (peer.length !== 65 || nonce.length !== 16) throw new Error('握手参数长度无效')
           const keys = await deriveSessionKeys({ connectCode: this.host.connectCode, myPrivateKey: pair.privateKey, peerPublic: peer, initiatorPublic: pair.publicKey, responderPublic: peer, initiatorNonce: this.nonce, responderNonce: nonce })
           if (epoch !== this.epoch) return
-          if (!constantTimeEqual(fromBase64url(hello.cr), keys.confirmResponder)) throw new Error('配对验证失败，请重新导入配对链接')
+          if (!constantTimeEqual(fromBase64url(hello.cr), keys.confirmResponder)) throw new Error(t('配对验证失败，请重新导入配对链接'))
           socket.send(JSON.stringify({ t: 'ok', ci: base64url(keys.confirmInitiator) }))
           this.keys = keys
           this.ready = true
@@ -95,29 +98,33 @@ export class EncryptedTunnel implements Transport {
           this.connectResolve = undefined; this.connectReject = undefined
           this.status('online')
         } else {
-          if (typeof data === 'string') throw new Error('收到未加密的数据帧')
+          if (typeof data === 'string') throw new Error(t('收到未加密的数据帧'))
           const bytes = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : null
           if (!bytes || bytes.length > 32 * 1024 * 1024) throw new Error('数据帧无效或过大')
           const frame = await openFrame(this.keys!.s2c, bytes)
           if (epoch === this.epoch) this.handle(frame as Frame)
         }
-      }).catch((error) => { if (epoch === this.epoch) this.fail(error instanceof Error ? error : new Error('加密数据错误')) })
+      }).catch((error) => { if (epoch === this.epoch) this.fail(error instanceof Error ? error : new Error(t('加密数据错误'))) })
     }
-    socket.onerror = () => { if (epoch === this.epoch) this.fail(new Error('中继连接失败')) }
-    socket.onclose = () => { if (epoch === this.epoch) this.fail(new Error('连接已断开')) }
+    socket.onerror = () => { if (epoch === this.epoch) this.fail(new Error(t('中继连接失败'))) }
+    socket.onclose = () => { if (epoch === this.epoch) this.fail(new Error(t('连接已断开'))) }
   }
   private send(frame: Frame): Promise<void> {
     const epoch = this.epoch
     const next = this.outgoing.then(async () => {
-      if (!this.ready || !this.keys || !this.ws || epoch !== this.epoch) throw new Error('连接已断开')
+      if (!this.ready || !this.keys || !this.ws || epoch !== this.epoch) throw new Error(t('连接已断开'))
       const wire = await sealFrame(this.keys.c2s, this.counter++, frame)
-      if (epoch !== this.epoch || !this.ready) throw new Error('连接已断开')
+      if (epoch !== this.epoch || !this.ready) throw new Error(t('连接已断开'))
       this.ws.send(wire)
     })
     this.outgoing = next.catch(() => undefined)
     return next
   }
-  async request<T>(path: string, body?: unknown): Promise<T> {
+  /**
+   * `raw` sends the bytes as-is (used for uploads, where the desktop reads the
+   * body rather than a JSON wrapper). Callers supply the content type.
+   */
+  async request<T>(path: string, body?: unknown, init?: RequestInit2): Promise<T> {
     await this.connect()
     const id = crypto.randomUUID()
     return new Promise<T>((resolve, reject) => {
@@ -126,14 +133,16 @@ export class EncryptedTunnel implements Transport {
         const pending = this.pending.get(id)
         if (!pending) return
         this.pending.delete(id)
-        reject(pending.mutation && pending.sent ? new OperationUncertainError() : new Error('桌面接口超时'))
+        reject(pending.mutation && pending.sent ? new OperationUncertainError() : new Error(t('桌面接口超时')))
         void this.send({ t: 'hcancel', id }).catch(() => undefined)
       }, this.timeoutMs)
       const pending: Pending = { mutation, sent: false, status: 0, chunks: [], timer, resolve: resolve as (value: unknown) => void, reject }
       this.pending.set(id, pending)
       // Mark conservatively before send: a transport exception cannot prove non-delivery.
       pending.sent = true
-      void this.send({ t: 'hreq', id, method: mutation ? 'POST' : 'GET', path, headers: mutation ? { 'content-type': 'application/json' } : {}, ...(mutation ? { b: base64url(new TextEncoder().encode(JSON.stringify(body))) } : {}) }).catch(() => {
+      const payload = init?.raw ?? (mutation ? new TextEncoder().encode(JSON.stringify(body)) : undefined)
+      const headers = init?.raw ? { ...(init.headers ?? {}) } : mutation ? { 'content-type': 'application/json' } : {}
+      void this.send({ t: 'hreq', id, method: payload ? 'POST' : 'GET', path, headers, ...(payload ? { b: base64url(payload) } : {}) }).catch(() => {
         if (!this.pending.delete(id)) return
         clearTimeout(timer)
         reject(mutation ? new OperationUncertainError() : new Error('请求未完成，连接已断开'))
@@ -158,17 +167,17 @@ export class EncryptedTunnel implements Transport {
       if (frame.t === 'hres') pending.status = Number(frame.status)
       if (frame.t === 'hchunk') {
         pending.chunks.push(fromBase64url(frame.b))
-        if (pending.chunks.reduce((n, chunk) => n + chunk.length, 0) > 32 * 1024 * 1024) { this.fail(new Error('接口响应过大')); return }
+        if (pending.chunks.reduce((n, chunk) => n + chunk.length, 0) > 32 * 1024 * 1024) { this.fail(new Error(t('接口响应过大'))); return }
       }
       if (frame.t === 'hend' || frame.t === 'herr') {
         this.pending.delete(id); clearTimeout(pending.timer)
-        if (frame.t === 'herr') { pending.reject(pending.mutation ? new OperationUncertainError() : new Error('桌面转发请求失败')); return }
+        if (frame.t === 'herr') { pending.reject(pending.mutation ? new OperationUncertainError() : new Error(t('桌面转发请求失败'))); return }
         const bytes = new Uint8Array(pending.chunks.reduce((n, c) => n + c.length, 0))
         let offset = 0
         for (const chunk of pending.chunks) { bytes.set(chunk, offset); offset += chunk.length }
         // A sent mutation may already have run even when the response is an error.
         if (pending.status < 200 || pending.status >= 300) { pending.reject(pending.mutation ? new OperationUncertainError() : new Error(`桌面接口返回 HTTP ${pending.status}`)); return }
-        try { pending.resolve(bytes.length ? JSON.parse(new TextDecoder().decode(bytes)) : null) } catch { pending.reject(pending.mutation ? new OperationUncertainError() : new Error('桌面接口返回格式无效')) }
+        try { pending.resolve(bytes.length ? JSON.parse(new TextDecoder().decode(bytes)) : null) } catch { pending.reject(pending.mutation ? new OperationUncertainError() : new Error(t('桌面接口返回格式无效'))) }
       }
       return
     }

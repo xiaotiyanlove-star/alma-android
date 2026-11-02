@@ -4,5 +4,15 @@ export interface Workspace { workspace_id: string; label?: string; name?: string
 export interface Snapshot { panes: Pane[]; workspaces: Workspace[]; tabs?: unknown[] }
 export interface ChatItem { id: string; kind: string; text?: string; summary?: string; from?: string; tool?: { id?: string; name?: string; input?: unknown; output?: unknown; done?: boolean }; time?: string }
 export interface SessionState { hostId: string; paneId: string; sessionId?: string; items: ChatItem[]; start: number; end: number; queued: { id: string; text: string }[]; loading: boolean; loadingOlder: boolean; screen: string; error?: string; unsupported: boolean; sending: boolean; uncertain?: string }
-export interface HostState { host: Host; status: 'offline' | 'connecting' | 'online' | 'error'; herdrOnline: boolean; snapshot?: Snapshot; error?: string }
+export interface HostState {
+  host: Host
+  status: 'offline' | 'connecting' | 'online' | 'error'
+  herdrOnline: boolean
+  snapshot?: Snapshot
+  error?: string
+  /** Automatic retries still available; 0 means it stopped. */
+  retriesLeft?: number
+  /** Set when the retry ladder deliberately stopped. */
+  stopReason?: 'exhausted' | 'auth' | 'unknown-host'
+}
 export interface AppState { hosts: HostState[]; loading: boolean; storageWarning?: string; selectedHostId?: string; selectedPaneId?: string; session?: SessionState; error?: string }

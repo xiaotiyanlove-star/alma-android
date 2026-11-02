@@ -1,4 +1,5 @@
 import { chromium } from '@playwright/test'
+import { addDesktop } from './helpers.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, routingId, sealFrame } from '../client/crypto.ts'
 
 const code = base64url(new Uint8Array(32).fill(9))
@@ -12,7 +13,9 @@ const MENU = [
 ].join('\n')
 
 const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
-const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
+await context.addInitScript(() => { try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch {} })
+const page = await context.newPage()
 const errors: string[] = []
 page.on('pageerror', (error: Error) => errors.push(error.message))
 const sent: string[] = []
@@ -74,10 +77,7 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
 
 try {
   await page.goto('http://127.0.0.1:5174')
-  await page.getByRole('button', { name: '添加节点', exact: true }).first().click()
-  await page.getByLabel('节点名称', { exact: true }).fill('权限节点')
-  await page.getByLabel('配对链接', { exact: true }).fill(`alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
-  await page.getByRole('button', { name: '添加节点', exact: true }).last().click()
+  await addDesktop(page, '权限节点', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
   await page.getByRole('button', { name: /权限测试/ }).click()
   await page.getByRole('group', { name: '需要你选择' }).waitFor({ timeout: 20000 })
   await page.screenshot({ path: 'test-artifacts/prompt-card.png' })

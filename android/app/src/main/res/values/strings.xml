@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Herdr Remote</string>
-    <string name="title_activity_main">Herdr Remote</string>
+    <string name="app_name">Alma Android</string>
+    <string name="title_activity_main">Alma Android</string>
     <string name="package_name">local.almaandroid.herdr</string>
     <string name="custom_url_scheme">local.almaandroid.herdr</string>
     <string name="alert_channel_name">Herdr 提醒</string>

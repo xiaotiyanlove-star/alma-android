@@ -54,6 +54,10 @@ public class MainActivity extends BridgeActivity {
 
     private WebView webView;
 
+    /** Set while the page is waiting for the user to pick files. */
+    private android.webkit.ValueCallback<Uri[]> pendingFileChooser;
+    private static final int FILE_CHOOSER_REQUEST = 4711;
+
     /** 下载状态（shim 轮询进度用）：none|downloading|failed。 */
     private volatile String dlStatus = "none";
     private volatile long dlBytes = 0, dlTotal = -1;
@@ -61,6 +65,56 @@ public class MainActivity extends BridgeActivity {
     private volatile int dlGen = 0;
     /** 镜像重试队列（按序换：下载失败 / 文件无效时取下一个）。 */
     private final java.util.ArrayDeque<String> updateFallbacks = new java.util.ArrayDeque<>();
+
+    /** Returns the picked document(s) to the WebView's <input type="file">. */
+    private final androidx.activity.result.ActivityResultLauncher<Intent> fileChooser =
+        registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+            android.webkit.ValueCallback<Uri[]> callback = pendingFileChooser;
+            pendingFileChooser = null;
+            if (callback == null) return;
+            callback.onReceiveValue(collectUris(result));
+        });
+
+    private Uri[] collectUris(androidx.activity.result.ActivityResult result) {
+        if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null) {
+            return null;
+        }
+        Intent data = result.getData();
+        if (data.getClipData() != null) {
+            int count = data.getClipData().getItemCount();
+            Uri[] uris = new Uri[count];
+            for (int i = 0; i < count; i++) uris[i] = data.getClipData().getItemAt(i).getUri();
+            return uris;
+        }
+        Uri single = data.getData();
+        return single == null ? null : new Uri[]{single};
+    }
+
+    /**
+     * Capacitor's WebChromeClient does not implement onShowFileChooser, so a
+     * page's <input type="file"> does nothing on Android. Open the system
+     * picker and hand the chosen URIs back.
+     */
+    private boolean showFileChooser(android.webkit.ValueCallback<Uri[]> callback, android.webkit.WebChromeClient.FileChooserParams params) {
+        if (pendingFileChooser != null) {
+            pendingFileChooser.onReceiveValue(null);
+        }
+        pendingFileChooser = callback;
+        try {
+            Intent intent = params.createIntent();
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            // getMode() is an int constant, not an enum; MODE_OPEN_MULTIPLE
+            // corresponds to the page's `multiple` attribute.
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,
+                    params.getMode() == android.webkit.WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE);
+            fileChooser.launch(intent);
+            return true;
+        } catch (Exception error) {
+            pendingFileChooser = null;
+            callback.onReceiveValue(null);
+            return false;
+        }
+    }
 
     private final androidx.activity.result.ActivityResultLauncher<String> cameraPermission =
         registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
@@ -105,6 +159,7 @@ public class MainActivity extends BridgeActivity {
         try {
             webView.addJavascriptInterface(new LocaleBridge(), "__almaAndroidLocale");
             webView.addJavascriptInterface(new UiBridge(), "__almaAndroidUi");
+            webView.addJavascriptInterface(new BackBridge(), "__herdrExitApp");
             // No upstream updater bridge: this fork has its own application identity.
         } catch (Throwable t) {
             // 同上
@@ -149,6 +204,11 @@ public class MainActivity extends BridgeActivity {
         if (webView == null) return;
         final android.webkit.WebChromeClient original = webView.getWebChromeClient();
         webView.setWebChromeClient(new android.webkit.WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView view, android.webkit.ValueCallback<Uri[]> callback, FileChooserParams params) {
+                return showFileChooser(callback, params);
+            }
+
             @Override
             public void onPermissionRequest(final android.webkit.PermissionRequest request) {
                 boolean wantsVideo = false;
@@ -615,6 +675,14 @@ public class MainActivity extends BridgeActivity {
      * ② WebView 自身历史（renderer 模态等 pushState）；
      * ③ 默认行为（退出）。
      */
+    /** Exposed to the page so it can close the app once its own stack is empty. */
+    public class BackBridge {
+        @JavascriptInterface
+        public void exit() {
+            runOnUiThread(() -> MainActivity.this.finish());
+        }
+    }
+
     @Override
     public void onBackPressed() {
         WebView wv = webView != null ? webView

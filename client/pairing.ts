@@ -6,7 +6,7 @@ export async function parsePairing(name: string, input: string): Promise<Host> {
   if (url.protocol !== 'alma:' || url.hostname !== 'connect' || url.searchParams.get('e2e') !== '1') throw new Error('需要 Alma 的端到端加密配对链接')
   const relay = new URL(url.searchParams.get('u') || '')
   const code = url.searchParams.get('k') || ''
-  if (relay.protocol !== 'https:' || relay.username || Reflect.get(relay, ['pass', 'word'].join('')) || relay.search || relay.hash || !/^[A-Za-z0-9_-]{43}$/.test(code)) throw new Error('中继必须使用 HTTPS，配对密钥格式必须有效')
+  if (relay.protocol !== 'https:' || relay.username || Reflect.get(relay, ['pass', 'word'].join('')) || relay.search || relay.hash || !/^[A-Za-z0-9_-]{16,128}$/.test(code)) throw new Error('中继必须使用 HTTPS，配对密钥格式必须有效')
   return { id: await routingId(code), name: name.trim().slice(0, 80) || 'Alma Desktop', relayUrl: relay.href.replace(/\/+$/, ''), connectCode: code, addedAt: Date.now() }
 }
 export function validHosts(value: unknown): Host[] {

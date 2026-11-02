@@ -8,7 +8,8 @@ execFileSync('qrencode', ['-o', 'test-artifacts/scan-fixture.png', '-s', '10', '
 const base64 = execFileSync('base64', ['-i', 'test-artifacts/scan-fixture.png']).toString()
 
 const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
-const context = await browser.newContext({ viewport: { width: 390, height: 844 } })
+const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
+await context.addInitScript(() => { try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch {} })
 await context.addInitScript(({ data }) => {
   if (!('__scanPatched' in window)) {
     Object.assign(window, { __scanPatched: true })
@@ -35,6 +36,9 @@ const page = await context.newPage()
 const errors: string[] = []
 page.on('pageerror', (error) => errors.push(error.message))
 await page.goto('http://127.0.0.1:5174')
+// The scan button lives on the dedicated add-desktop page.
+await page.getByRole('button', { name: '添加节点', exact: true }).first().click()
+await page.getByLabel('节点名称', { exact: true }).waitFor({ timeout: 10000 })
 await page.getByLabel('节点名称', { exact: true }).fill('扫码测试')
 await page.getByRole('button', { name: '扫码' }).click()
 await page.getByRole('dialog', { name: '扫描二维码' }).waitFor()
