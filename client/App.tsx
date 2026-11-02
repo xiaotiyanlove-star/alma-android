@@ -6,6 +6,7 @@ import {
   Send, Server, Settings, Square, Terminal, Trash2, WrapText, X, FileCode, FileText, Pencil, ChevronUp, Paperclip, PlusCircle,
 } from 'lucide-react';
 import { controller } from './controller';
+import { Capacitor } from '@capacitor/core';
 import { ScanPairing } from './ScanPairs';
 import { AlertTracker, localNotifier } from './notify';
 import { applyKeepAlive, keepAliveEnabled, setKeepAliveEnabled } from './keepalive';
@@ -22,7 +23,7 @@ import { parseSessionInfo } from './session-info';
 import { backgroundAgents } from './subagents';
 import { commandsFor, filterCommands, slashQuery } from './commands';
 import { formatTime, localeChoice, setLocaleChoice, timeZoneChoice, setTimeZoneChoice, resolvedTimeZone, resolvedLocale, COMMON_ZONES, markdownEnabled, setMarkdownEnabled, type LocaleChoice } from './prefs';
-import type { AppState, ChatItem, HostState, Pane, SessionState } from './model';
+import type { AppState, ChatItem, HostState, Pane, SessionState, Snapshot } from './model';
 import './styles.css';
 
 // Above this many desktops the list starts collapsed.
@@ -47,8 +48,30 @@ function stripAnsi(value: string): string {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
 }
 
-function paneTitle(pane?: Pane): string {
+/**
+ * What a session is called.
+ *
+ * A name the user gave wins; otherwise the tab label the desktop shows (Herdr
+ * numbers new tabs, so an untouched `2` is not a name) and only then the
+ * terminal title. That order keeps a renamed session stable: the agent rewrites
+ * its terminal title on every turn, so a title-first order would undo a rename
+ * the moment the agent next draws.
+ */
+export function paneTitle(pane?: Pane, tabLabel?: string): string {
+  const named = tabLabel?.trim() || pane?.label?.trim();
+  if (named) return stripAnsi(named);
   return stripAnsi(pane?.terminal_title_stripped || pane?.cwd?.split('/').filter(Boolean).pop() || '终端会话');
+}
+
+/**
+ * The label Herdr holds for a pane's tab, when the snapshot has one.
+ *
+ * New tabs are numbered, so a bare number is Herdr's placeholder rather than a
+ * name; treating it as one would let a rename be undone by that default.
+ */
+export function tabLabelOf(snapshot: Snapshot | undefined, pane?: Pane): string | undefined {
+  const label = snapshot?.tabs?.find(tab => tab.tab_id === pane?.tab_id)?.label?.trim();
+  return label && !/^\d+$/.test(label) ? label : undefined;
 }
 
 function hostStatus(host: HostState): string {
@@ -339,7 +362,7 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
         <label className="toggle-row">
           <span><strong>{t('agent 需要你或已完成时提醒')}</strong><small>{t('不会上传任何内容。')}</small></span>
           <input type="checkbox" defaultChecked={notificationsEnabled()} onChange={event => {
-            try { localStorage.setItem(ALERTS_KEY, event.target.checked ? 'on' : 'off') } catch { /* storage blocked */ }
+            setNotificationsEnabled(event.target.checked)
             if (event.target.checked) void localNotifier.request()
           }} />
         </label>
@@ -402,15 +425,22 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
  */
 function useAlerts(hosts: HostState[]) {
   const tracker = useRef<AlertTracker>()
-  const enabled = useRef(notificationsEnabled())
   if (!tracker.current) tracker.current = new AlertTracker()
   useEffect(() => {
     void localNotifier.permission().then(async state => {
       if (state === 'prompt' && notificationsEnabled()) await localNotifier.request()
     })
   }, [])
+  const [alertsRevision, setAlertsRevision] = useState(0)
   useEffect(() => {
-    if (!enabled.current) return
+    const onChange = () => setAlertsRevision((value) => value + 1)
+    window.addEventListener(ALERTS_EVENT, onChange)
+    return () => window.removeEventListener(ALERTS_EVENT, onChange)
+  }, [])
+  useEffect(() => {
+    // Read the preference every time rather than capturing it at mount, so
+    // turning alerts off takes effect immediately instead of after a restart.
+    if (!notificationsEnabled()) return
     const hostStates = hosts.map(host => ({
       ...host,
       snapshot: host.snapshot
@@ -418,13 +448,20 @@ function useAlerts(hosts: HostState[]) {
         : undefined,
     }))
     for (const alert of tracker.current!.update(hostStates)) void localNotifier.notify(alert).catch(() => undefined)
-  }, [hosts])
+  }, [hosts, alertsRevision])
 }
 
 export const ALERTS_KEY = 'herdr.alerts.enabled'
 export function notificationsEnabled(): boolean {
   try { return localStorage.getItem(ALERTS_KEY) !== 'off' } catch { return true }
 }
+
+/** Broadcast a preference change so running effects re-evaluate immediately. */
+export function setNotificationsEnabled(enabled: boolean) {
+  try { localStorage.setItem(ALERTS_KEY, enabled ? 'on' : 'off') } catch { /* storage blocked */ }
+  window.dispatchEvent(new CustomEvent(ALERTS_EVENT))
+}
+const ALERTS_EVENT = 'herdr:alerts-changed'
 
 function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSettings(): void; onOpenSession(hostId: string, paneId: string): void }) {
   // Only a single pairing may be auto-selected; with several, the user chooses.
@@ -437,6 +474,11 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
   const [creating, setCreating] = useState(false);
   const [newKind, setNewKind] = useState('claude');
   const [newCwd, setNewCwd] = useState('');
+  const [newLabel, setNewLabel] = useState('');
+  const [renamingPane, setRenamingPane] = useState<string>();
+  const [renameValue, setRenameValue] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState('');
   const openingLock = useRef(false);
   useEffect(() => { setOpenError(''); }, [host?.host.id]);
   // A new session starts where the user already is: the focused pane's
@@ -453,19 +495,45 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
     setCreating(false)
     setOpenError('')
     try {
+      // Herdr reports the new pane in the snapshot before the agent has drawn
+      // its first frame, so open it straight away and let the live updates fill
+      // in; waiting a fixed moment only made the tap feel slow.
       const { paneId } = await controller.newSession(host.host.id, {
         kind: newKind,
         cwd: newCwd.trim(),
         workspaceId: host.snapshot?.workspaces[0]?.workspace_id,
+        label: newLabel.trim() || undefined,
       })
-      // Give the agent a moment to register, then open it like any other session.
-      await new Promise((resolve) => setTimeout(resolve, 600))
+      setNewLabel('')
       controller.selectHost(host.host.id)
       await controller.selectPane(paneId)
       onOpenSession(host.host.id, paneId)
     } catch (error) {
       setOpenError(error instanceof Error ? error.message : t('无法创建会话'))
     } finally { openingLock.current = false }
+  }
+
+  function startRename(pane: Pane, current: string | undefined) {
+    setRenamingPane(pane.pane_id)
+    // Prefill with the name already there, so a stray tap edits rather than
+    // wipes it. An unnamed session starts empty and shows the placeholder.
+    setRenameValue(current ?? '')
+    setRenameError('')
+    openOverlay({ kind: 'rename' })
+  }
+
+  async function renameSession(event: FormEvent) {
+    event.preventDefault()
+    if (!host || !renamingPane || renameBusy) return
+    setRenameBusy(true)
+    setRenameError('')
+    try {
+      await controller.renameSession(host.host.id, renamingPane, renameValue)
+      setRenamingPane(undefined)
+      closeOverlay()
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : t('重命名失败'))
+    } finally { setRenameBusy(false) }
   }
 
   async function openPane(paneId: string) {
@@ -524,6 +592,8 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
         </select>
         <label htmlFor="new-cwd">{t('目录')}</label>
         <input id="new-cwd" value={newCwd} onChange={(event) => setNewCwd(event.target.value)} placeholder={t('默认为当前目录')} autoComplete="off" spellCheck={false} />
+        <label htmlFor="new-label">{t('会话名称')}</label>
+        <input id="new-label" value={newLabel} onChange={(event) => setNewLabel(event.target.value)} placeholder={t('可选，稍后也能改')} maxLength={80} autoComplete="off" spellCheck={false} />
         <p className="field-hint">{t('新会话会在这个目录下启动，可在桌面端继续。')}</p>
         <div className="dialog-actions">
           <button type="button" className="secondary-button" onClick={() => setCreating(false)}>{t('取消')}</button>
@@ -553,20 +623,46 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
         <ul className="session-list">{host.snapshot.panes.map(pane => {
           const workspace = host.snapshot?.workspaces.find(item => item.workspace_id === pane.workspace_id);
           const workspaceName = workspace?.label || workspace?.name || workspace?.cwd || pane.cwd;
-          return <li key={pane.pane_id}><button className="session-row" disabled={!ready || Boolean(opening)} onClick={() => void openPane(pane.pane_id)}>
-            <span className="session-icon"><Terminal size={20} aria-hidden="true" /></span>
-            <span className="session-row-copy"><strong>{paneTitle(pane)}</strong>{workspaceName && <span className="session-path">{workspaceName}</span>}<span className="session-row-meta">{pane.agent || pane.agent_session?.agent || '终端'}{pane.agent_status ? ` · ${pane.agent_status}` : ''}</span></span>
-            {opening === pane.pane_id ? <Loader2 size={18} className="spin" aria-label={t('正在打开')} /> : <ArrowRight size={18} className="muted" aria-hidden="true" />}
-          </button></li>;
+          return <li key={pane.pane_id} className="session-item">
+            <button className="session-row" disabled={!ready || Boolean(opening)} onClick={() => void openPane(pane.pane_id)}>
+              <span className="session-icon"><Terminal size={20} aria-hidden="true" /></span>
+              <span className="session-row-copy"><strong>{paneTitle(pane, tabLabelOf(host.snapshot, pane))}</strong>{workspaceName && <span className="session-path">{workspaceName}</span>}<span className="session-row-meta">{pane.agent || pane.agent_session?.agent || '终端'}{pane.agent_status ? ` · ${pane.agent_status}` : ''}</span></span>
+              {opening === pane.pane_id ? <Loader2 size={18} className="spin" aria-label={t('正在打开')} /> : <ArrowRight size={18} className="muted" aria-hidden="true" />}
+            </button>
+            <button type="button" className="icon-button session-rename" disabled={!ready} aria-label={tWith('重命名 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })} title={t('重命名会话')} onClick={() => startRename(pane, tabLabelOf(host.snapshot, pane))}><Pencil size={16} /></button>
+          </li>;
         })}</ul>
       </> : ready && host.snapshot ? <EmptyState icon={<MessageSquare size={30} />} title={t('暂无会话')}><p>{t('此节点还没有打开的终端会话。')}</p></EmptyState> : <EmptyState icon={<Server size={30} />} title={host.error ? t('无法读取会话') : t('等待节点连接')} />}
     </div>
+    {renamingPane && <div className="sheet-backdrop" role="presentation" onClick={() => { setRenamingPane(undefined); closeOverlay() }}>
+      <form className="host-sheet" role="dialog" aria-modal="true" aria-label={t('重命名会话')}
+        onClick={(event) => event.stopPropagation()}
+        onSubmit={(event) => void renameSession(event)}>
+        <h2>{t('重命名会话')}</h2>
+        <label htmlFor="session-name">{t('会话名称')}</label>
+        <input id="session-name" value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={80} placeholder={t('留空则恢复默认名称')} autoComplete="off" autoFocus />
+        <p className="field-hint">{t('名称只影响这项会话的显示，桌面端会同步显示。')}</p>
+        {renameError && <Notice error>{renameError}</Notice>}
+        <div className="dialog-actions">
+          <button type="button" className="secondary-button" onClick={() => { setRenamingPane(undefined); closeOverlay() }}>{t('取消')}</button>
+          <button type="submit" className="primary-button" disabled={renameBusy}>{renameBusy ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{t('保存')}</button>
+        </div>
+      </form>
+    </div>}
   </section>;
 }
 
 function Session({ session, host }: { session: SessionState; host?: HostState }) {
+  // Set only while there is no transcript; says which kind of "no transcript" it is.
+  const gap = session.gap ?? 'terminal';
+  // An agent is still a chat the user can write to even when its transcript
+  // cannot be read — prompts go to the agent, not to the transcript — so only
+  // a pane that has no chat at all is taken away from the message view.
+  const noMessages = session.unsupported && (gap === 'terminal' || gap === 'unsupported');
   // Start on messages unless this pane is known to have no transcript.
-  const [mode, setMode] = useState<'messages' | 'terminal'>(() => session.unsupported ? 'terminal' : 'messages');
+  const [mode, setMode] = useState<'messages' | 'terminal'>(() => noMessages ? 'terminal' : 'messages');
+  // A pane that turns out to have no transcript at all moves to the terminal.
+  useEffect(() => { if (noMessages) setMode('terminal'); }, [noMessages]);
   // Once a transcript finally arrives, leave the terminal view automatically.
   useEffect(() => { if (!session.unsupported && session.items.length > 0) setMode('messages'); }, [session.unsupported, session.items.length]);
   const [wrap, setWrap] = useState(true);
@@ -592,7 +688,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   const olderAnchor = useRef<{ top: number; height: number } | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const ready = canUseHost(host);
-  const terminal = session.unsupported || mode === 'terminal';
+  const terminal = noMessages || mode === 'terminal';
   // Any newly arrived item means the agent has produced something.
   const info = useMemo(() => parseSessionInfo(stripAnsi(session.screen ?? '')), [session.screen]);
   const agents = useMemo(() => backgroundAgents(session.items), [session.items]);
@@ -786,20 +882,29 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   }
 
   return <section className="conversation-view">
-    <header className="page-header conversation-header"><button className="icon-button" title={t('返回会话')} aria-label={t('返回会话')} onClick={() => { controller.backToSessions(); back() }}><ArrowLeft size={21} /></button><div className="header-copy"><h1>{paneTitle(pane)}</h1><p className="session-host-name"><Server size={13} aria-hidden="true" />{host?.host.name || t('未知节点')}
+    <header className="page-header conversation-header"><button className="icon-button" title={t('返回会话')} aria-label={t('返回会话')} onClick={() => { controller.backToSessions(); back() }}><ArrowLeft size={21} /></button><div className="header-copy"><h1>{paneTitle(pane, tabLabelOf(host?.snapshot, pane))}</h1><p className="session-host-name"><Server size={13} aria-hidden="true" />{host?.host.name || t('未知节点')}
         {info.model && <span className="session-chip" title={t('当前模型')}>{info.model}</span>}
         {info.contextLabel && <span className="session-chip" title={info.contextRatio === undefined ? t('上下文用量') : `${t('上下文已用')} ${Math.round((info.contextRatio ?? 0) * 100)}%`}>{t('上下文')} {info.contextLabel}</span>}
         {agents.length > 0 && <button type="button" className="session-chip is-agents" onClick={() => setAgentsOpen(true)} title={t('查看运行中的 agent')}>
           <span className="agents-dot" aria-hidden="true" />{agents.length} {t('个 agent 运行中')}
         </button>}
       </p></div>{host && <Status host={host} />}</header>
-    <div className="view-toolbar"><div className="view-tabs" role="tablist" aria-label={t('会话视图')}><button role="tab" id="messages-tab" aria-controls="session-content" aria-selected={!terminal} disabled={session.unsupported} className={!terminal ? 'is-active' : ''} onClick={() => switchMode('messages')}><MessageSquare size={16} />{t('消息')}</button><button role="tab" id="terminal-tab" aria-controls="session-content" aria-selected={terminal} className={terminal ? 'is-active' : ''} onClick={() => switchMode('terminal')}><Terminal size={16} />{t('终端')}</button></div>{terminal ? <div className="terminal-options"><button className={`icon-button ${wrap ? 'is-active' : ''}`} title={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-label={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-pressed={wrap} onClick={() => setWrap(value => !value)}><WrapText size={18} /></button><button className="icon-button" title={t('刷新终端')} aria-label={t('刷新终端')} disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={18} className={refreshing ? 'spin' : ''} /></button></div>
+    <div className="view-toolbar"><div className="view-tabs" role="tablist" aria-label={t('会话视图')}><button role="tab" id="messages-tab" aria-controls="session-content" aria-selected={!terminal} disabled={noMessages} className={!terminal ? 'is-active' : ''} onClick={() => switchMode('messages')}><MessageSquare size={16} />{t('消息')}</button><button role="tab" id="terminal-tab" aria-controls="session-content" aria-selected={terminal} className={terminal ? 'is-active' : ''} onClick={() => switchMode('terminal')}><Terminal size={16} />{t('终端')}</button></div>{terminal ? <div className="terminal-options"><button className={`icon-button ${wrap ? 'is-active' : ''}`} title={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-label={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-pressed={wrap} onClick={() => setWrap(value => !value)}><WrapText size={18} /></button><button className="icon-button" title={t('刷新终端')} aria-label={t('刷新终端')} disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={18} className={refreshing ? 'spin' : ''} /></button></div>
       : <div className="message-options"><button className="text-toggle" aria-pressed={markdown} title={markdown ? '显示 Markdown 源码' : '渲染 Markdown'} onClick={() => { const next = !markdown; setMarkdown(next); setMarkdownEnabled(next) }}>{markdown ? <FileCode size={15} /> : <FileText size={15} />}{markdown ? '源码' : '渲染'}</button></div>}</div>
     <div className="session-notices">
-      {!ready && <Notice error>{host?.status === 'connecting' ? '连接恢复中，暂时无法发送。' : '节点未连接，暂时无法发送。'}{host && host.status !== 'connecting' && <button className="inline-button" onClick={() => controller.retryHost(host.host.id)}>{t('重新连接')}</button>}</Notice>}
-      {session.unsupported && <Notice>{pane?.agent
-        ? <>{t('Herdr 还没收到这个 agent 的会话 ID，暂时读不到聊天记录。已在终端视图，读到后会自动切回。')}<button className="inline-button" onClick={() => void controller.reloadSession()}>{t('立即重试')}</button></>
-        : '这是一个普通终端会话，没有聊天记录，可直接在终端操作。'}</Notice>}
+      {!ready && <Notice error>{t(host?.status === 'connecting' ? '连接恢复中，暂时无法发送。' : '节点未连接，暂时无法发送。')}{host && host.status !== 'connecting' && <button className="inline-button" onClick={() => controller.retryHost(host.host.id)}>{t('重新连接')}</button>}</Notice>}
+      {session.unsupported && (gap === 'terminal'
+        ? <Notice>{t('这是一个普通终端会话，没有聊天记录，可直接在终端操作。')}</Notice>
+        : gap === 'unsupported'
+          ? <Notice>{t('这个桌面暂时读不了这个 agent 的聊天记录，可以直接用终端。')}</Notice>
+          : gap === 'transcript'
+            ? <Notice>{t('已经拿到会话 ID，但桌面端在原来的位置找不到记录——常见于通过 SSH 或在容器里运行的 agent。会在终端视图继续重试。')}</Notice>
+            : <Notice>
+              {gap === 'integration'
+                ? t('对话已经开始，但仍读不到聊天记录。请确认桌面端已为这个 agent 安装并启用 Herdr integration——它在会话开始时上报会话 ID，没有它只能一直用终端。')
+                : t('Herdr 还没收到这个 agent 的会话 ID，聊天记录会在收到后出现。现在就可以发消息。')}
+              <button className="inline-button" onClick={() => void controller.reloadSession()}>{t('立即重试')}</button>
+            </Notice>)}
       {session.uncertain && <Notice error><strong>{t('操作结果不确定')}</strong><p>{session.uncertain}</p><p>{t('请先核对消息或终端内容，避免重复操作。')}</p></Notice>}
       {session.error && <Notice error>{session.error}</Notice>}
       {localError && <Notice error>{localError}</Notice>}
@@ -888,6 +993,24 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   </section>;
 }
 
+/**
+ * Opens the conversation behind a tapped notification.
+ *
+ * The exact pane may be gone by the time the alert is tapped, so selecting the
+ * desktop first and only then the pane keeps a deleted session from leaving the
+ * user on a dead screen.
+ */
+async function openSessionFromAlert(hostId: string, paneId: string) {
+  controller.selectHost(hostId)
+  try {
+    await controller.selectPane(paneId)
+    push({ name: 'session', hostId, paneId })
+  } catch {
+    // The pane no longer exists: land on the session list for that desktop.
+    push({ name: 'sessions' })
+  }
+}
+
 export function App() {
   const state = useSyncExternalStore(subscribe, getSnapshot);
   const route = useRoute();
@@ -897,6 +1020,22 @@ export function App() {
   useEffect(initialize, []);
   // Reconcile the foreground service with the saved preference on every launch.
   useEffect(() => { void applyKeepAlive(); }, []);
+
+  // Tapping a notification opens the conversation that raised it. The camera
+  // tunnel stays closed; only the panes and the transcript are loaded.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return
+    let cancel: (() => void) | undefined
+    void import('@capacitor/local-notifications').then(async ({ LocalNotifications }) => {
+      const handle = await LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
+        const extra = action.notification.extra as { hostId?: string; paneId?: string } | undefined
+        if (!extra?.hostId || !extra.paneId) return
+        void openSessionFromAlert(extra.hostId, extra.paneId)
+      })
+      cancel = () => { void handle.remove() }
+    }).catch(() => undefined)
+    return () => cancel?.()
+  }, [])
 
   // Keep the connection warm across a quick app switch, but release it after a
   // long absence so a phone in a pocket is not holding a relay socket open.

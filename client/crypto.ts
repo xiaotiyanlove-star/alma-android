@@ -200,13 +200,31 @@ export async function sealBytes(
 }
 
 /** Opens a sealed frame and returns the inner plaintext untouched. */
+/**
+ * Decrypts one inbound frame and enforces ordering.
+ *
+ * The nonce travels on the wire, so GCM alone authenticates the bytes but not
+ * their position: a relay that captured an old frame could replay it and the
+ * client would decrypt and dispatch it again, freezing a transcript on a stale
+ * state. Requiring the nonce to equal the expected counter turns that into a
+ * hard failure — the tunnel is dropped instead of silently rewinding.
+ */
 export async function openBytes(
   key: CryptoKey,
   wire: Uint8Array,
+  expectedCounter?: bigint,
 ): Promise<Uint8Array> {
   // 12-byte nonce + at least a 16-byte GCM tag.
   if (wire.length < 29) throw new Error('Encrypted relay frame is too short')
   const iv = wire.slice(0, 12)
+  if (expectedCounter !== undefined) {
+    const view = new DataView(iv.buffer, iv.byteOffset, iv.byteLength)
+    // The counter lives in the low 8 bytes; the first 4 are always zero.
+    const high = view.getUint32(0, false)
+    const low = view.getBigUint64(4, false)
+    const seen = (BigInt(high) << 64n) | low
+    if (seen !== expectedCounter) throw new Error('Encrypted frame arrived out of order')
+  }
   const plaintext = await crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: source(iv) },
     key,

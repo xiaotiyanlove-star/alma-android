@@ -1,14 +1,68 @@
-import type { AppState, ChatItem, Host, SessionState, Snapshot } from './model'
+import type { AppState, ChatItem, Host, Pane, SessionState, Snapshot, TranscriptGap } from './model'
 import { parsePairing } from './pairing'
 import { t } from './i18n'
 import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, stopMessage } from './backoff'
 import { MAX_ATTACHMENT_BYTES, uploadRoute, type UploadResponse, type UploadedFile } from './attachments'
 import { moveKeys, needsSpace, parsePrompt, samePrompt, type Prompt } from './prompt'
 import { hostStorage, type HostStorage } from './storage'
-import { EncryptedTunnel, OperationUncertainError, type Transport, type TunnelSocket } from './transport'
+import { EncryptedTunnel, OperationUncertainError, type Transport, type TunnelError, type TunnelSocket } from './transport'
 
 type Page = { session_id?: string; page?: { items?: ChatItem[]; start?: number; end?: number }; queued?: { id: string; text: string }[]; error?: { code?: string; message?: string } }
 const message = (error: unknown) => error instanceof Error ? error.message : t('请求失败')
+
+/**
+ * The argv Herdr should start for a new session.
+ *
+ * A login shell resolves the agent through the user's own PATH (Homebrew and
+ * version managers are usually configured in a login profile). The agent is
+ * not `exec`ed: when it exits — or a binary is missing — the trailing
+ * interactive login shell takes over, so the pane stays a usable terminal
+ * instead of closing (Herdr removes a pane whose process exits).
+ */
+export function agentLaunchCommand(kind: string): string[] {
+  const executable = /^[a-z][a-z0-9-]{0,31}$/.test(kind) ? kind : 'claude'
+  return ['/bin/sh', '-lc', `${executable}; exec "\${SHELL:-/bin/sh}" -il`]
+}
+
+/**
+ * Why a pane has no transcript, given the error Alma reported for it.
+ *
+ * The two codes say different things, which is the whole point of telling
+ * them apart:
+ *
+ * - `no_agent_session` means Herdr has no session id for the pane — which is
+ *   also what a plain shell reports, so the pane itself decides whether an
+ *   agent is there. A missing id is normal for a moment after an agent starts,
+ *   because its integration reports the id when the session begins. It is only
+ *   the integration's fault once the agent has been given work — it is
+ *   working, or finished, or blocked — and still no id ever arrived.
+ * - `transcript_not_found` means the id exists but the transcript is not where
+ *   Alma looks. That is not an install problem either: it is typically a CLI
+ *   whose session lives elsewhere, such as one behind SSH or in a container.
+ * - `unsupported_agent` means Alma has no reader for that agent at all, which
+ *   is never something the user can install their way out of.
+ */
+export function transcriptGap(code: string, pane: Pane | undefined, sentMessage: boolean): TranscriptGap {
+  if (code === 'unsupported_agent') return 'unsupported'
+  if (code === 'transcript_not_found') return 'transcript'
+  // Without a snapshot there is no way to tell a shell from an agent, so say
+  // the harmless thing; the next refresh classifies it once the list arrives.
+  if (!pane) return 'waiting'
+  if (!pane.agent && !pane.agent_session?.agent) return 'terminal'
+  const worked = sentMessage || ['working', 'done', 'blocked'].includes(pane.agent_status ?? '')
+  return worked ? 'integration' : 'waiting'
+}
+
+/**
+ * Whether a failure means "this desktop does not know the method" rather than
+ * "the method ran and refused". Herdr reports the former as a request error
+ * naming the method, and a desktop too old for it may not answer at all.
+ */
+function isUnknownMethod(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error)
+  return /unknown variant|unknown method|unsupported|not_implemented|invalid_request/i.test(text)
+}
+
 function merge(current: ChatItem[], incoming: ChatItem[], prepend = false): ChatItem[] {
   const all = new Map(current.map((item) => [item.id, item]))
   for (const item of incoming) all.set(item.id, item)
@@ -29,7 +83,7 @@ export class Controller {
   private openingHost = false
   private initializedStorage = false
   private sessionRefresh?: Promise<void>
-  constructor(private storage: HostStorage = hostStorage, private createTransport = (host: Host, status: (state: 'connecting' | 'online' | 'offline', error?: string) => void): Transport => new EncryptedTunnel(host, status)) {}
+  constructor(private storage: HostStorage = hostStorage, private createTransport = (host: Host, status: (state: 'connecting' | 'online' | 'offline', error?: string, code?: TunnelError['code']) => void): Transport => new EncryptedTunnel(host, status)) {}
   getState = () => this.state
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   private publish(patch: Partial<AppState>) { this.state = { ...this.state, ...patch }; for (const listener of this.listeners) listener() }
@@ -50,13 +104,19 @@ export class Controller {
       for (const host of hosts) this.attach(host)
     } catch { this.publish({ loading: false, error: t('无法读取安全存储，未覆盖已有节点。请重新打开应用。') }) }
   }
-  private attach(host: Host) {
+  /** Builds a runtime with a fresh transport; a closed transport never reopens. */
+  private makeRuntime(host: Host): Runtime {
     const runtime: Runtime = { transport: undefined as unknown as Transport, epoch: 0, attempts: 0 }
-    runtime.transport = this.createTransport(host, (status, error) => {
+    runtime.transport = this.createTransport(host, (status, error, code) => {
       if (this.runtimes.get(host.id) !== runtime) return
       this.patchHost(host.id, { status, ...(status === 'online' ? {} : { herdrOnline: false }), error })
-      if (status === 'offline') this.scheduleHost(host.id, runtime, error)
+      if (status === 'offline') this.scheduleHost(host.id, runtime, code)
     })
+    return runtime
+  }
+
+  private attach(host: Host) {
+    const runtime = this.makeRuntime(host)
     this.runtimes.set(host.id, runtime)
     void this.connectHost(host.id, runtime)
   }
@@ -65,9 +125,9 @@ export class Controller {
    * retrying only resumes when the app is foregrounded, the network returns,
    * or the user asks — nothing else resets the ladder.
    */
-  private scheduleHost(id: string, runtime: Runtime, error?: string) {
+  private scheduleHost(id: string, runtime: Runtime, code?: TunnelError['code']) {
     if (runtime.retry || this.runtimes.get(id) !== runtime) return
-    const permanent = error ? isPermanentFailure(error) : null
+    const permanent = isPermanentFailure(code)
     const delay = permanent ? null : nextDelay(runtime.attempts)
     if (delay === null) {
       runtime.stopped = permanent ?? 'exhausted'
@@ -155,6 +215,7 @@ export class Controller {
     if (file.bytes.length > MAX_ATTACHMENT_BYTES) throw new Error(t('文件超过 50 MB'))
     const route = uploadRoute(file.type)
     const response = await runtime.transport.request<UploadResponse>(route, undefined, {
+      kind: 'mutation',
       raw: file.bytes,
       headers: {
         'content-type': file.type || 'application/octet-stream',
@@ -171,26 +232,60 @@ export class Controller {
   }
 
   /**
-   * Creates a new session: a Herdr tab (which yields one root pane) and an
-   * agent started inside it. `cwd` defaults to the directory the user is
-   * already working in.
+   * Creates a new session: a Herdr tab whose root pane runs the agent.
+   *
+   * The agent must not be launched with `agent.start`. That command only checks
+   * that the shell owns the foreground, not that the shell finished its rc
+   * files; a prompt written by an rc file (oh-my-zsh's update question, a p10k
+   * wizard) is still reading, so the first character of the typed command is
+   * swallowed and the rest — `laude` instead of `claude` — runs as a command.
+   * `layout.apply` starts the process directly with its own argv, so nothing is
+   * typed into a shell that may still be prompting.
+   *
+   * The command is the agent wrapped in a login shell that stays after it
+   * exits: closing the agent must leave a usable terminal, not a dead tab
+   * (a pane whose process exits is removed by Herdr).
    */
   newSession = async (hostId: string, options: { kind: string; cwd?: string; workspaceId?: string; label?: string }): Promise<{ paneId: string; workspaceId: string }> => {
-    const runtime = this.runtimes.get(hostId)
-    if (!runtime) throw new Error(t('节点不存在'))
+    if (!this.runtimes.has(hostId)) throw new Error(t('节点不存在'))
+    const command = agentLaunchCommand(options.kind)
+    try {
+      const created = await this.rpc<{
+        tab_id?: string; workspace_id?: string; focused_pane_id?: string
+        layout?: { tab_id?: string; workspace_id?: string; focused_pane_id?: string }
+      }>(hostId, 'layout.apply', {
+        ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}),
+        ...(options.label ? { tab_label: options.label } : {}),
+        focus: false,
+        root: { type: 'pane', ...(options.cwd ? { cwd: options.cwd } : {}), command },
+      })
+      const paneId = created?.focused_pane_id ?? created?.layout?.focused_pane_id
+      const workspaceId = created?.workspace_id ?? created?.layout?.workspace_id ?? options.workspaceId ?? ''
+      if (!paneId) throw new Error(t('无法创建会话'))
+      return { paneId, workspaceId }
+    } catch (error) {
+      // Desktops older than the layout API have no other way to start an agent,
+      // so fall back to the previous path. It may lose the first character to a
+      // shell that is still reading its rc files, which is why it is only the
+      // fallback and not the default.
+      if (!isUnknownMethod(error)) throw error
+      return this.legacyNewSession(hostId, options)
+    }
+  }
+
+  /** The pre-`layout.apply` path: create the tab, then type the agent in. */
+  private async legacyNewSession(hostId: string, options: { kind: string; cwd?: string; workspaceId?: string; label?: string }) {
     const created = await this.rpc<{ tab?: { tab_id?: string; workspace_id?: string }; root_pane?: { pane_id?: string; workspace_id?: string } }>(
-      hostId, 'tab.create', { ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}), ...(options.cwd ? { cwd: options.cwd } : {}), focus: false },
+      hostId, 'tab.create', { ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}), ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.label ? { label: options.label } : {}), focus: false },
     )
     const paneId = created?.root_pane?.pane_id
     const workspaceId = created?.root_pane?.workspace_id ?? created?.tab?.workspace_id ?? options.workspaceId ?? ''
     if (!paneId) throw new Error(t('无法创建会话'))
-    // agent.start needs a pane sitting at a shell prompt; it appears a moment
-    // after the tab is created, so retry the documented "not an available shell".
     let lastError: unknown
     for (let attempt = 0; attempt < 6; attempt++) {
       try {
         await this.rpc(hostId, 'agent.start', {
-          name: options.label || `${options.kind}-${Math.random().toString(16).slice(2, 8)}`,
+          name: `${options.kind}-${Math.random().toString(16).slice(2, 8)}`,
           kind: options.kind,
           pane_id: paneId,
           timeout_ms: 60_000,
@@ -203,6 +298,27 @@ export class Controller {
       }
     }
     throw lastError instanceof Error ? lastError : new Error(t('无法创建会话'))
+  }
+
+  /**
+   * Renames a session. The label lives on the Herdr tab, so the desktop shows
+   * it too, and the pane keeps its own label untouched.
+   */
+  renameSession = async (hostId: string, paneId: string, label: string) => {
+    const trimmed = label.trim().slice(0, 80)
+    const pane = this.state.hosts.find((item) => item.host.id === hostId)?.snapshot?.panes.find((item) => item.pane_id === paneId)
+    if (!pane?.tab_id) throw new Error(t('找不到会话'))
+    // An empty name clears the label, which restores Herdr's own title.
+    if (label.trim() && !trimmed) throw new Error(t('名称不能为空'))
+    await this.rpc(hostId, 'tab.rename', { tab_id: pane.tab_id, label: trimmed })
+    // Herdr pushes a fresh snapshot after a rename, but the list must not look
+    // unchanged while that round trip is in flight.
+    const snapshot = this.state.hosts.find((item) => item.host.id === hostId)?.snapshot
+    if (snapshot) {
+      this.patchHost(hostId, {
+        snapshot: { ...snapshot, tabs: (snapshot.tabs ?? []).map((tab) => tab.tab_id === pane.tab_id ? { ...tab, label: trimmed } : tab) },
+      })
+    }
   }
 
   /** Renames a paired desktop. The credential and connection are untouched. */
@@ -264,6 +380,14 @@ export class Controller {
   }
 
   /** Releases every socket when the app has been away long enough. */
+  /**
+   * Releases every socket when the app has been away long enough.
+   *
+   * The transport is single-use: closing it marks it stopped and `connect()`
+   * refuses forever after. So the runtime is dropped rather than reused, and
+   * `resume` builds a new one — otherwise the desktop would stay offline for
+   * the rest of the process's life.
+   */
   suspend = () => {
     this.stopSession()
     for (const [id, runtime] of this.runtimes) {
@@ -271,6 +395,7 @@ export class Controller {
       runtime.hub?.close()
       runtime.hub = undefined
       runtime.transport.close()
+      this.runtimes.delete(id)
       this.patchHost(id, { status: 'offline', herdrOnline: false })
     }
   }
@@ -281,9 +406,11 @@ export class Controller {
    */
   resume = (wasSuspended: boolean) => {
     if (!wasSuspended) return
-    for (const [id, runtime] of this.runtimes) {
-      runtime.attempts = 0
-      runtime.stopped = undefined
+    for (const state of this.state.hosts) {
+      const id = state.host.id
+      if (this.runtimes.has(id)) continue
+      const runtime = this.makeRuntime(state.host)
+      this.runtimes.set(id, runtime)
       this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined })
       void this.connectHost(id, runtime)
     }
@@ -301,7 +428,7 @@ export class Controller {
     const hostId = this.state.selectedHostId
     if (!hostId || !this.runtimes.has(hostId)) return
     this.stopSession()
-    this.publish({ selectedPaneId: paneId, session: { hostId, paneId, items: [], start: -1, end: 0, queued: [], loading: true, loadingOlder: false, screen: '', unsupported: false, sending: false } })
+    this.publish({ selectedPaneId: paneId, session: { hostId, paneId, items: [], start: -1, end: 0, queued: [], loading: true, loadingOlder: false, screen: '', unsupported: false, sentMessage: false, sending: false } })
     await this.refreshSession()
   }
   /** Manual retry: drop any scheduled attempt and reload now. */
@@ -324,9 +451,12 @@ export class Controller {
   }
   private async loadSession(epoch: number) {
     const session = this.state.session
+    // Abandoning this load must not leave the spinner running: the caller may
+    // have switched panes, or the runtime may be gone after a suspend. Clearing
+    // here keeps the next screen from inheriting a permanent "loading".
     if (!session || epoch !== this.sessionEpoch) return
     const runtime = this.runtimes.get(session.hostId)
-    if (!runtime) return
+    if (!runtime) { this.patchSession(epoch, { loading: false }); return }
     for (const socket of this.sessionSockets.splice(0)) socket.close()
     // Only show a spinner while the first page is in flight; an empty
     // transcript is a valid end state, not a permanent load.
@@ -339,17 +469,20 @@ export class Controller {
         // land here: a plain terminal (nothing to show) and an agent whose integration has
         // not reported its native session id yet, where a transcript will appear shortly.
         // Neither is an error, and the second one must keep retrying.
-        if (['unsupported_agent', 'no_session', 'no_agent_session', 'transcript_not_found'].includes(page.error.code || '')) {
+        const code = page.error.code || ''
+        if (['unsupported_agent', 'no_session', 'no_agent_session', 'transcript_not_found'].includes(code)) {
           const pane = this.state.hosts.find((item) => item.host.id === session.hostId)?.snapshot?.panes.find((item) => item.pane_id === session.paneId)
-          const hasAgent = Boolean(pane?.agent)
-          this.patchSession(epoch, { unsupported: true, loading: false, error: undefined })
-          this.later(epoch, hasAgent ? 4000 : 15_000)
+          const gap = transcriptGap(code, pane, session.sentMessage)
+          this.patchSession(epoch, { unsupported: true, gap, loading: false, error: undefined })
+          // An agent can still report its id, or its transcript can appear, so
+          // keep asking; nothing changes on its own for a shell, so look rarely.
+          this.later(epoch, gap === 'terminal' || gap === 'unsupported' ? 15_000 : 4000)
         } else throw new Error(page.error.message || t('无法读取会话'))
       } else {
         const same = session.sessionId === page.session_id
         const items = same ? session.items : merge([], page.page?.items ?? [])
         const cursor = same ? session.end : page.page?.end ?? 0
-        this.patchSession(epoch, { items, sessionId: page.session_id, start: same && session.start >= 0 ? session.start : page.page?.start ?? 0, end: cursor, queued: page.queued ?? [], loading: false, unsupported: false })
+        this.patchSession(epoch, { items, sessionId: page.session_id, start: same && session.start >= 0 ? session.start : page.page?.start ?? 0, end: cursor, queued: page.queued ?? [], loading: false, unsupported: false, gap: undefined })
         const chat = runtime.transport.subscribe(`/ws/herdr/chat?pane=${encodeURIComponent(session.paneId)}&from=${cursor}`, (event) => {
           if (epoch !== this.sessionEpoch || !this.state.session) return
           if (event.type === 'items' && Array.isArray(event.items)) this.patchSession(epoch, { items: merge(this.state.session.items, event.items), end: Number(event.end) || this.state.session.end })
@@ -407,14 +540,17 @@ export class Controller {
     this.patchSession(epoch, { sending: true, error: undefined })
     try {
       const keys: string[] = []
+      const multiSelect = needsSpace(current.options[target])
       if (current.cursor >= 0 && current.cursor !== target) {
         const moves = moveKeys(current.cursor, target)
         if (!moves) throw new Error(t('无法确定光标位置'))
         keys.push(...moves)
       }
-      // Multi-select toggles with space (and a lone number works too);
-      // single-choice commits when the cursor moves and Enter is pressed.
-      if (needsSpace(current.options[target]) && current.cursor === target) keys.push(' ')
+      // In a multi-select menu Enter *submits* the whole form, so it must never
+      // be sent for a plain row: only Space toggles. Single-choice menus commit
+      // by moving the cursor and pressing Enter, which is why the two cases are
+      // kept apart instead of sharing one fallback.
+      if (multiSelect) keys.push(' ')
       else if (current.cursor >= 0 && current.cursor !== target) keys.push('enter')
       else keys.push(String(optionNumber))
       await this.rpc(session.hostId, 'pane.send_keys', { pane_id: session.paneId, keys: keys.map((key) => key === ' ' ? 'space' : key) })
@@ -437,17 +573,28 @@ export class Controller {
     try { const result = await this.rpc<{ read?: { text?: string } }>(session.hostId, 'pane.read', { pane_id: session.paneId, source: 'visible', format: 'text' }); this.patchSession(epoch, { screen: result.read?.text ?? '' }) }
     catch (error) { this.patchSession(epoch, { error: message(error) }) }
   }
-  private async mutate(method: string, params: (session: SessionState) => Record<string, unknown>) {
+  /** True when the call was actually made; false when one was already in flight. */
+  private async mutate(method: string, params: (session: SessionState) => Record<string, unknown>): Promise<boolean> {
     const session = this.state.session, epoch = this.sessionEpoch
     if (!session) throw new Error(t('没有打开的会话'))
-    if (session.sending) return
+    if (session.sending) return false
     if (session.uncertain) throw new Error(session.uncertain)
     this.patchSession(epoch, { sending: true, error: undefined })
-    try { await this.rpc(session.hostId, method, params(session)); if (epoch === this.sessionEpoch) await this.readScreen() }
+    try { await this.rpc(session.hostId, method, params(session)); if (epoch === this.sessionEpoch) await this.readScreen(); return true }
     catch (error) { this.patchSession(epoch, { error: message(error), ...(error instanceof OperationUncertainError ? { uncertain: message(error) } : {}) }); throw error }
     finally { this.patchSession(epoch, { sending: false }) }
   }
-  sendMessage = async (text: string) => { if (text.trim()) await this.mutate('agent.prompt', (s) => ({ target: s.paneId, text })) }
+  /**
+   * Records that the user has handed this pane work. That is what turns a
+   * missing session id from "the agent is still starting" into "nothing is
+   * going to report one", so the pane can say which of the two it is.
+   */
+  private markSent(epoch: number) { if (epoch === this.sessionEpoch) this.patchSession(epoch, { sentMessage: true }) }
+  sendMessage = async (text: string) => {
+    if (!text.trim()) return
+    const epoch = this.sessionEpoch
+    if (await this.mutate('agent.prompt', (s) => ({ target: s.paneId, text }))) this.markSent(epoch)
+  }
   /**
    * Runs one of the agent's own slash commands.
    *
@@ -489,6 +636,7 @@ export class Controller {
       textSent = true
       await this.rpc(session.hostId, 'pane.send_keys', { pane_id: session.paneId, keys: ['enter'] })
       if (epoch === this.sessionEpoch) await this.readScreen()
+      this.markSent(epoch)
     } catch (error) {
       const uncertain = error instanceof OperationUncertainError || textSent
       this.patchSession(epoch, { error: message(error), ...(uncertain ? { uncertain: t('终端输入可能已部分执行，请核对画面后重新打开会话。') } : {}) })

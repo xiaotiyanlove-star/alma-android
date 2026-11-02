@@ -9,7 +9,7 @@ async function run(locale: 'zh-CN' | 'en') {
   const page = await context.newPage()
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(e.message))
-  await page.goto('http://127.0.0.1:5174')
+  await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await page.waitForTimeout(700)
   const out: Record<string, unknown> = { locale }
 

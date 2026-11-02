@@ -11,7 +11,7 @@ await context.addInitScript(() => { try { localStorage.setItem('herdr.prefs.loca
 const page = await context.newPage()
 const errors: string[] = []
 page.on('pageerror', (error: Error) => errors.push(error.message))
-await page.goto('http://127.0.0.1:5174')
+await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
 
 // Add seven desktops to cross the collapse threshold.
 for (const [index, name] of names.entries()) {

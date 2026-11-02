@@ -10,7 +10,7 @@ await c.addInitScript(() => {
   } catch {}
 })
 const p = await c.newPage()
-await p.goto('http://127.0.0.1:5174')
+await p.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
 await p.waitForTimeout(700)
 // Add a desktop so the settings and session screens fully render.
 await p.getByRole('button', { name: /Add desktop|添加节点/ }).first().click()

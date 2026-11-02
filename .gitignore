@@ -26,3 +26,4 @@ test-artifacts/
 # Local-only probes: hardcoded CDP ports and emulator paths, not useful to others
 client-tests/device-*.mjs
 client-tests/live-*.ts
+client-tests/_diag.ts

@@ -66,12 +66,12 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
 })
 
 try {
-  await page.goto('http://127.0.0.1:5174')
+  await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await page.getByRole('button', { name: '添加节点', exact: true }).first().click()
   await page.getByLabel('节点名称', { exact: true }).fill('N')
   await page.getByLabel('配对链接', { exact: true }).fill(`alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
   await page.getByRole('button', { name: '添加节点', exact: true }).last().click()
-  await page.getByRole('button', { name: /Claude Code/ }).first().click()
+  await page.locator('.session-row').filter({ hasText: 'Claude Code' }).first().click()
   await page.waitForTimeout(900)
 
   // 1. The header reports the two still-running background agents.

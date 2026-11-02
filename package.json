@@ -1,6 +1,6 @@
 {
   "name": "alma-herdr-android",
-  "version": "0.1.13",
+  "version": "0.1.15",
   "private": true,
   "type": "module",
   "description": "Independent multi-host Herdr client in the nanami Android shell",
@@ -11,7 +11,7 @@
     "check": "npm run test && npm run build:web",
     "android:sync": "npm run build:web && cap sync android",
     "android:build": "npm run android:sync && cd android && ./gradlew assembleDebug",
-    "test:ui": "tsx client-tests/browser-smoke.ts && tsx client-tests/scan-flow-check.ts && tsx client-tests/prompt-ui-check.ts && tsx client-tests/markdown-ui-check.ts",
+    "test:ui": "tsx client-tests/browser-smoke.ts && tsx client-tests/scan-flow-check.ts && tsx client-tests/prompt-ui-check.ts && tsx client-tests/markdown-ui-check.ts && tsx client-tests/session-name-ui-check.ts && tsx client-tests/transcript-gap-ui-check.ts",
     "test:live": "tsx client-tests/live-readonly.ts"
   },
   "dependencies": {

@@ -39,9 +39,13 @@ export function stopMessage(reason: StopReason): string {
 /**
  * Some failures will never succeed by waiting: a rejected pairing or a relay
  * that does not know this desktop. Retrying those only wastes battery.
+ *
+ * Classification uses the error's code, never its message text — the text is
+ * translated, so matching on it breaks the moment the interface language
+ * changes.
  */
-export function isPermanentFailure(message: string): StopReason | null {
-  if (/配对验证失败|auth-failed|Pairing verification/i.test(message)) return 'auth'
-  if (/找不到|not registered|unknown (id|token)|502/i.test(message)) return 'unknown-host'
+export function isPermanentFailure(code: string | undefined): StopReason | null {
+  if (code === 'auth') return 'auth'
+  if (code === 'unknown-host') return 'unknown-host'
   return null
 }
