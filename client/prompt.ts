@@ -34,8 +34,12 @@ const BOX = /^\[([ xX✓✔☒])\]\s+/u
 const MAX_OPTIONS = 12
 const LOOKBACK = 40
 
-/** Prompt text shorter than this is too generic to safely turn into buttons. */
-const MIN_LABEL = 3
+/**
+ * Labels may be one character: a real confirmation is often "1. Yes / 2. No",
+ * and rejecting short ones hid exactly the prompt the user most needs to
+ * answer. What keeps prose out is the cursor and question checks below, not
+ * the label length.
+ */
 
 export function parsePrompt(screen: string): Prompt | null {
   const lines = screen.split(/\r?\n/).slice(-LOOKBACK).map((line) => line.replace(FRAME, ''))
@@ -83,9 +87,9 @@ export function parsePrompt(screen: string): Prompt | null {
   const hasCursorOrBoxes = found.options.some((option) => option.selected || option.checked !== null)
   if (!hasCursorOrBoxes) return null
 
-  // Every option must carry real text; an empty or stub label means this is
-  // probably not a menu at all (progress output, a numbered list in prose).
-  if (found.options.some((option) => option.label.length < MIN_LABEL)) return null
+  // Every option must carry some text; an empty label means this is probably
+  // not a menu at all (progress output, a numbered list in prose).
+  if (found.options.some((option) => !option.label)) return null
 
   const above = lines.slice(0, found.start)
   const question = [...above].reverse().find((line) => line.trim() && !/[─━═╭╮╰╯]/.test(line))?.trim()

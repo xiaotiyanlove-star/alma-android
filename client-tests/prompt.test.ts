@@ -76,3 +76,32 @@ test('ANSI colour and box frames do not confuse parsing', () => {
   assert.ok(prompt)
   assert.equal(prompt.options.length, 4)
 })
+
+test('a two-word confirmation is still a menu', () => {
+  // Claude's destructive-command prompt offers exactly "1. Yes / 2. No".
+  // Rejecting short labels hid the prompt the user most needs to answer.
+  const screen = [
+    'Bash command',
+    'Check workflow presence on main',
+    '────────────────────────',
+    'Dangerous rm operation on working directory or its ancestor: /tmp/clone-check',
+    '⚠ Claude Code will automatically block this request in 1:02',
+    '',
+    'Do you want to proceed?',
+    '❯ 1. Yes',
+    '  2. No',
+    '',
+    'Esc to cancel · Tab to amend',
+  ].join('\n')
+  const prompt = parsePrompt(screen)
+  assert.ok(prompt)
+  assert.equal(prompt.question, 'Do you want to proceed?')
+  assert.deepEqual(prompt.options.map((option) => option.label), ['Yes', 'No'])
+  assert.equal(prompt.cursor, 0)
+})
+
+test('single-character labels are menus, prose still is not', () => {
+  assert.ok(parsePrompt('Pick one\n❯ 1. A\n  2. B'))
+  assert.equal(parsePrompt('Steps\n1. a\n2. b'), null, 'no cursor: prose')
+  assert.equal(parsePrompt('❯ 1. A\n  2. B'), null, 'no question: not a menu')
+})
