@@ -1,8 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 本地测试用：10.0.2.2 是 AVD 访问宿主机的回环别名，真机上无意义。
-     应用内更新下载器在 AVD 上跑真实下载链（校验/镜像切换）需要明文 HTTP。 -->
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">10.0.2.2</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
 </network-security-config>
