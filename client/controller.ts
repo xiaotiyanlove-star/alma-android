@@ -5,7 +5,7 @@ import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, stopMessage } 
 import { MAX_ATTACHMENT_BYTES, uploadRoute, type UploadResponse, type UploadedFile } from './attachments'
 import { moveKeys, needsSpace, parsePrompt, samePrompt, type Prompt } from './prompt'
 import { hostStorage, type HostStorage } from './storage'
-import { EncryptedTunnel, OperationUncertainError, type Transport, type TunnelSocket } from './transport'
+import { EncryptedTunnel, OperationUncertainError, type Transport, type TunnelError, type TunnelSocket } from './transport'
 
 type Page = { session_id?: string; page?: { items?: ChatItem[]; start?: number; end?: number }; queued?: { id: string; text: string }[]; error?: { code?: string; message?: string } }
 const message = (error: unknown) => error instanceof Error ? error.message : t('请求失败')
@@ -29,7 +29,7 @@ export class Controller {
   private openingHost = false
   private initializedStorage = false
   private sessionRefresh?: Promise<void>
-  constructor(private storage: HostStorage = hostStorage, private createTransport = (host: Host, status: (state: 'connecting' | 'online' | 'offline', error?: string) => void): Transport => new EncryptedTunnel(host, status)) {}
+  constructor(private storage: HostStorage = hostStorage, private createTransport = (host: Host, status: (state: 'connecting' | 'online' | 'offline', error?: string, code?: TunnelError['code']) => void): Transport => new EncryptedTunnel(host, status)) {}
   getState = () => this.state
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   private publish(patch: Partial<AppState>) { this.state = { ...this.state, ...patch }; for (const listener of this.listeners) listener() }
@@ -50,13 +50,19 @@ export class Controller {
       for (const host of hosts) this.attach(host)
     } catch { this.publish({ loading: false, error: t('无法读取安全存储，未覆盖已有节点。请重新打开应用。') }) }
   }
-  private attach(host: Host) {
+  /** Builds a runtime with a fresh transport; a closed transport never reopens. */
+  private makeRuntime(host: Host): Runtime {
     const runtime: Runtime = { transport: undefined as unknown as Transport, epoch: 0, attempts: 0 }
-    runtime.transport = this.createTransport(host, (status, error) => {
+    runtime.transport = this.createTransport(host, (status, error, code) => {
       if (this.runtimes.get(host.id) !== runtime) return
       this.patchHost(host.id, { status, ...(status === 'online' ? {} : { herdrOnline: false }), error })
-      if (status === 'offline') this.scheduleHost(host.id, runtime, error)
+      if (status === 'offline') this.scheduleHost(host.id, runtime, code)
     })
+    return runtime
+  }
+
+  private attach(host: Host) {
+    const runtime = this.makeRuntime(host)
     this.runtimes.set(host.id, runtime)
     void this.connectHost(host.id, runtime)
   }
@@ -65,9 +71,9 @@ export class Controller {
    * retrying only resumes when the app is foregrounded, the network returns,
    * or the user asks — nothing else resets the ladder.
    */
-  private scheduleHost(id: string, runtime: Runtime, error?: string) {
+  private scheduleHost(id: string, runtime: Runtime, code?: TunnelError['code']) {
     if (runtime.retry || this.runtimes.get(id) !== runtime) return
-    const permanent = error ? isPermanentFailure(error) : null
+    const permanent = isPermanentFailure(code)
     const delay = permanent ? null : nextDelay(runtime.attempts)
     if (delay === null) {
       runtime.stopped = permanent ?? 'exhausted'
@@ -155,6 +161,7 @@ export class Controller {
     if (file.bytes.length > MAX_ATTACHMENT_BYTES) throw new Error(t('文件超过 50 MB'))
     const route = uploadRoute(file.type)
     const response = await runtime.transport.request<UploadResponse>(route, undefined, {
+      kind: 'mutation',
       raw: file.bytes,
       headers: {
         'content-type': file.type || 'application/octet-stream',
@@ -264,6 +271,14 @@ export class Controller {
   }
 
   /** Releases every socket when the app has been away long enough. */
+  /**
+   * Releases every socket when the app has been away long enough.
+   *
+   * The transport is single-use: closing it marks it stopped and `connect()`
+   * refuses forever after. So the runtime is dropped rather than reused, and
+   * `resume` builds a new one — otherwise the desktop would stay offline for
+   * the rest of the process's life.
+   */
   suspend = () => {
     this.stopSession()
     for (const [id, runtime] of this.runtimes) {
@@ -271,6 +286,7 @@ export class Controller {
       runtime.hub?.close()
       runtime.hub = undefined
       runtime.transport.close()
+      this.runtimes.delete(id)
       this.patchHost(id, { status: 'offline', herdrOnline: false })
     }
   }
@@ -281,9 +297,11 @@ export class Controller {
    */
   resume = (wasSuspended: boolean) => {
     if (!wasSuspended) return
-    for (const [id, runtime] of this.runtimes) {
-      runtime.attempts = 0
-      runtime.stopped = undefined
+    for (const state of this.state.hosts) {
+      const id = state.host.id
+      if (this.runtimes.has(id)) continue
+      const runtime = this.makeRuntime(state.host)
+      this.runtimes.set(id, runtime)
       this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined })
       void this.connectHost(id, runtime)
     }
@@ -324,9 +342,12 @@ export class Controller {
   }
   private async loadSession(epoch: number) {
     const session = this.state.session
+    // Abandoning this load must not leave the spinner running: the caller may
+    // have switched panes, or the runtime may be gone after a suspend. Clearing
+    // here keeps the next screen from inheriting a permanent "loading".
     if (!session || epoch !== this.sessionEpoch) return
     const runtime = this.runtimes.get(session.hostId)
-    if (!runtime) return
+    if (!runtime) { this.patchSession(epoch, { loading: false }); return }
     for (const socket of this.sessionSockets.splice(0)) socket.close()
     // Only show a spinner while the first page is in flight; an empty
     // transcript is a valid end state, not a permanent load.
@@ -407,14 +428,17 @@ export class Controller {
     this.patchSession(epoch, { sending: true, error: undefined })
     try {
       const keys: string[] = []
+      const multiSelect = needsSpace(current.options[target])
       if (current.cursor >= 0 && current.cursor !== target) {
         const moves = moveKeys(current.cursor, target)
         if (!moves) throw new Error(t('无法确定光标位置'))
         keys.push(...moves)
       }
-      // Multi-select toggles with space (and a lone number works too);
-      // single-choice commits when the cursor moves and Enter is pressed.
-      if (needsSpace(current.options[target]) && current.cursor === target) keys.push(' ')
+      // In a multi-select menu Enter *submits* the whole form, so it must never
+      // be sent for a plain row: only Space toggles. Single-choice menus commit
+      // by moving the cursor and pressing Enter, which is why the two cases are
+      // kept apart instead of sharing one fallback.
+      if (multiSelect) keys.push(' ')
       else if (current.cursor >= 0 && current.cursor !== target) keys.push('enter')
       else keys.push(String(optionNumber))
       await this.rpc(session.hostId, 'pane.send_keys', { pane_id: session.paneId, keys: keys.map((key) => key === ' ' ? 'space' : key) })

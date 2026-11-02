@@ -21,12 +21,11 @@ test('the remaining count is what the UI shows', () => {
   assert.equal(retriesLeft(10), 0, 'never negative')
 })
 
-test('permanent failures are recognised so waiting does not waste battery', () => {
-  assert.equal(isPermanentFailure('配对验证失败，请重新导入配对链接'), 'auth')
-  assert.equal(isPermanentFailure('Handshake authentication failed (auth-failed)'), 'auth')
-  assert.equal(isPermanentFailure('relay 502: desktop offline'), 'unknown-host')
-  assert.equal(isPermanentFailure('连接已断开'), null, 'transient failures still retry')
-  assert.equal(isPermanentFailure('Encrypted connection timed out'), null)
+test('permanent failures are recognised by code, so language cannot break them', () => {
+  assert.equal(isPermanentFailure('auth'), 'auth')
+  assert.equal(isPermanentFailure('unknown-host'), 'unknown-host')
+  assert.equal(isPermanentFailure('network'), null, 'transient failures still retry')
+  assert.equal(isPermanentFailure(undefined), null)
 })
 
 test('a short absence keeps the connection warm', () => {

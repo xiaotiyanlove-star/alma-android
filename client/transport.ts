@@ -14,6 +14,17 @@ export interface SocketLike {
   onclose: (() => void) | null
 }
 export interface TunnelSocket { close(): void }
+
+/** Transport failure with a code that survives translation. */
+export class TunnelError extends Error {
+  constructor(readonly code: 'auth' | 'unknown-host' | 'network', message: string) {
+    super(message)
+    this.name = 'TunnelError'
+  }
+}
+
+/** The status callback reports the code so callers never parse a message. */
+export type StatusSink = (state: 'connecting' | 'online' | 'offline', error?: string, code?: TunnelError['code']) => void
 export class OperationUncertainError extends Error {
   constructor() { super('连接中断或超时，操作可能已执行。请先检查会话，勿直接重复发送。') }
 }
@@ -23,7 +34,20 @@ interface Pending {
 }
 interface Subscription { path: string; receive(frame: Frame): void; onClose(): void }
 /** Extra options for requests whose payload is not a JSON body. */
-export interface RequestInit2 { raw?: Uint8Array; headers?: Record<string, string> }
+export interface RequestInit2 {
+  /** Bytes to send as the body, used for uploads. */
+  raw?: Uint8Array
+  headers?: Record<string, string>
+  /**
+   * Whether this call can change state on the desktop.
+   *
+   * It is declared explicitly rather than inferred from "has a body": an upload
+   * carries bytes but must count as a mutation, while a body-less RPC can still
+   * be one. Getting this wrong either retries a destructive call or refuses to
+   * retry a harmless read.
+   */
+  kind?: 'read' | 'mutation'
+}
 export interface Transport {
   connect(): Promise<void>
   request<T>(path: string, body?: unknown, init?: RequestInit2): Promise<T>
@@ -38,6 +62,8 @@ export class EncryptedTunnel implements Transport {
   private nonce = new Uint8Array(16)
   private keyPair?: Awaited<ReturnType<typeof createKeyPair>>
   private counter = 0n
+  /** Expected inbound nonce; resets with each connection generation. */
+  private recvCounter = 0n
   /** Both sides offered binary inner frames during the handshake. */
   private binary = false
   private ready = false
@@ -51,7 +77,7 @@ export class EncryptedTunnel implements Transport {
   private outgoing = Promise.resolve()
   private pending = new Map<string, Pending>()
   private subscriptions = new Map<string, Subscription>()
-  constructor(private host: Host, private status: (state: 'connecting' | 'online' | 'offline', error?: string) => void, private socketFactory: (url: string) => SocketLike = (url) => new WebSocket(url) as unknown as SocketLike, private timeoutMs = 20_000) {}
+  constructor(private host: Host, private status: StatusSink, private socketFactory: (url: string) => SocketLike = (url) => new WebSocket(url) as unknown as SocketLike, private timeoutMs = 20_000) {}
 
   connect(): Promise<void> {
     if (this.ready) return Promise.resolve()
@@ -71,6 +97,7 @@ export class EncryptedTunnel implements Transport {
     this.keyPair = pair
     this.nonce = crypto.getRandomValues(new Uint8Array(16))
     this.counter = 0n
+    this.recvCounter = 0n
     this.binary = false
     this.keys = undefined
     this.incoming = Promise.resolve()
@@ -93,7 +120,7 @@ export class EncryptedTunnel implements Transport {
           if (peer.length !== 65 || nonce.length !== 16) throw new Error('握手参数长度无效')
           const keys = await deriveSessionKeys({ connectCode: this.host.connectCode, myPrivateKey: pair.privateKey, peerPublic: peer, initiatorPublic: pair.publicKey, responderPublic: peer, initiatorNonce: this.nonce, responderNonce: nonce })
           if (epoch !== this.epoch) return
-          if (!constantTimeEqual(fromBase64url(hello.cr), keys.confirmResponder)) throw new Error(t('配对验证失败，请重新导入配对链接'))
+          if (!constantTimeEqual(fromBase64url(hello.cr), keys.confirmResponder)) throw new TunnelError('auth', t('配对验证失败，请重新导入配对链接'))
           // The desktop echoes `bin: 1` only when it supports the binary form;
           // without it we keep sending JSON, which every peer understands.
           this.binary = hello[BINARY_FRAMES_FIELD] === 1
@@ -108,12 +135,13 @@ export class EncryptedTunnel implements Transport {
           if (typeof data === 'string') throw new Error(t('收到未加密的数据帧'))
           const bytes = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : null
           if (!bytes || bytes.length > 32 * 1024 * 1024) throw new Error('数据帧无效或过大')
-          const frame = decodeInnerFrame(await openBytes(this.keys!.s2c, bytes))
+          const frame = decodeInnerFrame(await openBytes(this.keys!.s2c, bytes, this.recvCounter))
+          this.recvCounter++
           if (epoch === this.epoch) this.handle(frame as Frame)
         }
       }).catch((error) => { if (epoch === this.epoch) this.fail(error instanceof Error ? error : new Error(t('加密数据错误'))) })
     }
-    socket.onerror = () => { if (epoch === this.epoch) this.fail(new Error(t('中继连接失败'))) }
+    socket.onerror = () => { if (epoch === this.epoch) this.fail(new TunnelError('network', t('中继连接失败'))) }
     socket.onclose = () => { if (epoch === this.epoch) this.fail(new Error(t('连接已断开'))) }
   }
   private send(frame: Frame): Promise<void> {
@@ -135,7 +163,8 @@ export class EncryptedTunnel implements Transport {
     await this.connect()
     const id = crypto.randomUUID()
     return new Promise<T>((resolve, reject) => {
-      const mutation = body !== undefined
+      // Explicit when the caller knows; a bare body still means a mutation.
+      const mutation = init?.kind ? init.kind === 'mutation' : body !== undefined
       const timer = setTimeout(() => {
         const pending = this.pending.get(id)
         if (!pending) return
@@ -211,7 +240,7 @@ export class EncryptedTunnel implements Transport {
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(pending.mutation && pending.sent ? new OperationUncertainError() : error) }
     this.pending.clear()
     for (const id of [...this.subscriptions.keys()]) this.endSubscription(id)
-    this.status('offline', error.message)
+    this.status('offline', error.message, error instanceof TunnelError ? error.code : undefined)
   }
   close() { this.stopped = true; this.fail(new Error('节点连接已关闭')) }
 }

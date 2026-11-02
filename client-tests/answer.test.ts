@@ -94,3 +94,26 @@ test('unknown option number is refused', async () => {
     assert.deepEqual(sent(fake), [])
   } finally { controller.dispose() }
 })
+
+test('multi-select never sends Enter, even when the cursor must move', async () => {
+  // Row 1 is highlighted; the user taps row 3. Moving there must not submit.
+  const screen = 'Pick files\n❯ 1. [ ] app.ts\n  2. [ ] test.ts\n  3. [ ] readme.md'
+  const { fake, controller } = await setup(screen)
+  try {
+    const prompt = parsePrompt(screen)!
+    await controller.answerPrompt(prompt, 3)
+    const keys = sent(fake)
+    assert.ok(!keys.includes('enter'), `Enter would submit the whole form; got ${JSON.stringify(keys)}`)
+    assert.ok(keys.includes('space'), 'the row is toggled with space')
+    assert.deepEqual(keys, ['down', 'down', 'space'])
+  } finally { controller.dispose() }
+})
+
+test('single-choice still commits with Enter after moving', async () => {
+  const screen = 'Run this command?\n❯ 1. Yes, run command\n  2. No, cancel'
+  const { fake, controller } = await setup(screen)
+  try {
+    await controller.answerPrompt(parsePrompt(screen)!, 2)
+    assert.deepEqual(sent(fake), ['down', 'enter'], 'single-choice needs Enter to commit')
+  } finally { controller.dispose() }
+})

@@ -35,6 +35,22 @@ with incremental updates, and a terminal view with the keys you actually need. H
 is paginated by cursor and resumes from the last item received, so a reconnect does not
 replay or skip messages.
 
+**Model and context.** Some agents print their model, context usage and thinking state on
+a status line; when they do, those appear as chips in the session header. Herdr's API
+exposes none of these, so parsing is best-effort and honest about it: an unrecognised line
+yields no chip rather than a guess. Claude Code does not print them at all, so with it the
+header simply has no chips.
+
+**Background agents.** Subagents that Claude Code has dispatched and not yet finished are
+listed for the current session, read from the transcript's tool rows. This is the only
+structured source — the terminal prints a similar list in a layout that differs per agent
+and per version.
+
+**Slash commands.** Typing `/` in the composer filters the commands the current agent
+accepts, resolved per agent rather than from a Herdr API. Read-only and menu-opening
+commands ship; anything that clears, compacts or rewinds a conversation is deliberately
+left out.
+
 **Sending.** Messages go through `agent.prompt`; terminal input uses bracketed paste
 followed by Enter. A request that was sent but never confirmed — a dropped tunnel, a
 timeout, an HTTP error — is marked *uncertain* and is never retried automatically.
@@ -67,8 +83,8 @@ and time zone that follow the system unless you override them.
 No remote desktop, no browser control, no client for Alma's own threads, no model or
 provider configuration, and no cloud push. Chat history depends on the agent reporting a
 native session id through its Herdr integration; where it does not, the client says so
-and offers the terminal instead. Model names and context usage are not shown: Herdr's
-API does not expose them, and the terminal does not print them.
+and offers the terminal instead. Refresh tokens, conversation history and agent
+configuration are never stored on the phone beyond what the desktop sends.
 
 ## Requirements
 
@@ -76,6 +92,31 @@ API does not expose them, and the terminal does not print them.
 - Herdr running on that desktop
 - A Herdr integration installed for the agent you want to follow
 - To build: Node 22+, JDK 21, Android SDK 35
+
+## Relays
+
+The pairing link carries the relay address, so the phone needs no relay setup of its own:
+whatever relay the desktop is configured to use is the one this client dials. With
+end-to-end encryption on, which is the Alma default, the relay only ever sees ciphertext
+and never the connect code.
+
+Alma ships with a hosted relay at `relay.alma.now`. If you would rather keep traffic on
+infrastructure you control — or want a region closer to you — you can run
+[yetone/alma-relay](https://github.com/yetone/alma-relay) yourself. It deploys to
+**Cloudflare Workers on the free plan** in a few minutes:
+
+```bash
+git clone https://github.com/yetone/alma-relay && cd alma-relay
+npm install
+npx wrangler deploy        # prints https://alma-relay.<you>.workers.dev
+```
+
+That uses SQLite-backed Durable Objects with WebSocket hibernation, so an idle pairing
+costs next to nothing, and TLS plus a `*.workers.dev` hostname come with it. The same repo
+also runs under Docker or behind your own reverse proxy if you prefer a VPS. Then point
+the desktop at your relay under **Settings → Remote Access → Use a self-hosted relay** and
+re-scan the pairing QR code: links created against the old relay do not carry the new
+address.
 
 ## Build
 
@@ -113,6 +154,12 @@ client/                The app
   lifecycle.ts         Foreground/background connection policy
   backoff.ts           Bounded reconnect pacing
   attachments.ts       Upload helpers and message composition
+  commands.ts          Per-agent slash commands offered in the composer
+  subagents.ts         Running background agents, derived from transcript tool rows
+  session-info.ts      Model and context, parsed from the agent's status line
+  notify.ts            Status diffing and local notifications
+  keepalive.ts         Foreground service toggle
+  drafts.ts            Per-desktop, per-session message drafts
   prefs.ts             Language, time zone, Markdown
   i18n.ts              English dictionary keyed by the Chinese source string
   App.tsx              Screens and components
@@ -121,25 +168,28 @@ android/               Capacitor shell
   KeepAlivePlugin      Optional foreground service
   MainActivity         File chooser, camera grant, notification channel
 client-tests/          Unit tests, Playwright flows, device probes
-www/                   Upstream's bundled Alma renderer, kept for the upstream
-                       release scripts only. Not built, not used by this client.
 ```
 
 ## Testing
 
 ```bash
-npm test        # unit tests: crypto, sessions, retries, prompts, prefs
+npm test        # unit tests: crypto, frames, sessions, retries, prompts, prefs
 npm run test:ui # Playwright flows against the dev server with a mocked relay
-npm run check   # the above plus typecheck and a production build
+npm run check   # unit tests, typecheck and a production build
 ```
+
+`npm run check` is the unit suite plus typecheck and build; the Playwright flows are a
+separate command and are not part of it.
 
 The Playwright flows drive the real UI with a synthetic relay: they complete the
 encrypted handshake, switch between desktops, send messages, answer an approval menu,
 scan a generated QR code and toggle Markdown. They use synthetic pairing codes only and
-never contact a real desktop.
+never contact a real desktop. A `npm run test:live` probe does talk to a real desktop and
+is read-only.
 
 A guard test fails the suite if a Chinese UI string used through `t()` has no English
-entry, so untranslated text cannot slip back in.
+entry. It currently scans `App.tsx`, `controller.ts` and `transport.ts` only, so strings
+in `ScanPairs.tsx`, `notify.ts` and `attachments.ts` are not covered by it.
 
 ## Security
 

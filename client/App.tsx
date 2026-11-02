@@ -6,6 +6,7 @@ import {
   Send, Server, Settings, Square, Terminal, Trash2, WrapText, X, FileCode, FileText, Pencil, ChevronUp, Paperclip, PlusCircle,
 } from 'lucide-react';
 import { controller } from './controller';
+import { Capacitor } from '@capacitor/core';
 import { ScanPairing } from './ScanPairs';
 import { AlertTracker, localNotifier } from './notify';
 import { applyKeepAlive, keepAliveEnabled, setKeepAliveEnabled } from './keepalive';
@@ -339,7 +340,7 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
         <label className="toggle-row">
           <span><strong>{t('agent 需要你或已完成时提醒')}</strong><small>{t('不会上传任何内容。')}</small></span>
           <input type="checkbox" defaultChecked={notificationsEnabled()} onChange={event => {
-            try { localStorage.setItem(ALERTS_KEY, event.target.checked ? 'on' : 'off') } catch { /* storage blocked */ }
+            setNotificationsEnabled(event.target.checked)
             if (event.target.checked) void localNotifier.request()
           }} />
         </label>
@@ -402,15 +403,22 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
  */
 function useAlerts(hosts: HostState[]) {
   const tracker = useRef<AlertTracker>()
-  const enabled = useRef(notificationsEnabled())
   if (!tracker.current) tracker.current = new AlertTracker()
   useEffect(() => {
     void localNotifier.permission().then(async state => {
       if (state === 'prompt' && notificationsEnabled()) await localNotifier.request()
     })
   }, [])
+  const [alertsRevision, setAlertsRevision] = useState(0)
   useEffect(() => {
-    if (!enabled.current) return
+    const onChange = () => setAlertsRevision((value) => value + 1)
+    window.addEventListener(ALERTS_EVENT, onChange)
+    return () => window.removeEventListener(ALERTS_EVENT, onChange)
+  }, [])
+  useEffect(() => {
+    // Read the preference every time rather than capturing it at mount, so
+    // turning alerts off takes effect immediately instead of after a restart.
+    if (!notificationsEnabled()) return
     const hostStates = hosts.map(host => ({
       ...host,
       snapshot: host.snapshot
@@ -418,13 +426,20 @@ function useAlerts(hosts: HostState[]) {
         : undefined,
     }))
     for (const alert of tracker.current!.update(hostStates)) void localNotifier.notify(alert).catch(() => undefined)
-  }, [hosts])
+  }, [hosts, alertsRevision])
 }
 
 export const ALERTS_KEY = 'herdr.alerts.enabled'
 export function notificationsEnabled(): boolean {
   try { return localStorage.getItem(ALERTS_KEY) !== 'off' } catch { return true }
 }
+
+/** Broadcast a preference change so running effects re-evaluate immediately. */
+export function setNotificationsEnabled(enabled: boolean) {
+  try { localStorage.setItem(ALERTS_KEY, enabled ? 'on' : 'off') } catch { /* storage blocked */ }
+  window.dispatchEvent(new CustomEvent(ALERTS_EVENT))
+}
+const ALERTS_EVENT = 'herdr:alerts-changed'
 
 function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSettings(): void; onOpenSession(hostId: string, paneId: string): void }) {
   // Only a single pairing may be auto-selected; with several, the user chooses.
@@ -888,6 +903,24 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   </section>;
 }
 
+/**
+ * Opens the conversation behind a tapped notification.
+ *
+ * The exact pane may be gone by the time the alert is tapped, so selecting the
+ * desktop first and only then the pane keeps a deleted session from leaving the
+ * user on a dead screen.
+ */
+async function openSessionFromAlert(hostId: string, paneId: string) {
+  controller.selectHost(hostId)
+  try {
+    await controller.selectPane(paneId)
+    push({ name: 'session', hostId, paneId })
+  } catch {
+    // The pane no longer exists: land on the session list for that desktop.
+    push({ name: 'sessions' })
+  }
+}
+
 export function App() {
   const state = useSyncExternalStore(subscribe, getSnapshot);
   const route = useRoute();
@@ -897,6 +930,22 @@ export function App() {
   useEffect(initialize, []);
   // Reconcile the foreground service with the saved preference on every launch.
   useEffect(() => { void applyKeepAlive(); }, []);
+
+  // Tapping a notification opens the conversation that raised it. The camera
+  // tunnel stays closed; only the panes and the transcript are loaded.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return
+    let cancel: (() => void) | undefined
+    void import('@capacitor/local-notifications').then(async ({ LocalNotifications }) => {
+      const handle = await LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
+        const extra = action.notification.extra as { hostId?: string; paneId?: string } | undefined
+        if (!extra?.hostId || !extra.paneId) return
+        void openSessionFromAlert(extra.hostId, extra.paneId)
+      })
+      cancel = () => { void handle.remove() }
+    }).catch(() => undefined)
+    return () => cancel?.()
+  }, [])
 
   // Keep the connection warm across a quick app switch, but release it after a
   // long absence so a phone in a pocket is not holding a relay socket open.

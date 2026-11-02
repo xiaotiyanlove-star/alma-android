@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-path name="my_images" path="." />
-    <cache-path name="my_cache_images" path="." />
-    <!-- 应用内更新：DownloadManager 落盘目录（getExternalFilesDir("updates")） -->
+    <!--
+      Only the app's own update directory is shareable. The upstream file listed
+      external-path and cache-path roots (path="."), which put the whole external
+      storage tree — DCIM, Downloads, other apps' files — inside the set a
+      FileProvider URI could grant. Nothing here needs that, and the provider
+      must not be able to hand out what it does not own.
+    -->
     <external-files-path name="updates" path="updates/" />
 </paths>
