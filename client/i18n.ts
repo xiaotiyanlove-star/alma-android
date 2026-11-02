@@ -146,6 +146,7 @@ const en: Dict = {
   '上下文已用': 'Context used',
   '代码': 'code',
   '内容无法显示': 'Content cannot be displayed', '正在加载': 'Loading',
+  '接口响应格式无效': 'The desktop returned a malformed response',
   '已停止自动重连': 'Automatic retrying stopped',
   '配对已失效，请重新添加节点': 'Pairing no longer valid; add this desktop again',
   '中继上找不到这台电脑': 'The relay does not know this desktop',
