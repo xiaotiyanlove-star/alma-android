@@ -107,6 +107,12 @@
 html, body, #root { width: 100%; height: 100%; margin: 0; }
 body { overflow: hidden; overscroll-behavior: none; }
 button, input, textarea, select { font: inherit; color: inherit; letter-spacing: 0; }
+/* Native form controls take their chrome (caret, focus ring, selection,
+   scrollbars) from the colour scheme in force. The root sets one, but a
+   control inside a dark page still rendered that chrome in light colours until
+   it was told explicitly, which is what showed as a white box around the
+   caret on Android. */
+input, textarea, select { color-scheme: inherit; }
 button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 button, input, textarea, select { touch-action: manipulation; }
 button { border: 0; }
@@ -248,7 +254,10 @@ pre { max-width: 100%; }
 .add-host-form { display: flex; flex-direction: column; gap: 8px; max-width: 540px; padding: 24px 0; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .add-host-form label { font-size: 13px; font-weight: 550; }
-.add-host-form input, .add-host-form textarea { display: block; width: 100%; min-width: 0; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); padding: 11px 12px; font-size: 16px; }
+.add-host-form input, .add-host-form textarea { display: block; width: 100%; min-width: 0; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); padding: 11px 12px; font-size: 16px; color: var(--text); caret-color: var(--green); outline: none; }
+/* Replaces the UA focus ring, which is drawn in the platform's own colour and
+   was the white box around the field on a dark theme. */
+.add-host-form input:focus, .add-host-form textarea:focus, .rename-form input:focus { border-color: var(--green-line); box-shadow: 0 0 0 3px var(--focus-ring); }
 .add-host-form input { min-height: 46px; margin-bottom: 12px; }
 .add-host-form textarea { resize: vertical; min-height: 92px; }
 /* Hide only while the credential is masked; no overlay layer to desync from the text. */
@@ -326,7 +335,7 @@ pre { max-width: 100%; }
 .confirm-dialog .confirm-host { color: var(--text); font-weight: 600; margin-bottom: 8px; }
 /* The pairing link is a credential: monospace, selectable, never ambiguous
    about where it starts and ends. */
-.share-link { width: 100%; min-height: 92px; margin: 4px 0 12px; padding: 10px 11px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-3); color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; resize: none; }
+.share-link { width: 100%; min-height: 92px; margin: 4px 0 12px; padding: 10px 11px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-3); color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; resize: none; caret-color: var(--green); }
 .dialog-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; margin-top: 24px; }
 
 .conversation-header { padding-left: 10px; gap: 8px; }
@@ -357,9 +366,23 @@ pre { max-width: 100%; }
 /* One segmented control for the three views, and the icons for the view that
    is open beside it. Tabs with underlines read as a second navigation level;
    these are three ways to look at one session. */
-.view-toolbar { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 12px 0 14px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
-.view-segments { display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 9px; background: var(--surface-3); }
-.view-segments button { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 11px; border-radius: 7px; background: transparent; color: var(--muted); font-size: 12.5px; font-weight: 500; }
+/* One row, always: the switcher and the open view's own buttons are one
+   control group. Letting them wrap put the actions on a second line of a
+   48px bar, which is what made the terminal view look broken. */
+.view-toolbar { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 12px 0 14px; border-bottom: 1px solid var(--line); flex-shrink: 0; flex-wrap: nowrap; overflow: hidden; }
+.view-segments { display: flex; align-items: center; gap: 2px; flex: 0 1 auto; min-width: 0; padding: 3px; border-radius: 9px; background: var(--surface-3); }
+.view-segments button { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; min-height: 32px; padding: 0 10px; border-radius: 7px; background: transparent; color: var(--muted); font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+/* The switcher shrinks before anything is cut: the labels are what identify
+   the views, the icons are decoration. Below 420px they go, and the padding
+   tightens, so the three views and the four actions all stay on one row. */
+@media (max-width: 420px) {
+  .view-segments button { padding: 0 9px; font-size: 12px; }
+  .view-segments button > svg { display: none; }
+}
+@media (max-width: 370px) {
+  .view-segments button { padding: 0 7px; font-size: 11.5px; }
+  .view-actions .icon-button { width: 34px; flex-basis: 34px; }
+}
 .view-segments button.is-active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px var(--shadow); }
 .view-segments button:disabled { opacity: .4; }
 .session-notices { flex-shrink: 0; max-height: 26%; overflow-y: auto; }
@@ -455,8 +478,12 @@ pre { max-width: 100%; }
 .prompt-number { flex: 0 0 auto; min-width: 18px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .prompt-label { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .prompt-hint { margin-top: 9px; font-size: 11.5px; color: var(--muted); }
-.terminal-screen { min-height: 100%; min-width: 100%; width: max-content; padding: 16px; color: var(--text); white-space: pre; }
-.terminal-screen.is-wrapped { width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Wrapping is the default, and it is the CSS that guarantees it: a phone
+   cannot scroll sideways to read a shell, so a long line that stays whole is a
+   line the user cannot read. Raw mode is the explicit exception, and in it the
+   content is allowed to be wider than the screen with a real scroll range. */
+.terminal-screen { min-height: 100%; width: 100%; padding: 16px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.terminal-screen.is-raw { width: max-content; min-width: 100%; white-space: pre; overflow-wrap: normal; }
 .terminal-keys { display: flex; gap: 5px; flex-shrink: 0; overflow-x: auto; border-top: 1px solid var(--line); background: var(--surface-2); padding: 8px 12px; overscroll-behavior-x: contain; }
 .key-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 40px; min-width: 44px; padding: 0 10px; flex: 0 0 auto; background: var(--surface); border: 1px solid var(--line); border-radius: 5px; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px; white-space: nowrap; }
 .key-button.icon-button { width: 40px; min-width: 36px; padding: 0; }
@@ -655,8 +682,7 @@ pre { max-width: 100%; }
 /* `.host-sheet h2` carries the sheet-title look, which is too quiet here; the
    rename sheet is a single field and reads better with a proper title. */
 .rename-form h2 { padding: 4px 0 10px; font-size: 17px; font-weight: 650; color: var(--text); }
-.rename-form input { width: 100%; min-height: 46px; padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); font-size: 16px; }
-.rename-form input:focus { border-color: var(--green-line); outline: none; box-shadow: 0 0 0 3px var(--focus-ring); }
+.rename-form input { width: 100%; min-height: 46px; padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); font-size: 16px; color: var(--text); caret-color: var(--green); outline: none; }
 .rename-form .field-hint { margin: 2px 0 0; }
 .rename-form .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .rename-form .primary-button, .rename-form .secondary-button { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 6px; font-weight: 550; }
@@ -736,8 +762,7 @@ pre { max-width: 100%; }
 
 /* ── session actions, subagent sheet, transcript images ──────────────── */
 
-.view-toolbar { flex-wrap: wrap; }
-.view-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.view-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; margin-left: auto; }
 
 .icon-button.is-active { color: var(--clay); }
 
