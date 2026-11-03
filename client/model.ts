@@ -42,4 +42,17 @@ export interface HostState {
   /** Set when the retry ladder deliberately stopped. */
   stopReason?: 'exhausted' | 'auth' | 'unknown-host'
 }
-export interface AppState { hosts: HostState[]; loading: boolean; storageWarning?: string; selectedHostId?: string; selectedPaneId?: string; session?: SessionState; error?: string }
+export interface AppState {
+  hosts: HostState[]
+  loading: boolean
+  storageWarning?: string
+  selectedHostId?: string
+  selectedPaneId?: string
+  session?: SessionState
+  error?: string
+  /**
+   * The app is on screen. Retry pacing and liveness probes consult it so a
+   * hidden app neither burns battery nor redials into the void.
+   */
+  foreground?: boolean
+}

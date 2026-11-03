@@ -27,6 +27,7 @@ class FakeTransport implements Transport {
     const sub = { path, receive, onClose, closed: false }; this.subscriptions.push(sub)
     return { close: () => { sub.closed = true } }
   }
+  lastInboundAt() { return 0 }
   close() {}
 }
 const wait = () => new Promise((resolve) => setTimeout(resolve, 5))
@@ -109,6 +110,7 @@ test('stale older-page response cannot splice into a changed session', async () 
       return { result: { read: { text: '' } } } as any
     },
     subscribe() { return { close() {} } },
+    lastInboundAt() { return 0 },
     close() {},
   }
   const controller = new Controller({ persistent: true, async load() { return hosts }, async save() {} }, () => fake)

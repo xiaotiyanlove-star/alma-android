@@ -5,7 +5,7 @@ import type { Host, HostState } from '../client/model.ts'
 import type { HostStorage } from '../client/storage.ts'
 import { EncryptedTunnel, OperationUncertainError, RejectedError, TunnelError, type SocketLike } from '../client/transport.ts'
 import { createKeyPair, deriveSessionKeys, openBytes, sealBytes } from '../client/crypto.ts'
-import { isPermanentFailure } from '../client/backoff.ts'
+import { MAX_RETRIES, isPermanentFailure } from '../client/backoff.ts'
 
 const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
 
@@ -15,14 +15,17 @@ class CountingTransport implements TransportLike {
   closed = false
   private stop = false
   constructor(private sink: (state: 'connecting' | 'online' | 'offline', error?: string, code?: any) => void) {}
-  async connect() { if (this.stop) throw new Error('连接已关闭'); this.connections++; this.sink('online') }
+  attempts = 0
+  async connect() { this.attempts++; if (this.stop) throw new Error('连接已关闭'); this.connections++; this.sink('online') }
   async request<T>(path: string): Promise<T> { if (path === '/api/herdr/info') return { online: true } as T; return { result: {} } as T }
   subscribe() { return { close() {} } }
   close() { this.stop = true; this.closed = true; this.sink('offline') }
   /** Simulates the transport noticing a dead connection on its own. */
   die() { this.stop = true; this.sink('offline') }
+  lastInboundAt() { return this.inboundAt }
+  inboundAt = 0
 }
-interface TransportLike { connect(): Promise<void>; request<T>(p: string, b?: unknown, i?: unknown): Promise<T>; subscribe(p: string, r: (f: any) => void, c: () => void): { close(): void }; close(): void }
+interface TransportLike { connect(): Promise<void>; request<T>(p: string, b?: unknown, i?: unknown): Promise<T>; subscribe(p: string, r: (f: any) => void, c: () => void): { close(): void }; lastInboundAt(): number; close(): void }
 
 test('a suspended desktop reconnects after resume', async () => {
   const made: CountingTransport[] = []
@@ -183,7 +186,7 @@ test('coming back after a long absence rebuilds a tunnel that still looks open',
     assert.equal(made.length, 2)
     assert.equal(made[1].connections, 1)
     assert.equal(controller.getState().hosts[0].status, 'online')
-    assert.equal(controller.getState().hosts[0].retriesLeft, 3, 'the ladder starts over')
+    assert.equal(controller.getState().hosts[0].retriesLeft, MAX_RETRIES, 'the ladder starts over')
   } finally { controller.dispose() }
 })
 
@@ -287,4 +290,70 @@ test('a 500 on a mutation stays uncertain: it may have run', async () => {
     socket.reply(500, { error: { code: 'internal', message: 'boom' } })
     await check
   } finally { tunnel.close() }
+})
+
+// ── retry pacing under weak network ─────────────────────────────────────
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test('a hidden app stops retrying once the burst is spent; a visible one resumes', async () => {
+  const made: CountingTransport[] = []
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const controller = new Controller(storage, (_h, sink) => {
+    const t = new CountingTransport(sink as any)
+    made.push(t)
+    return t as any
+  })
+  try {
+    await controller.initialize(); await sleep(5)
+    assert.equal(controller.getState().hosts[0].status, 'online')
+    // The user leaves the app, then the socket dies. The burst still runs —
+    // they may still be looking at a frozen screen — but it must not turn into
+    // an endless redial while the phone sits in a pocket.
+    controller.setForeground(false)
+    made[0].die()
+    await sleep(1_200)
+    const hiddenAttempts = made[0].attempts
+    assert.ok(hiddenAttempts >= 1, 'the grace attempt still runs while hidden')
+    await sleep(1_500)
+    assert.equal(made[0].attempts, hiddenAttempts, 'and then it stops; a pocket must not keep dialling')
+
+    // Coming back to the foreground restarts it without a tap.
+    controller.setForeground(true)
+    await sleep(50)
+    assert.ok(made[0].attempts > hiddenAttempts, 'a visible app resumes on its own')
+  } finally { controller.dispose() }
+})
+
+test('session loads back off instead of hammering a desktop that is away', async () => {
+  let chatRequests = 0
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const controller = new Controller(storage, (_h, sink) => {
+    setTimeout(() => (sink as any)('online'), 0)
+    return {
+      async connect() {},
+      async request<T>(path: string): Promise<T> {
+        if (path === '/api/herdr/info') return { online: true } as T
+        if (path.startsWith('/api/herdr/chat')) {
+          chatRequests++
+          // A real weak link: the request fails rather than returning a page.
+          throw new Error('桌面接口超时')
+        }
+        return { result: { read: { text: '' } } } as T
+      },
+      subscribe() { return { close() {} } },
+      lastInboundAt() { return Date.now() },
+      close() {},
+    } as any
+  })
+  try {
+    await controller.initialize(); await sleep(5)
+    controller.selectHost('A')
+    await controller.selectPane('w1:p1')
+    const first = chatRequests
+    // Under the old fixed 1.8 s cadence this window saw about 5 attempts per
+    // second-per-connection; with backoff it must stay in single digits.
+    await sleep(1_500)
+    const added = chatRequests - first
+    assert.ok(added <= 3, `expected a backed-off cadence, saw ${added} loads in 1.5 s`)
+  } finally { controller.dispose() }
 })

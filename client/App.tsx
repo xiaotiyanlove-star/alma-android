@@ -7,6 +7,7 @@ import {
   QrCode, Copy,
 } from 'lucide-react';
 import { controller } from './controller';
+import { watchNetwork } from './network';
 import { pairingLink } from './pairing';
 import { Capacitor } from '@capacitor/core';
 import { Clipboard } from '@capacitor/clipboard';
@@ -1180,8 +1181,16 @@ export function App() {
       if (result.action === 'verify') void controller.verify()
       if (event === 'visible') controller.retryStopped()
     }
-    const onVisibility = () => apply(document.visibilityState === 'hidden' ? 'hidden' : 'visible')
+    const onVisibility = () => {
+      controller.setForeground(document.visibilityState !== 'hidden')
+      apply(document.visibilityState === 'hidden' ? 'hidden' : 'visible')
+    }
     const onOnline = () => controller.retryStopped()
+    // The OS knows about a Wi-Fi/cellular handover; `window.online` does not,
+    // and the old socket survives the switch looking open. Redialing as soon
+    // as the path moves beats waiting for the probe to notice the silence.
+    let watcher: { stop(): void } | undefined
+    void watchNetwork(() => controller.retryStopped()).then((created) => { watcher = created })
     document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('online', onOnline)
     // The tick only matters while hidden, and a timer that wakes the page
@@ -1192,12 +1201,17 @@ export function App() {
       if (document.visibilityState !== 'hidden' && timer) { clearInterval(timer); timer = undefined }
     }
     syncTimer()
+    // Watch open tunnels for silence, so a dead link becomes visible in about
+    // five seconds instead of waiting out a request deadline.
+    controller.startLiveness()
     const onVisibilityAndTimer = () => { onVisibility(); syncTimer() }
     document.removeEventListener('visibilitychange', onVisibility)
     document.addEventListener('visibilitychange', onVisibilityAndTimer)
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityAndTimer)
       window.removeEventListener('online', onOnline)
+      watcher?.stop()
+      controller.stopLiveness()
       if (timer) clearInterval(timer)
     }
   }, []);

@@ -1,23 +1,60 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MAX_RETRIES, RETRY_DELAYS, isPermanentFailure, nextDelay, retriesLeft } from '../client/backoff.ts'
+import { FAST_DELAYS, MAX_RETRIES, RETRY_DELAYS, SLOW_DELAY_MS, SESSION_DELAYS, jitter, isPermanentFailure, nextDelay, retriesLeft, sessionDelay } from '../client/backoff.ts'
 import { DROP_AFTER_MS, KEEP_WARM_MS, RECONNECT_AFTER_MS, VERIFY_AFTER_MS, initialState, step } from '../client/lifecycle.ts'
 
-test('retry delays stay under 30 seconds and stop after three', () => {
-  assert.equal(MAX_RETRIES, 3)
-  for (const delay of RETRY_DELAYS) assert.ok(delay <= 30_000, `${delay} exceeds the 30 s cap`)
-  assert.deepEqual([0, 1, 2].map(nextDelay), [...RETRY_DELAYS])
+const fixed = (value: number) => () => value
+
+test('the burst stage is short, so a tunnel is bridged without a tap', () => {
+  assert.equal(MAX_RETRIES, FAST_DELAYS.length)
+  assert.deepEqual([...FAST_DELAYS], [1_000, 2_000, 4_000, 8_000])
+  // Every burst delay is jittered around its target, never above it.
+  for (const [index, base] of FAST_DELAYS.entries()) {
+    const delay = nextDelay(index, { foreground: true })!
+    assert.ok(delay <= base && delay >= base / 4, `${delay} outside the window for ${base}`)
+  }
 })
 
-test('the fourth failure gets no delay at all', () => {
-  assert.equal(nextDelay(3), null)
-  assert.equal(nextDelay(99), null)
+test('past the burst a visible app keeps trying, at a patient pace', () => {
+  const delay = nextDelay(FAST_DELAYS.length, { foreground: true })
+  assert.ok(delay !== null, 'a visible app must not give up for good')
+  assert.ok(delay! >= SLOW_DELAY_MS / 4 && delay! <= SLOW_DELAY_MS)
+  // And it never stops, no matter how many attempts have failed.
+  assert.ok(nextDelay(500, { foreground: true }) !== null)
+})
+
+test('a hidden app stops retrying, so a pocket costs no battery', () => {
+  assert.equal(nextDelay(FAST_DELAYS.length, { foreground: false }), null)
+  assert.equal(nextDelay(500, { foreground: false }), null)
+  // Exactly one grace attempt: Android keeps the page alive for a moment after
+  // the screen turns off, and losing that first reconnect makes returning slow.
+  assert.ok(nextDelay(0, { foreground: false }) !== null)
+  assert.equal(nextDelay(1, { foreground: false }), null, 'but no more than that')
+})
+
+test('jitter spreads clients but never collapses a wait to nothing', () => {
+  assert.equal(jitter(8_000, fixed(0)), 2_000, 'floor a quarter of the window')
+  assert.equal(jitter(8_000, fixed(1)), 8_000, 'ceiling is the window itself')
+  assert.equal(jitter(8_000, fixed(0.5)), 5_000)
+  // A pure full-jitter draw can return milliseconds, which would hammer a
+  // relay that is already down. The floor rules that out.
+  for (let i = 0; i < 200; i++) assert.ok(jitter(8_000) >= 2_000)
+})
+
+test('session refreshes back off and cap instead of hammering', () => {
+  assert.deepEqual([...SESSION_DELAYS], [1_800, 3_000, 6_000, 12_000, 30_000])
+  // Growing, and capped rather than unbounded.
+  const delays = [0, 1, 2, 3, 4, 5, 50].map((failures) => sessionDelay(failures, fixed(1)))
+  assert.deepEqual(delays.slice(0, 5), [...SESSION_DELAYS])
+  assert.equal(delays[5], 30_000, 'past the ladder it stays at the cap')
+  assert.equal(delays[6], 30_000)
+  for (let i = 1; i < 5; i++) assert.ok(delays[i] > delays[i - 1], 'each retry waits longer')
 })
 
 test('the remaining count is what the UI shows', () => {
-  assert.equal(retriesLeft(0), 3)
-  assert.equal(retriesLeft(1), 2)
-  assert.equal(retriesLeft(3), 0)
+  assert.equal(retriesLeft(0), MAX_RETRIES)
+  assert.equal(retriesLeft(1), MAX_RETRIES - 1)
+  assert.equal(retriesLeft(MAX_RETRIES), 0)
   assert.equal(retriesLeft(10), 0, 'never negative')
 })
 

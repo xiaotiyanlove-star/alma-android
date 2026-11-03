@@ -60,11 +60,21 @@ public class KeepAliveService extends Service {
      * kills the process if the service is still running, so it has to stop
      * itself. The connection then falls back to the normal lifecycle rules.
      *
-     * `onTimeout(int, int)` was added in API 35; the single-argument form
-     * exists since API 24 for short services. Both are overridden because the
-     * class cannot reference the newer signature on older devices at compile
-     * time without an API check.
+     * Only the two-argument form matters here. Framework's
+     * `callOnTimeLimitExceeded` invokes `onTimeout(int, int)` and does *not*
+     * delegate to the one-argument `onTimeout(int)`, so overriding only the
+     * latter leaves the six-hour crash fully in place on Android 15.
+     *
+     * Both are overridden because `shortService` still posts the one-argument
+     * callback on older releases, and the class cannot reference the newer
+     * signature on older devices without an API check.
      */
+    @Override
+    public void onTimeout(int startId, int fgsType) {
+        running = false;
+        stopSelf(startId);
+    }
+
     @Override
     public void onTimeout(int startId) {
         running = false;

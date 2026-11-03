@@ -17,6 +17,7 @@ class Fake implements Transport {
     return { result: { read: { text: 'screen' } } } as T
   }
   subscribe(path: string, receive: (x: any) => void, closed: () => void) { this.subs.push({ path, receive, closed }); return { close() {} } }
+  lastInboundAt() { return 0 }
   close() {}
 }
 async function setup() { const fake = new Fake(); const controller = new Controller({ persistent: true, async load() { return [host] }, async save() {} }, () => fake); await controller.initialize(); await new Promise((r) => setTimeout(r, 1)); controller.selectHost('A'); await controller.selectPane('w1:p1'); return { fake, controller } }

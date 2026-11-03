@@ -186,3 +186,38 @@ test('a malformed hchunk fails the tunnel instead of resolving a partial body', 
     assert.equal(status, 'offline')
   } finally { tunnel.close() }
 })
+
+test('a probe gives up quickly so a dead link is reported in seconds', async () => {
+  // A half-open socket: TCP looks fine, nothing ever comes back. This is what
+  // a Wi-Fi link vanishing without a FIN looks like to the client.
+  const sockets: FakeSocket[] = []
+  const tunnel = new EncryptedTunnel(host, () => {}, () => { const s = new FakeSocket(); sockets.push(s); return s }, 20_000)
+  try {
+    // A live handshake, then permanent silence: nothing ever answers.
+    await tunnel.connect()
+    const started = Date.now()
+    await assert.rejects(
+      tunnel.request('/api/herdr/info', undefined, { kind: 'read', timeoutMs: 150 }),
+      /超时|timeout/i,
+    )
+    const elapsed = Date.now() - started
+    // The point is that the per-call deadline is honoured instead of the
+    // tunnel-wide 20 s, which is what made a dead link take so long to show.
+    assert.ok(elapsed < 2_000, `probe took ${elapsed} ms; the short deadline was not used`)
+  } finally { tunnel.close() }
+})
+
+test('inbound traffic is timestamped, which is how silence is detected', async () => {
+  const sockets: FakeSocket[] = []
+  const tunnel = new EncryptedTunnel(host, () => {}, () => { const s = new FakeSocket(); sockets.push(s); return s }, 5_000)
+  try {
+    await tunnel.connect()
+    const connectedAt = tunnel.lastInboundAt()
+    assert.ok(connectedAt > 0, 'the handshake counts as traffic')
+    await new Promise((r) => setTimeout(r, 30))
+    const request = tunnel.request<{ online: boolean }>('/api/herdr/info', undefined, { kind: 'read' })
+    sockets[0].handler = (frame) => { if (frame.t === 'hreq') void sockets[0].response(frame.id, { online: true }) }
+    await request
+    assert.ok(tunnel.lastInboundAt() > connectedAt, 'a response moves the clock forward')
+  } finally { tunnel.close() }
+})

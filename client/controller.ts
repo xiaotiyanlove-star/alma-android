@@ -1,8 +1,10 @@
 import type { AppState, ChatItem, Host, Pane, SessionState, Snapshot, TranscriptGap } from './model'
 import { parsePairing } from './pairing'
-import { t } from './i18n'
-import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, stopMessage } from './backoff'
-import { MAX_ATTACHMENT_BYTES, uploadRoute, type UploadResponse, type UploadedFile } from './attachments'
+import { t, tWith } from './i18n'
+import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, sessionDelay, stopMessage, type RetryContext } from './backoff'
+import { LIVENESS_TICK_MS, PROBE_TIMEOUT_MS, shouldProbe } from './liveness'
+import { metrics } from './metrics'
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, uploadRoute, type UploadResponse, type UploadedFile } from './attachments'
 import { moveKeys, needsSpace, parsePrompt, samePrompt, type Prompt } from './prompt'
 import { hostStorage, type HostStorage } from './storage'
 import { EncryptedTunnel, OperationUncertainError, RejectedError, type Transport, type TunnelError, type TunnelSocket } from './transport'
@@ -81,9 +83,20 @@ function merge(current: ChatItem[], incoming: ChatItem[], prepend = false): Chat
   const order = prepend ? [...incoming, ...current] : [...current, ...incoming]
   return [...new Set(order.map((item) => item.id))].map((id) => all.get(id)!)
 }
-interface Runtime { transport: Transport; epoch: number; hub?: TunnelSocket; retry?: ReturnType<typeof setTimeout>; attempts: number; stopped?: 'exhausted' | 'auth' | 'unknown-host' }
+interface Runtime {
+  transport: Transport
+  epoch: number
+  hub?: TunnelSocket
+  retry?: ReturnType<typeof setTimeout>
+  attempts: number
+  stopped?: 'exhausted' | 'auth' | 'unknown-host'
+  /** When this runtime last went online, used until a frame arrives. */
+  onlineAt?: number
+  /** A liveness probe is in flight; never stack them. */
+  probing?: boolean
+}
 export class Controller {
-  private state: AppState = { hosts: [], loading: true }
+  private state: AppState = { hosts: [], loading: true, foreground: true }
   private listeners = new Set<() => void>()
   private runtimes = new Map<string, Runtime>()
   private sessionEpoch = 0
@@ -97,6 +110,8 @@ export class Controller {
   private sessionRefresh?: Promise<void>
   /** Desktops where `layout.apply` is not offered to the phone. */
   private legacyOnly = new Set<string>()
+  /** Consecutive failed session loads, which pace the refresh retries. */
+  private sessionFailures = 0
   constructor(private storage: HostStorage = hostStorage, private createTransport = (host: Host, status: (state: 'connecting' | 'online' | 'offline', error?: string, code?: TunnelError['code']) => void): Transport => new EncryptedTunnel(host, status)) {}
   getState = () => this.state
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
@@ -130,6 +145,12 @@ export class Controller {
     const runtime: Runtime = { transport: undefined as unknown as Transport, epoch: 0, attempts: 0 }
     runtime.transport = this.createTransport(host, (status, error, code) => {
       if (this.runtimes.get(host.id) !== runtime) return
+      if (status === 'online') {
+        runtime.onlineAt = Date.now()
+        // The UI is honest again, so close out any run that started while it
+        // was not. This is the number the stale-detection metric reports.
+        metrics.markHealthy()
+      }
       this.patchHost(host.id, { status, ...(status === 'online' ? {} : { herdrOnline: false }), error })
       if (status === 'offline') this.scheduleHost(host.id, runtime, code)
     })
@@ -149,19 +170,44 @@ export class Controller {
   private scheduleHost(id: string, runtime: Runtime, code?: TunnelError['code']) {
     if (runtime.retry || this.runtimes.get(id) !== runtime) return
     const permanent = isPermanentFailure(code)
-    const delay = permanent ? null : nextDelay(runtime.attempts)
+    // The patient stage only runs while the app is on screen: a phone in a
+    // pocket must not keep waking its radio. `retryStopped` picks it back up
+    // when the user returns, and the network-change listener when a link
+    // comes back.
+    const delay = permanent ? null : nextDelay(runtime.attempts, this.retryContext())
     if (delay === null) {
+      // Not permanent but paused: keep the host recoverable without a tap.
       runtime.stopped = permanent ?? 'exhausted'
-      this.patchHost(id, { retriesLeft: 0, stopReason: runtime.stopped })
+      this.patchHost(id, { retriesLeft: retriesLeft(runtime.attempts), stopReason: runtime.stopped })
       return
     }
     runtime.attempts++
+    metrics.countRetry()
     this.patchHost(id, { retriesLeft: retriesLeft(runtime.attempts) })
     runtime.retry = setTimeout(() => {
       runtime.retry = undefined
       if (this.runtimes.get(id) !== runtime) return
       void this.connectHost(id, runtime)
     }, delay)
+  }
+
+  /** Whether the app is on screen right now. */
+  private retryContext(): RetryContext {
+    const foreground = this.state.foreground ?? true
+    return { foreground, watching: foreground && Boolean(this.state.session) }
+  }
+
+  /**
+   * Marks the app as visible or hidden.
+   *
+   * Retry pacing depends on it: the patient stage exists so a user staring at
+   * a red banner gets recovery, and disappears when nobody is looking.
+   */
+  setForeground = (foreground?: boolean) => {
+    if (foreground === undefined) return
+    if (this.state.foreground === foreground) return
+    this.publish({ foreground })
+    if (foreground) this.retryStopped()
   }
 
   /** Clears any pending retry so a manual reconnect happens immediately. */
@@ -243,7 +289,7 @@ export class Controller {
     const runtime = this.runtimes.get(hostId)
     if (!runtime) throw new Error(t('节点不存在'))
     if (!file.bytes.length) throw new Error(t('文件内容为空'))
-    if (file.bytes.length > MAX_ATTACHMENT_BYTES) throw new Error(t('文件超过 50 MB'))
+    if (file.bytes.length > MAX_ATTACHMENT_BYTES) throw new Error(tWith('文件超过 {size} MB', { size: MAX_ATTACHMENT_MB }))
     const route = uploadRoute(file.type)
     const response = await runtime.transport.request<UploadResponse>(route, undefined, {
       kind: 'mutation',
@@ -468,14 +514,68 @@ export class Controller {
   verify = async () => {
     for (const [id, runtime] of this.runtimes) {
       if (runtime.stopped) continue
-      try {
-        await runtime.transport.request<{ online: boolean }>('/api/herdr/info', undefined, { kind: 'read' })
-      } catch { /* the transport has already reported the failure */ }
-      if (this.runtimes.get(id) !== runtime) continue
-      // A request that failed on a dead socket leaves the runtime offline;
-      // rebuilding now turns a stale "online" into a real connection.
-      if (this.state.hosts.find((item) => item.host.id === id)?.status !== 'online') this.rebuild(id, runtime)
+      await this.probe(id, runtime)
     }
+  }
+
+  /**
+   * One short read that proves the tunnel still carries traffic.
+   *
+   * It uses its own deadline — much shorter than a request's — because a
+   * healthy desktop answers `/api/herdr/info` from memory. Waiting the usual
+   * 20 s only delays telling the user the link is gone.
+   */
+  private async probe(id: string, runtime: Runtime) {
+    if (runtime.probing) return
+    runtime.probing = true
+    let answered = false
+    try {
+      await runtime.transport.request<{ online: boolean }>('/api/herdr/info', undefined, { kind: 'read', timeoutMs: PROBE_TIMEOUT_MS })
+      answered = true
+    } catch { /* a timeout or a dead socket; both mean the same thing here */ }
+    finally { runtime.probing = false }
+    if (this.runtimes.get(id) !== runtime) return
+    if (answered) {
+      // The probe is traffic, so the idle clock restarts even when no
+      // subscription is receiving anything.
+      runtime.onlineAt = Date.now()
+      return
+    }
+    // A read that times out does not close the tunnel — one slow request must
+    // not drop a working link — so this is the only place that can act on it.
+    // Silence past the idle window plus an unanswered probe *is* a dead link:
+    // rebuild it, which reports offline and starts the ladder.
+    this.rebuild(id, runtime)
+  }
+
+  /**
+   * Watches every open tunnel for silence.
+   *
+   * Runs only while the app is on screen, and only probes a tunnel that has
+   * been quiet longer than a healthy one ever is. A live session streams
+   * frames continuously, so in practice this costs nothing until something is
+   * actually wrong — at which point the user sees the red banner in about five
+   * seconds instead of twenty.
+   */
+  private livenessTimer?: ReturnType<typeof setInterval>
+  startLiveness = () => {
+    if (this.livenessTimer) return
+    this.livenessTimer = setInterval(() => {
+      const now = Date.now()
+      for (const [id, runtime] of this.runtimes) {
+        const status = this.state.hosts.find((item) => item.host.id === id)?.status
+        const lastInboundAt = runtime.transport.lastInboundAt() || runtime.onlineAt || 0
+        if (!shouldProbe({ online: status === 'online', lastInboundAt, probeInFlight: Boolean(runtime.probing), now, foreground: this.state.foreground ?? true })) continue
+        void this.probe(id, runtime)
+      }
+    }, LIVENESS_TICK_MS)
+    // Never hold the process open for a timer.
+    ;(this.livenessTimer as { unref?: () => void }).unref?.()
+  }
+  stopLiveness = () => {
+    if (!this.livenessTimer) return
+    clearInterval(this.livenessTimer)
+    this.livenessTimer = undefined
   }
   /** Replaces a runtime whose transport is known to be dead. */
   private rebuild(id: string, runtime: Runtime) {
@@ -500,7 +600,13 @@ export class Controller {
    */
   retryStopped = () => {
     for (const [id, runtime] of this.runtimes) {
-      if (!runtime.stopped) continue
+      const status = this.state.hosts.find((item) => item.host.id === id)?.status
+      // Only a desktop that is not already connected needs anything. A host in
+      // the middle of the ladder is redialled now rather than at its scheduled
+      // moment: whatever caused the failure — a tunnel, a handover — has just
+      // been reported as over, so waiting out the remaining delay only makes
+      // the user sit on a red banner.
+      if (status === 'online' && !runtime.stopped) continue
       this.cancelRetry(runtime)
       runtime.attempts = 0
       runtime.stopped = undefined
@@ -591,7 +697,18 @@ export class Controller {
     this.sessionRefresh = promise
     return promise
   }
-  private later(epoch: number, delay = 1800) {
+  /**
+   * Schedules the next session refresh, backing off on repeated failures.
+   *
+   * The old fixed 1.8 s meant a session screen with the desktop unreachable
+   * made a failed request every 1.8 seconds, forever. Each failure is now
+   * spaced further apart, capped at 30 s, and a successful load resets the
+   * count. `fixed` is for the deliberate "come back later" cases, such as an
+   * agent that has not reported its session id yet.
+   */
+  private later(epoch: number, fixed?: number) {
+    const delay = fixed ?? sessionDelay(this.sessionFailures)
+    if (fixed === undefined) this.sessionFailures++
     const timer = setTimeout(() => { this.sessionTimers.delete(timer); if (epoch === this.sessionEpoch) void this.refreshSession() }, delay)
     this.sessionTimers.add(timer)
   }
@@ -625,6 +742,8 @@ export class Controller {
           this.later(epoch, gap === 'terminal' || gap === 'unsupported' ? 15_000 : 4000)
         } else throw new Error(page.error.message || t('无法读取会话'))
       } else {
+        // A page arrived, so the next failure starts the ladder from the top.
+        this.sessionFailures = 0
         const same = session.sessionId === page.session_id
         const items = same ? session.items : merge([], page.page?.items ?? [])
         const cursor = same ? session.end : page.page?.end ?? 0
@@ -766,7 +885,15 @@ export class Controller {
     if (session.sending) return false
     if (session.uncertain) throw new Error(session.uncertain)
     this.patchSession(epoch, { sending: true, error: undefined })
-    try { await this.rpc(session.hostId, method, params(session)); if (epoch === this.sessionEpoch) await this.readScreen(); return true }
+    // From here until the answer arrives the user sees a spinner that may be
+    // a lie; if the link turns out to be dead, this is when that started.
+    metrics.markUnhealthy()
+    try {
+      await this.rpc(session.hostId, method, params(session))
+      metrics.markHealthy()
+      if (epoch === this.sessionEpoch) await this.readScreen()
+      return true
+    }
     catch (error) { this.patchSession(epoch, { error: message(error), ...(error instanceof OperationUncertainError ? { uncertain: message(error) } : {}) }); throw error }
     finally { this.patchSession(epoch, { sending: false }) }
   }

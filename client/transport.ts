@@ -65,6 +65,8 @@ export interface Transport {
   connect(): Promise<void>
   request<T>(path: string, body?: unknown, init?: RequestInit2): Promise<T>
   subscribe(path: string, receive: (frame: Frame) => void, onClose: () => void): TunnelSocket
+  /** When anything last arrived from the desktop, for liveness checks. */
+  lastInboundAt(): number
   close(): void
 }
 
@@ -90,7 +92,18 @@ export class EncryptedTunnel implements Transport {
   private outgoing = Promise.resolve()
   private pending = new Map<string, Pending>()
   private subscriptions = new Map<string, Subscription>()
+  /**
+   * When the last frame arrived from the desktop.
+   *
+   * A socket that is dead can still report `readyState === 1`: the close event
+   * never ran because the page was frozen, or a Wi-Fi link vanished without a
+   * FIN. Only the absence of traffic proves it, so this is the input the
+   * liveness check reads.
+   */
+  private inboundAt = 0
   constructor(private host: Host, private status: StatusSink, private socketFactory: (url: string) => SocketLike = (url) => new WebSocket(url) as unknown as SocketLike, private timeoutMs = 20_000) {}
+
+  lastInboundAt(): number { return this.inboundAt }
 
   connect(): Promise<void> {
     if (this.ready) return Promise.resolve()
@@ -113,6 +126,7 @@ export class EncryptedTunnel implements Transport {
     this.recvCounter = 0n
     this.binary = false
     this.keys = undefined
+    this.inboundAt = 0
     this.incoming = Promise.resolve()
     this.outgoing = Promise.resolve()
     const socket = this.socketFactory(`${this.host.relayUrl.replace(/^https:/, 'wss:')}/c/${id}/__alma_e2e__`)
@@ -125,6 +139,9 @@ export class EncryptedTunnel implements Transport {
     socket.onmessage = ({ data }) => {
       this.incoming = this.incoming.then(async () => {
         if (epoch !== this.epoch) return
+        // Any inbound frame, even one that turns out to be malformed, proves
+        // the link still carries traffic.
+        this.inboundAt = Date.now()
         if (!this.ready) {
           if (typeof data !== 'string') throw new Error('无效的加密握手')
           const hello = JSON.parse(data)
@@ -236,7 +253,6 @@ export class EncryptedTunnel implements Transport {
         const bytes = new Uint8Array(pending.chunks.reduce((n, c) => n + c.length, 0))
         let offset = 0
         for (const chunk of pending.chunks) { bytes.set(chunk, offset); offset += chunk.length }
-        console.log('DBG handle', pending.status, pending.mutation, frame.t)
         // A sent mutation may already have run when the *connection* failed —
         // but a response the server actually sent proves the request reached
         // it and was answered. A 4xx, in particular, was refused before doing

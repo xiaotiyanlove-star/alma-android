@@ -35,6 +35,8 @@ const UI_CHECKS = [
   'nodes-ux-check',
   'settings-nodes-check',
   'settings-groups-check',
+  // Weak-network behaviour: detection time and background retry silence.
+  'weaknet-check',
 ]
 
 /**

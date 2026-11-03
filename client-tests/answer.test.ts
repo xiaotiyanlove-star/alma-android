@@ -25,6 +25,7 @@ class Fake implements Transport {
     return { result: {} } as T
   }
   subscribe() { return { close() {} } }
+  lastInboundAt() { return 0 }
   close() {}
 }
 const sent = (fake: Fake) => fake.calls.filter((call) => call.body?.method === 'pane.send_keys').flatMap((call) => call.body.params.keys)

@@ -62,9 +62,11 @@ highlighted row must all match; if anything changed the tap is cancelled and the
 refreshes. Menus without a cursor or checkbox — plain numbered lists in agent output —
 are never turned into buttons.
 
-**Attachments.** Up to six files per message, 50 MB each, uploaded to the desktop over
+**Attachments.** Up to six files per message, 24 MB each, uploaded to the desktop over
 the same tunnel and referenced by their absolute path. Images use the image route; other
-files use the generic one.
+files use the generic one. The ceiling is the tunnel, not Alma: an upload is one sealed
+WebSocket message and the relay refuses anything over 32 MiB, so a larger file would fail
+mid-transfer and be reported as an uncertain send rather than a refusal.
 
 **New sessions.** Start Claude Code, Codex or pi in a directory of your choosing,
 defaulting to the one you are already working in.
@@ -87,6 +89,28 @@ moment and that is normal, so the message view stays open and says it is waiting
 an agent that starts working — or gets a message — and still never reports an id is
 reported as missing its integration. Refresh tokens, conversation history and agent
 configuration are never stored on the phone beyond what the desktop sends.
+
+## Weak networks
+
+A phone loses its link constantly and silently, and a WebSocket that is dead can still
+report itself open — the close event never runs when Android freezes the page, and a
+Wi-Fi link can vanish without a FIN. Three things cover that:
+
+- **Silence is a signal.** While the app is on screen, a tunnel quiet for eight seconds
+  is probed with a short read on a three-second deadline. An answered probe resets the
+  clock; an unanswered one rebuilds the tunnel. A dead link that used to take twenty
+  seconds to show now takes about ten, and a healthy one is never probed at all because
+  its own traffic proves it is alive.
+- **Handovers redial.** The OS reports a Wi-Fi/cellular switch, which keeps the app
+  "online" while invalidating every socket. The app redials immediately instead of
+  waiting for a timeout, and the retry ladder restarts from the top.
+- **A pocket costs nothing.** After the first few seconds a hidden app stops retrying
+  entirely; coming back to the foreground, or the network returning, picks it up without
+  the user tapping anything. A visible app keeps trying at a patient one-a-minute pace,
+  indefinitely.
+
+Uploads are limited to 24 MB for the same reason: the relay refuses a single WebSocket
+message over 32 MiB, so a bigger attachment would fail half-way through.
 
 ## Requirements
 
@@ -154,7 +178,10 @@ client/                The app
   prompt.ts            Terminal menu parsing and drift detection
   router.ts            Navigation stack shared by the UI and the Back button
   lifecycle.ts         Foreground/background connection policy
-  backoff.ts           Bounded reconnect pacing
+  liveness.ts          When an idle tunnel is worth probing
+  metrics.ts           Local stale-detection and retry counts
+  network.ts           OS network changes, so a handover redials at once
+  backoff.ts           Reconnect and session-refresh pacing
   attachments.ts       Upload helpers and message composition
   commands.ts          Per-agent slash commands offered in the composer
   subagents.ts         Running background agents, derived from transcript tool rows
