@@ -28,6 +28,7 @@ import { initialState, step } from './lifecycle';
 import { stopMessage } from './backoff';
 import { headerInfo } from './session-info';
 import { agentLook, statusTone, statusWord } from './agents';
+import { paneTitle, tabLabelOf } from './session-title';
 import { imagePaths, isThinking, timeline, withoutImagePaths, type WorkCount } from './timeline';
 import { backgroundAgents, runningAgents } from './subagents';
 import { commandsFor, filterCommands, slashQuery } from './commands';
@@ -46,32 +47,6 @@ function initialize() {
   if (initialized) return;
   initialized = true;
   void controller.initialize().catch(() => {});
-}
-
-/**
- * What a session is called.
- *
- * A name the user gave wins; otherwise the tab label the desktop shows (Herdr
- * numbers new tabs, so an untouched `2` is not a name) and only then the
- * terminal title. That order keeps a renamed session stable: the agent rewrites
- * its terminal title on every turn, so a title-first order would undo a rename
- * the moment the agent next draws.
- */
-export function paneTitle(pane?: Pane, tabLabel?: string): string {
-  const named = tabLabel?.trim() || pane?.label?.trim();
-  if (named) return stripAnsi(named);
-  return stripAnsi(pane?.terminal_title_stripped || pane?.cwd?.split('/').filter(Boolean).pop() || '终端会话');
-}
-
-/**
- * The label Herdr holds for a pane's tab, when the snapshot has one.
- *
- * New tabs are numbered, so a bare number is Herdr's placeholder rather than a
- * name; treating it as one would let a rename be undone by that default.
- */
-export function tabLabelOf(snapshot: Snapshot | undefined, pane?: Pane): string | undefined {
-  const label = snapshot?.tabs?.find(tab => tab.tab_id === pane?.tab_id)?.label?.trim();
-  return label && !/^\d+$/.test(label) ? label : undefined;
 }
 
 function hostStatus(host: HostState): string {
@@ -180,18 +155,26 @@ function printable(value: unknown): string {
   try { return JSON.stringify(value, null, 2) ?? ''; } catch { return t('内容无法显示'); }
 }
 
-/** "ran 24 commands, edited 1 file, read 27 files", in the reader's language. */
+/**
+ * "24 commands · 1 file edited · 27 files read", as compactly as the language
+ * allows.
+ *
+ * This line is a footnote, so it is built to stay on one: short labels, a
+ * middle dot between them, and no verb per item. The long form ("执行了 1 条
+ * 命令，读取了 1 个文件") wrapped onto two lines and pushed the answer down.
+ */
 function workSummary(counts: readonly WorkCount[]): string {
-  if (!counts.length) return t('正在处理…')
+  if (!counts.length) return t('思考中')
   return counts.map(({ kind, count }) => {
-    if (kind === 'command') return tWith('执行了 {count} 条命令', { count: String(count) })
-    if (kind === 'edit') return tWith('修改了 {count} 个文件', { count: String(count) })
-    if (kind === 'read') return tWith('读取了 {count} 个文件', { count: String(count) })
-    if (kind === 'search') return tWith('搜索了 {count} 次', { count: String(count) })
-    if (kind === 'fetch') return tWith('读取了 {count} 个网页', { count: String(count) })
-    if (kind === 'subagent') return tWith('派发了 {count} 个子 agent', { count: String(count) })
-    return tWith('{count} 个其它步骤', { count: String(count) })
-  }).join('，')
+    const n = String(count)
+    if (kind === 'command') return tWith('{count} 条命令', { count: n })
+    if (kind === 'edit') return tWith('{count} 个文件已修改', { count: n })
+    if (kind === 'read') return tWith('{count} 个文件已读', { count: n })
+    if (kind === 'search') return tWith('{count} 次搜索', { count: n })
+    if (kind === 'fetch') return tWith('{count} 个网页', { count: n })
+    if (kind === 'subagent') return tWith('{count} 个子 agent', { count: n })
+    return tWith('{count} 个其它步骤', { count: n })
+  }).join(' · ')
 }
 
 /**
@@ -235,7 +218,9 @@ function WorkGroup({ items, running, counts, hostId }: { items: ChatItem[]; runn
       <span className={`work-spinner${running ? ' is-running' : ''}`} aria-hidden="true" />
       <span className="work-copy">
         <strong>{workSummary(counts)}</strong>
-        <small>{running ? tWith('{name} 进行中…', { name: active ? (active.tool?.name || t('工具调用')) : t('思考') }) : tWith('{count} 个步骤', { count: String(items.length) })}</small>
+        {/* Only a live run says what it is doing; a finished one does not need
+            a second line restating its own step count. */}
+        {running && <small>{active ? (active.tool?.name || t('工具调用')) : t('思考')}</small>}
       </span>
       <ChevronDown size={15} aria-hidden="true" />
     </summary>
@@ -1562,6 +1547,13 @@ export function App() {
           onLocaleChange={() => setLocaleRevision(value => value + 1)}
         />
       : route.name === 'session' && state.session
+        // The key is the pane, and so is the check: the header takes its title
+        // from the route while everything under it comes from `state.session`,
+        // so if the two ever name different panes the screen would show one
+        // session's title over another's transcript. They cannot now — every
+        // path that changes one changes the other — but the guard makes that a
+        // stated invariant instead of an assumption.
+        && state.session.hostId === route.hostId && state.session.paneId === route.paneId
         ? <Session key={`${route.hostId}:${route.paneId}`} session={state.session} host={sessionHost} />
         : <Sessions
             state={state}

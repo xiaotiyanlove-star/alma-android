@@ -413,32 +413,30 @@ pre { max-width: 100%; }
 .code-language { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); padding: 3px 6px 3px 12px; border-bottom: 1px solid var(--line); font-size: 11px; overflow-wrap: anywhere; }
 .code-block pre { padding: 12px; overflow-x: auto; white-space: pre; }
 /* ── a folded run of work ────────────────────────────────────────────────
-   One line where a dozen tool calls and the agent's thinking used to be.
-   Opening it lists the steps; opening a step shows its input, output and any
-   picture it produced. The answer between two runs stays at full width, which
-   is the point. */
-.work-group { margin: 12px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); overflow: hidden; }
-.work-group > summary { display: flex; align-items: center; gap: 9px; min-height: 52px; padding: 9px 12px; cursor: pointer; list-style: none; }
+   One quiet line where a dozen tool calls and the agent's thinking used to be.
+   It is a footnote to the conversation, not a card in it: no border, no fill,
+   small muted text, and the counts sit on one line beside the spinner so the
+   answer above and below it stays what the eye lands on. Opening it lists the
+   steps; opening a step shows its input, output and any picture it produced. */
+.work-group { margin: 10px 0; overflow: hidden; }
+.work-group > summary { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 4px 2px; cursor: pointer; list-style: none; }
 .work-group > summary::-webkit-details-marker { display: none; }
-.work-group > summary > svg { flex-shrink: 0; color: var(--muted); transition: transform .15s ease; }
+.work-group > summary > svg { flex-shrink: 0; color: var(--muted); opacity: .7; transition: transform .15s ease; }
 .work-group[open] > summary > svg { transform: rotate(180deg); }
-.work-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
-/* The counts are the whole content of the line when it is closed, so they wrap
-   to a second line rather than being cut. Truncating "…, read 27 files" hides
-   the one number a reader is most likely looking for. */
-.work-copy strong { font-size: 12.5px; font-weight: 550; color: var(--text); line-height: 1.45; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
-.work-copy small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.work-body { border-top: 1px solid var(--line); background: var(--surface); }
+.work-copy { display: flex; flex: 1; min-width: 0; align-items: baseline; gap: 7px; }
+.work-copy strong { min-width: 0; font-size: 11.5px; font-weight: 400; color: var(--muted); line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-copy small { flex: 0 0 auto; color: var(--muted); font-size: 11px; opacity: .75; white-space: nowrap; }
+/* Only a live run is allowed to draw the eye; a finished one recedes. */
+.work-group.is-running .work-copy strong { color: var(--text-2); }
+.work-body { padding: 2px 0 4px 20px; border-left: 1px solid var(--line); }
 
 /* A spinner rather than a dot: a burst that is still going has to look alive
    at a glance, and a ring is legible at this size where a pulsing dot is not. */
-.work-spinner { flex: 0 0 13px; width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid var(--line-strong); }
-.work-spinner.is-running { border-color: var(--green-line); border-top-color: var(--green); animation: work-spin .7s linear infinite; }
+.work-spinner { flex: 0 0 11px; width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--line-strong); }
+.work-spinner.is-running { border-color: var(--line-strong); border-top-color: var(--muted); animation: work-spin .7s linear infinite; }
+/* A finished run has nothing to say with a ring, so it becomes a small dash. */
+.work-spinner:not(.is-running) { border: 0; background: var(--dot-idle); transform: scale(.55); }
 @keyframes work-spin { to { transform: rotate(360deg); } }
-/* While a run is live the whole line is tinted, so "working" is visible without
-   reading the text. The tint settles when the run finishes. */
-.work-group.is-running { border-color: var(--green-line); background: var(--tint); }
-.work-group.is-running .work-copy strong { color: var(--green); }
 
 .work-step { border-top: 1px solid var(--line); }
 .work-step:first-child { border-top: 0; }
