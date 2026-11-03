@@ -185,7 +185,7 @@ Playwright 流程串成一个序列，任何一步失败都会停下并报出是
 
 Playwright 流程驱动真实 UI，配合合成中继：完成加密握手、切换桌面、发送消息、
 回答授权菜单、扫描生成的二维码、切换 Markdown。只使用合成配对码，不接触真实桌面。
-`npm run test:live` 是唯一会连接真实桌面的探针，且只读。
+`client-tests/live-*.ts` 下的脚本才需要真实桌面，默认不跑。
 
 有一个守卫测试：任何通过 `t()` 使用的中文串如果缺少英文条目，测试就会失败。
 它目前只扫描 `App.tsx`、`controller.ts` 和 `transport.ts`，

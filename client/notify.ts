@@ -1,6 +1,6 @@
 import { Capacitor } from '@capacitor/core'
 import { t } from './i18n'
-import type { HostState, Pane, Snapshot } from './model'
+import type { HostState, Pane } from './model'
 
 export type AlertKind = 'blocked' | 'done' | 'offline'
 export interface Alert {
@@ -130,11 +130,6 @@ export function actionFor(
   if (actionId === 'deny' && alert.kind === 'blocked') return { kind: 'deny' }
   if (actionId === 'reply' && alert.kind === 'done') return { kind: 'reply', text: (input ?? '').trim() }
   return { kind: 'open' }
-}
-
-/** Statuses a pane can reach that a user cares about; exported for tests. */
-export function statusesThatAlert(snapshot: Snapshot | undefined): string[] {
-  return (snapshot?.panes ?? []).map((pane) => pane.agent_status ?? '').filter(Boolean)
 }
 
 export const localNotifier: Notifier = {

@@ -2,29 +2,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Metrics } from '../client/metrics.ts'
 
-test('stale detection is measured from when the UI started lying', () => {
-  const m = new Metrics()
-  m.markUnhealthy(1_000)
-  m.markHealthy(5_500)
-  assert.deepEqual(m.snapshot(), [{ staleDetectMs: 4_500 }])
-})
-
-test('a second mark does not restart the clock', () => {
-  // Every send while the link is suspect calls this; the first moment is the
-  // one that matters, otherwise a chatty session hides the real delay.
-  const m = new Metrics()
-  m.markUnhealthy(1_000)
-  m.markUnhealthy(3_000)
-  m.markHealthy(4_000)
-  assert.deepEqual(m.snapshot(), [{ staleDetectMs: 3_000 }])
-})
-
-test('a recovery with nothing to recover records nothing', () => {
-  const m = new Metrics()
-  m.markHealthy(5_000)
-  assert.deepEqual(m.snapshot(), [])
-})
-
 test('retries are counted per five-minute window', () => {
   const m = new Metrics()
   for (let i = 0; i < 6; i++) m.countRetry(0)

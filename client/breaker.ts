@@ -86,5 +86,3 @@ export function clearAllBreakers() {
   } catch { /* storage blocked */ }
 }
 
-/** Test hook. */
-export function resetForTests() { clearAllBreakers() }

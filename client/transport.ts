@@ -104,7 +104,6 @@ export class EncryptedTunnel implements Transport {
   private ws?: SocketLike
   private keys?: Awaited<ReturnType<typeof deriveSessionKeys>>
   private nonce = new Uint8Array(16)
-  private keyPair?: Awaited<ReturnType<typeof createKeyPair>>
   private counter = 0n
   /** Expected inbound nonce; resets with each connection generation. */
   private recvCounter = 0n
@@ -279,7 +278,6 @@ export class EncryptedTunnel implements Transport {
   private async dial(epoch: number) {
     const [id, pair] = await Promise.all([routingId(this.host.connectCode), createKeyPair()])
     if (epoch !== this.epoch || this.stopped) return
-    this.keyPair = pair
     this.nonce = crypto.getRandomValues(new Uint8Array(16))
     this.counter = 0n
     this.recvCounter = 0n
@@ -558,7 +556,7 @@ export class EncryptedTunnel implements Transport {
     clearTimeout(this.handshakeTimer)
     this.ready = false
     const socket = this.ws
-    this.ws = undefined; this.keys = undefined; this.keyPair = undefined
+    this.ws = undefined; this.keys = undefined
     if (socket) { socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null; socket.close() }
     this.connectReject?.(error)
     this.connectResolve = undefined; this.connectReject = undefined; this.connectPromise = undefined

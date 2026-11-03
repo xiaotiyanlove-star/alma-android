@@ -207,7 +207,6 @@ client/                The app
   prompt.ts            Terminal menu parsing and drift detection
   router.ts            Navigation stack shared by the UI and the Back button
   lifecycle.ts         Foreground/background connection policy
-  liveness.ts          When an idle tunnel is worth probing
   metrics.ts           Local stale-detection and retry counts
   network.ts           OS network changes, so a handover redials at once
   backoff.ts           Reconnect and session-refresh pacing
@@ -249,8 +248,8 @@ same required job, so neither half can ship alone.
 The Playwright flows drive the real UI with a synthetic relay: they complete the
 encrypted handshake, switch between desktops, send messages, answer an approval menu,
 scan a generated QR code and toggle Markdown. They use synthetic pairing codes only and
-never contact a real desktop. A `npm run test:live` probe does talk to a real desktop and
-is read-only.
+never contact a real desktop. The `client-tests/live-*.ts` probes are the exception: they talk
+to a real desktop, are read-only where they can be, and are never part of the suite.
 
 A guard test fails the suite if a Chinese UI string used through `t()` has no English
 entry. It currently scans `App.tsx`, `controller.ts` and `transport.ts` only, so strings

@@ -76,7 +76,7 @@ export async function watchNetwork(onChange: () => void): Promise<NetworkWatcher
 
   if (!cleanups.length) {
     // Browser fallback: only tells us about the HTTP stack, but better than
-    // nothing, and the liveness probe covers the cases it misses.
+    // nothing, and the idle probe in the transport covers the cases it misses.
     const onOnline = () => onChange()
     window.addEventListener('online', onOnline)
     cleanups.push(() => window.removeEventListener('online', onOnline))

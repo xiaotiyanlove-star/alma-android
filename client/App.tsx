@@ -395,8 +395,6 @@ function keepAliveHint(): string {
 }
 
 function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostState[]; onClose: () => void; onOpen: (id: string) => void; onLocaleChange(): void }) {
-  const [name, setName] = useState('');
-  const [pairing, setPairing] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [forgetting, setForgetting] = useState<string>();
@@ -424,8 +422,6 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
     if (scanning) setScanning(false)
   }, [overlay]);
   const bump = () => setTick(value => value + 1);
-  const saveLock = useRef(false);
-  const nameInput = useRef<HTMLInputElement>(null);
   const confirmation = useRef<HTMLDialogElement>(null);
   const forgottenHost = hosts.find(host => host.host.id === forgetting);
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { FAST_DELAYS, MAX_RETRIES, RETRY_DELAYS, SLOW_DELAY_MS, SESSION_DELAYS, jitter, isPermanentFailure, nextDelay, retriesLeft, sessionDelay } from '../client/backoff.ts'
+import { FAST_DELAYS, MAX_RETRIES, SLOW_DELAY_MS, SESSION_DELAYS, jitter, isPermanentFailure, nextDelay, retriesLeft, sessionDelay } from '../client/backoff.ts'
 import { DROP_AFTER_MS, KEEP_WARM_MS, RECONNECT_AFTER_MS, VERIFY_AFTER_MS, initialState, step } from '../client/lifecycle.ts'
 
 const fixed = (value: number) => () => value

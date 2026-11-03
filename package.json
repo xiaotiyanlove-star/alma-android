@@ -11,8 +11,7 @@
     "check": "npm run test && npm run build:web",
     "android:sync": "npm run build:web && cap sync android",
     "android:build": "npm run android:sync && cd android && ./gradlew assembleDebug",
-    "test:ui": "tsx client-tests/browser-smoke.ts && tsx client-tests/scan-flow-check.ts && tsx client-tests/prompt-ui-check.ts && tsx client-tests/markdown-ui-check.ts && tsx client-tests/weaknet-check.ts",
-    "test:live": "tsx client-tests/live-readonly.ts",
+    "test:ui": "tsx client-tests/all.ts --skip-build",
     "test:all": "tsx client-tests/all.ts"
   },
   "dependencies": {

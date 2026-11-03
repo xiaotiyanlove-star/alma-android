@@ -2,7 +2,7 @@ import ReactDOM from 'react-dom/client'
 import { App } from './App'
 import './styles.css'
 import { controller } from './controller'
-import { back, replace, setExitHandler } from './router'
+import { back, replace } from './router'
 import { rememberPairingLink } from './pending-link'
 import { applyTheme } from './prefs'
 
@@ -22,11 +22,6 @@ window.__almaAndroidBack = () => {
   // false = let the native shell fall back to its own handling
   return back()
 }
-// When the router has nothing left, tell the shell to close the activity.
-setExitHandler(() => {
-  const bridge = (window as unknown as { __herdrExitApp?: () => void }).__herdrExitApp
-  if (bridge) bridge()
-})
 // Development builds only: let the local debugger drive the controller.
 if (import.meta.env.DEV) (window as unknown as { __herdrController?: typeof controller }).__herdrController = controller
 

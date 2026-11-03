@@ -28,9 +28,6 @@ export const SLOW_DELAY_MS = 60_000
 /** Automatic retries still offered before the UI calls them exhausted. */
 export const MAX_RETRIES = FAST_DELAYS.length
 
-/** The old fixed ladder, kept for the delay ceiling the UI documents. */
-export const RETRY_DELAYS = FAST_DELAYS
-
 export type StopReason = 'exhausted' | 'auth' | 'unknown-host'
 
 /**
@@ -40,11 +37,6 @@ export type StopReason = 'exhausted' | 'auth' | 'unknown-host'
 export interface RetryContext {
   /** The user is looking at the app. */
   foreground: boolean
-  /**
-   * The user is actually on a session screen, where a dead link shows as a
-   * spinner or a red banner. Off it, a slower pace is invisible and cheaper.
-   */
-  watching?: boolean
 }
 
 /**

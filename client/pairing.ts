@@ -1,5 +1,4 @@
 import { routingId } from './crypto'
-import { usableLanAddress } from './lan'
 import type { Host } from './model'
 
 export async function parsePairing(name: string, input: string): Promise<Host> {
@@ -33,10 +32,6 @@ export function validHosts(value: unknown): Host[] {
     // Only a real `false` disables; anything else means "on", so a host saved
     // before this field existed keeps connecting.
     const host = { ...x, enabled: (x as Host).enabled !== false } as Host
-    // A stored local address is re-validated rather than trusted: storage can
-    // be edited, and a public address there would silently mean plain-text
-    // traffic across the internet.
-    if (host.lan && !usableLanAddress(host.lan)) delete host.lan
     return host
   })
 }

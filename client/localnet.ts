@@ -45,10 +45,3 @@ export function forgetSubnets() {
   cached = undefined
   generation++
 }
-
-/** Test hook. */
-export function resetForTests() {
-  cached = undefined
-  inFlight = undefined
-  generation++
-}

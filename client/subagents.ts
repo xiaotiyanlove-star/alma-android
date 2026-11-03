@@ -69,8 +69,3 @@ export function runningAgents(items: ChatItem[]): RunningAgent[] {
 export function backgroundAgents(items: ChatItem[]): RunningAgent[] {
   return runningAgents(items).filter((agent) => agent.background)
 }
-
-/** Compact label for the session header, e.g. "2 个 agent 运行中". */
-export function agentsLabel(count: number): string | null {
-  return count > 0 ? `${count}` : null
-}

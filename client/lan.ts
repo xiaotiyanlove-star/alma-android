@@ -62,34 +62,6 @@ export function isLanHost(host: string): boolean {
   return false
 }
 
-/**
- * Parses what a user typed into an address, or explains why it cannot be used.
- *
- * Accepts `192.168.1.10`, `192.168.1.10:23019`, and the same in brackets for
- * IPv6. A bare address gets the default port. A hostname is refused rather than
- * resolved: "localhost" would point at the phone, and `alma-e2e.local` could
- * resolve anywhere.
- */
-export function parseLanAddress(input: string): { address?: LanAddress; error?: 'empty' | 'invalid' | 'not-lan' } {
-  const text = input.trim()
-  if (!text) return { error: 'empty' }
-  let host = text
-  let port = DEFAULT_LAN_PORT
-  const bracketed = /^(\[[0-9a-fA-F:]+\])(?::(\d{1,5}))?$/.exec(text)
-  if (bracketed) {
-    host = bracketed[1]
-    if (bracketed[2]) port = Number(bracketed[2])
-  } else {
-    const match = /^([^:]+)(?::(\d{1,5}))?$/.exec(text)
-    if (!match) return { error: 'invalid' }
-    host = match[1]
-    if (match[2]) port = Number(match[2])
-  }
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return { error: 'invalid' }
-  if (!isLanHost(host)) return { error: 'not-lan' }
-  return { address: { host, port } }
-}
-
 /** The URL the tunnel dials for a direct connection. */
 export function lanUrl(address: LanAddress, path: string): string {
   return `ws://${address.host}:${address.port}${path}`

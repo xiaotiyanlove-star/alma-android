@@ -11,16 +11,7 @@ export interface Host {
    * Absent means enabled, so hosts saved before this field existed still work.
    */
   enabled?: boolean
-  /**
-   * The desktop's address on the local network, when the user has set one.
-   *
-   * Only ever a preference: the relay is still dialled whenever this is
-   * unreachable. Refused unless it is a private address — see `lan.ts` for
-   * why plain text is tolerated there and nowhere else.
-   */
-  lan?: { host: string; port: number }
 }
-export type PaneStatus = 'blocked' | 'working' | 'done' | 'idle' | 'unknown'
 export interface Pane {
   pane_id: string
   workspace_id: string
@@ -112,10 +103,11 @@ export interface HostState {
    */
   route?: 'direct' | 'relay'
   /**
-   * A local address found by scanning, as opposed to one the user typed.
+   * The desktop's address on the local network, found by scanning.
    *
-   * Kept separate from `Host.lan` because it is not a setting: it is a guess
-   * that has been verified once, and it is safe to forget.
+   * Never a setting and never persisted: it is a guess that has been verified
+   * by a full handshake once, and it is safe to forget the moment it stops
+   * answering or the phone changes networks.
    */
   discoveredLan?: { host: string; port: number }
   /** Set when the retry ladder deliberately stopped. */
@@ -130,7 +122,7 @@ export interface AppState {
   session?: SessionState
   error?: string
   /**
-   * The app is on screen. Retry pacing and liveness probes consult it so a
+   * The app is on screen. Retry pacing and the idle probe consult it so a
    * hidden app neither burns battery nor redials into the void.
    */
   foreground?: boolean

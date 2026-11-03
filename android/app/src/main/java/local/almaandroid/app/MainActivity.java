@@ -173,7 +173,6 @@ public class MainActivity extends BridgeActivity {
         try {
             webView.addJavascriptInterface(new LocaleBridge(), "__almaAndroidLocale");
             webView.addJavascriptInterface(new UiBridge(), "__almaAndroidUi");
-            webView.addJavascriptInterface(new BackBridge(), "__herdrExitApp");
             // No upstream updater bridge: this fork has its own application identity.
         } catch (Throwable t) {
             // 同上
@@ -517,14 +516,6 @@ public class MainActivity extends BridgeActivity {
      * ② WebView 自身历史（renderer 模态等 pushState）；
      * ③ 默认行为（退出）。
      */
-    /** Exposed to the page so it can close the app once its own stack is empty. */
-    public class BackBridge {
-        @JavascriptInterface
-        public void exit() {
-            runOnUiThread(() -> MainActivity.this.finish());
-        }
-    }
-
     @Override
     public void onBackPressed() {
         WebView wv = webView != null ? webView

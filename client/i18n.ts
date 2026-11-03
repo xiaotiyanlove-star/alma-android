@@ -304,8 +304,6 @@ const en: Dict = {
   '留空则恢复默认名称': 'Leave empty to restore the default name',
   '可选，稍后也能改': 'Optional; editable later',
   '重命名失败': 'Rename failed',
-  '只支持局域网地址，例如 192.168.1.10': 'Only local-network addresses are supported, for example 192.168.1.10',
-  '地址格式无效': 'That address is not valid',
   '局域网直连': 'Direct over LAN',
   '经中继': 'via relay',
   '已切换到局域网直连 · {name}': 'Switched to a direct local connection · {name}',

@@ -1,14 +1,14 @@
 import type { AgentSettings, AppState, ChatItem, Host, Mutes, Pane, SessionState, Snapshot, TranscriptGap } from './model'
 import { parsePairing } from './pairing'
 import { t, tWith } from './i18n'
-import { isOnLocalNetwork, parseLanAddress, usableLanAddress } from './lan'
+import { isOnLocalNetwork, usableLanAddress, type LanAddress } from './lan'
 import { deviceSubnets } from './localnet'
 import { directAllowed, recordDirect } from './breaker'
 import { discoverDesktop } from './discovery'
 import { lanDiscoveryEnabled } from './lanprefs'
 import { forgetSubnets } from './localnet'
 import { clearAllBreakers } from './breaker'
-import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, sessionDelay, stopMessage, type RetryContext } from './backoff'
+import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, sessionDelay, type RetryContext } from './backoff'
 import { metrics } from './metrics'
 import { imageRequestPath, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, uploadRoute, type UploadResponse, type UploadedFile } from './attachments'
 import { moveKeys, needsSpace, optionForIntent, parsePrompt, promptFingerprint, samePrompt, stripAnsi, type Prompt } from './prompt'
@@ -212,29 +212,28 @@ export class Controller {
       // and is kept; only observation is discarded.
       if (this.discoveredLanFor(host.id)) this.patchHost(host.id, { discoveredLan: undefined })
     }
-    // A local address is a preference, not a route: the transport still falls
-    // back to the relay whenever it does not answer.
-    // A discovered address is used exactly like a configured one, but it is
-    // never written into the stored host: it is an observation, not a setting.
-    this.applyLan(runtime, host.id, host.lan ?? this.discoveredLanFor(host.id))
+    // The local address is an observation, never a setting: it is found by
+    // scanning and never written into the stored host. The transport still
+    // falls back to the relay whenever it does not answer.
+    this.applyLan(runtime, host.id, this.discoveredLanFor(host.id))
     return runtime
   }
 
+  /** The address a scan found earlier, if it is still remembered. */
+  private discoveredLanFor(id: string): LanAddress | undefined {
+    return this.state.hosts.find((item) => item.host.id === id)?.discoveredLan
+  }
+
   /**
-   * Hands a configured local address to a transport, when it supports one.
+   * Hands a discovered local address to a transport, when it supports one.
    *
    * The gate travels with it: plain text is only dialled once the platform
    * confirms the address shares a subnet with this phone. A transport that
    * cannot ask the platform keeps its own default, which is to refuse.
    */
-  /** The address a scan found earlier, if it is still remembered. */
-  private discoveredLanFor(id: string): Host['lan'] {
-    return this.state.hosts.find((item) => item.host.id === id)?.discoveredLan
-  }
-
-  private applyLan(runtime: Runtime, hostId: string, lan: Host['lan']) {
+  private applyLan(runtime: Runtime, hostId: string, lan: LanAddress | undefined) {
     const transport = runtime.transport as Transport & {
-      useDirect?(address: Host['lan'], allow?: (address: NonNullable<Host['lan']>) => Promise<boolean>): void
+      useDirect?(address: LanAddress | undefined, allow?: (address: LanAddress) => Promise<boolean>): void
     }
     transport.useDirect?.(lan, async (address) => {
       if (!usableLanAddress(address) || !lanDiscoveryEnabled()) return false
@@ -244,32 +243,6 @@ export class Controller {
       const subnets = await deviceSubnets()
       return isOnLocalNetwork(address.host, subnets)
     })
-  }
-
-  /**
-   * Sets or clears a desktop's local address.
-   *
-   * Stored with the pairing so it survives a restart; applied to the live
-   * transport straight away, so the next reconnect uses it without waiting
-   * for the app to be relaunched.
-   */
-  setLanAddress = async (id: string, input: string) => {
-    if (!this.initializedStorage) throw new Error(t('安全存储尚未就绪'))
-    const parsed = parseLanAddress(input)
-    if (parsed.error === 'not-lan') throw new Error(t('只支持局域网地址，例如 192.168.1.10'))
-    if (parsed.error === 'invalid') throw new Error(t('地址格式无效'))
-    const lan = parsed.address
-    await this.serialize(async () => {
-      const hosts = this.state.hosts.map((item) => item.host.id === id ? { ...item.host, ...(lan ? { lan } : { lan: undefined }) } : item.host)
-      if (!hosts.some((host) => host.id === id)) throw new Error(t('节点不存在'))
-      await this.storage.save(hosts)
-      this.publish({
-        hosts: this.state.hosts.map((item) => item.host.id === id ? { ...item, host: { ...item.host, ...(lan ? { lan } : { lan: undefined }) } } : item),
-      })
-      const runtime = this.runtimes.get(id)
-      if (runtime) this.applyLan(runtime, id, lan)
-    })
-    return lan
   }
 
   /** Drops addresses discovered on a previous network, preserving user input. */
@@ -327,12 +300,6 @@ export class Controller {
     }
   }
 
-  /** Where a desktop's current connection actually goes, for the status line. */
-  routeOf = (id: string): 'direct' | 'relay' | undefined => {
-    const transport = this.runtimes.get(id)?.transport as Transport & { currentRoute?(): 'direct' | 'relay' | undefined }
-    return transport?.currentRoute?.()
-  }
-
   /**
    * Releases one runtime: probe, hub, retry timer and transport.
    *
@@ -388,8 +355,7 @@ export class Controller {
 
   /** Whether the app is on screen right now. */
   private retryContext(): RetryContext {
-    const foreground = this.state.foreground ?? true
-    return { foreground, watching: foreground && Boolean(this.state.session) }
+    return { foreground: this.state.foreground ?? true }
   }
 
   /**
@@ -451,7 +417,7 @@ export class Controller {
     // the cooldown exists precisely to stop spending time on this path. A
     // network change clears the discovered address and the breaker before the
     // next scan.
-    if (host.lan || hostState?.discoveredLan) return;
+    if (hostState?.discoveredLan) return
     const at = this.lastDiscover.get(id) ?? 0
     const now = Date.now()
     // Rediscovering is expensive; ten minutes between attempts is plenty for
@@ -490,7 +456,7 @@ export class Controller {
   }
 
   /** Remembers a discovered address and lets the next connection use it. */
-  private async adoptLan(id: string, address: NonNullable<Host['lan']>) {
+  private async adoptLan(id: string, address: LanAddress) {
     // The desktop may have been forgotten or switched off while the scan ran;
     // writing the address onto it afterwards would leave state that nothing
     // reads and nothing clears.

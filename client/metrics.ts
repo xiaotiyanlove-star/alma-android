@@ -21,28 +21,9 @@ const MAX_SAMPLES = 50
 
 export class Metrics {
   private samples: MetricSample[] = []
-  /** When the current run of "screens should show a problem" began. */
-  private unhealthySince?: number
+  /** Start of the current five-minute retry window. */
   private retryWindowStart?: number
   private retryCount = 0
-
-  /**
-   * Marks the moment the UI should start looking wrong.
-   *
-   * Called when a send is issued and no acknowledgement arrives, which is the
-   * earliest honest signal that the link may be dead.
-   */
-  markUnhealthy(now = Date.now()) {
-    if (this.unhealthySince === undefined) this.unhealthySince = now
-  }
-
-  /** Records how long the UI stayed unaware, and clears the run. */
-  markHealthy(now = Date.now()) {
-    if (this.unhealthySince !== undefined) {
-      this.record({ staleDetectMs: Math.max(0, now - this.unhealthySince) })
-      this.unhealthySince = undefined
-    }
-  }
 
   /** Counts one reconnect attempt, closing a five-minute window when it ends. */
   countRetry(now = Date.now()) {
@@ -80,7 +61,7 @@ export class Metrics {
     }
   }
 
-  reset() { this.samples = []; this.unhealthySince = undefined; this.retryWindowStart = undefined; this.retryCount = 0 }
+  reset() { this.samples = []; this.retryWindowStart = undefined; this.retryCount = 0 }
 }
 
 export const metrics = new Metrics()

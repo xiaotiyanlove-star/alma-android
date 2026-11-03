@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { DEFAULT_LAN_PORT, ipv4ToInt, isLanHost, isOnLocalNetwork, isSameSubnet, lanUrl, parseLanAddress, prefixMask, usableLanAddress } from '../client/lan.ts'
+import { ipv4ToInt, isLanHost, isOnLocalNetwork, isSameSubnet, lanUrl, prefixMask, usableLanAddress } from '../client/lan.ts'
 
 test('only private ranges count as local', () => {
   for (const ip of ['10.0.0.1', '10.255.255.254', '172.16.0.1', '172.31.255.254', '192.168.0.1', '192.168.1.10', '169.254.1.1']) {
@@ -32,20 +32,7 @@ test('a hostname is refused rather than resolved', () => {
   // 'localhost' would point at the phone; .local can resolve anywhere.
   assert.equal(isLanHost('localhost'), false)
   assert.equal(isLanHost('alma-e2e.local'), false)
-  assert.equal(parseLanAddress('alma-e2e.local').error, 'not-lan')
-})
-
-test('what a user types becomes a usable address', () => {
-  assert.deepEqual(parseLanAddress('192.168.1.10'), { address: { host: '192.168.1.10', port: DEFAULT_LAN_PORT } })
-  assert.deepEqual(parseLanAddress(' 192.168.1.10:8080 '), { address: { host: '192.168.1.10', port: 8080 } })
-  assert.deepEqual(parseLanAddress('[fd00::1]:23019'), { address: { host: '[fd00::1]', port: 23019 } })
-})
-
-test('input that cannot be used says why', () => {
-  assert.equal(parseLanAddress('').error, 'empty')
-  assert.equal(parseLanAddress('192.168.1.10:99999').error, 'invalid')
-  assert.equal(parseLanAddress('192.168.1.10:0').error, 'invalid')
-  assert.equal(parseLanAddress('8.8.8.8').error, 'not-lan')
+  assert.equal(isLanHost(''), false)
 })
 
 test('the dialed URL is plain ws on the given port', () => {
@@ -123,7 +110,6 @@ test('an address with a leading zero is refused, because the dialer reads it dif
   // would vet 172.16.0.1 while the socket opened the public 172.14.0.1.
   for (const ip of ['172.016.0.1', '010.0.0.1', '192.168.001.010', '192.168.01.1']) {
     assert.equal(isLanHost(ip), false, ip)
-    assert.notEqual(parseLanAddress(ip).address, ip)
   }
   // Canonical decimal still works, including a single zero octet.
   assert.equal(isLanHost('172.16.0.1'), true)
