@@ -3,7 +3,7 @@ import type { ChangeEvent, FormEvent, KeyboardEvent, ReactNode } from 'react';
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown,
   Camera, CircleAlert, CornerDownLeft, Eye, EyeOff, Loader2, MessageSquare, Plus, RefreshCw,
-  Send, Server, Settings, Square, Terminal, Trash2, WrapText, X, FileCode, FileText, Pencil, ChevronUp, Paperclip, PlusCircle,
+  Send, Server, Settings, Square, Terminal, Trash2, WrapText, X, FileCode, Pencil, ChevronUp, Paperclip, PlusCircle,
   QrCode, Copy, BellOff, RotateCcw,
 } from 'lucide-react';
 import { controller } from './controller';
@@ -28,7 +28,7 @@ import { initialState, step } from './lifecycle';
 import { stopMessage } from './backoff';
 import { headerInfo } from './session-info';
 import { agentLook, statusTone, statusWord } from './agents';
-import { timeline } from './timeline';
+import { imagePaths, isThinking, timeline, withoutImagePaths, type WorkCount } from './timeline';
 import { backgroundAgents, runningAgents } from './subagents';
 import { commandsFor, filterCommands, slashQuery } from './commands';
 import { formatTime, localeChoice, setLocaleChoice, timeZoneChoice, setTimeZoneChoice, resolvedTimeZone, resolvedLocale, COMMON_ZONES, markdownEnabled, setMarkdownEnabled, themeChoice, setThemeChoice, resolvedTheme, applyTheme, type LocaleChoice, type ThemeChoice } from './prefs';
@@ -180,45 +180,90 @@ function printable(value: unknown): string {
   try { return JSON.stringify(value, null, 2) ?? ''; } catch { return t('内容无法显示'); }
 }
 
-/** One tool call, collapsed to a single row unless opened. */
-function ToolRow({ item, hostId }: { item: ChatItem; hostId: string }) {
-  const done = item.tool?.done === true;
-  const images = toolImages(item);
-  return <details className="tool-detail">
-    <summary><span className={`tool-dot${done ? '' : ' is-running'}`} aria-hidden="true" /><span>{item.tool?.name || t('工具调用')}</span><span className="tool-state">{done ? t('已完成') : t('进行中')}</span><ChevronDown size={14} aria-hidden="true" /></summary>
-    {item.tool?.input !== undefined && <div className="tool-section"><span className="field-label">{t('输入')}</span><pre tabIndex={0}>{printable(item.tool.input)}</pre></div>}
-    {/* A screenshot a tool produced belongs to that call, so it is rendered
-        here rather than on the message: a burst of calls is folded into one
-        group, and a picture outside the group would be orphaned from the call
-        that made it. */}
-    {images.length > 0 && <div className="transcript-images is-tool">{images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} />)}</div>}
-    {item.tool?.output !== undefined && <div className="tool-section"><span className="field-label">{t('输出')}</span><pre tabIndex={0}>{printable(item.tool.output)}</pre></div>}
-  </details>;
+/** "ran 24 commands, edited 1 file, read 27 files", in the reader's language. */
+function workSummary(counts: readonly WorkCount[]): string {
+  if (!counts.length) return t('正在处理…')
+  return counts.map(({ kind, count }) => {
+    if (kind === 'command') return tWith('执行了 {count} 条命令', { count: String(count) })
+    if (kind === 'edit') return tWith('修改了 {count} 个文件', { count: String(count) })
+    if (kind === 'read') return tWith('读取了 {count} 个文件', { count: String(count) })
+    if (kind === 'search') return tWith('搜索了 {count} 次', { count: String(count) })
+    if (kind === 'fetch') return tWith('读取了 {count} 个网页', { count: String(count) })
+    if (kind === 'subagent') return tWith('派发了 {count} 个子 agent', { count: String(count) })
+    return tWith('{count} 个其它步骤', { count: String(count) })
+  }).join('，')
 }
 
 /**
- * A run of consecutive tool calls.
+ * The step's own name.
  *
- * Agents emit these in bursts, and each row on its own is noise between the
- * messages. They are folded into one line that still shows the count, the
- * current tool and whether work is happening, and opens to every row inside so
- * nothing is lost.
+ * The transcript names are the agent's own (`Bash`, `Read`, `Edit`, and for
+ * other agents `shell`, `view`, `apply_patch`), which is what a reader who
+ * uses that agent expects to see. Only a row without one gets a stand-in.
  */
-function ToolGroup({ items, running, hostId }: { items: ChatItem[]; running: boolean; hostId: string }) {
-  const last = items[items.length - 1];
-  const lastDone = last?.tool?.done === true;
-  // The newest unfinished call is what the agent is doing right now.
-  const active = running ? [...items].reverse().find((item) => item.tool?.done !== true) : undefined;
-  return <details className="tool-group" open={false}>
+function stepLabel(item: ChatItem): string {
+  if (!item.tool) return t('思考')
+  return item.tool.name || t('工具调用')
+}
+
+/** The command a shell step ran, when the desktop recorded it. */
+function stepDetail(item: ChatItem): string | undefined {
+  const input = item.tool?.input as Record<string, unknown> | undefined
+  if (!input) return undefined
+  for (const key of ['command', 'file_path', 'path', 'pattern', 'query', 'description']) {
+    const value = input[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return undefined
+}
+
+/**
+ * A folded run of work: tool calls and the agent's own thinking.
+ *
+ * Three layers, because that is how much detail a reader wants at a time: the
+ * line says what happened in counts, opening it lists the steps, and opening a
+ * step shows its input, output and pictures. Nothing is dropped, it is only out
+ * of the way — which is what makes the answer readable.
+ *
+ * While the burst is still going the line breathes and counts up, so a long
+ * stretch of work does not look like a frozen screen.
+ */
+function WorkGroup({ items, running, counts, hostId }: { items: ChatItem[]; running: boolean; counts: WorkCount[]; hostId: string }) {
+  const active = running ? [...items].reverse().find((item) => item.tool && item.tool.done !== true) : undefined;
+  return <details className={`work-group${running ? ' is-running' : ''}`}>
     <summary>
-      <span className={`tool-dot${running ? ' is-running' : ''}`} aria-hidden="true" />
-      <span className="tool-group-copy">
-        <strong>{running ? tWith('{name} 进行中', { name: active?.tool?.name || t('工具调用') }) : tWith('{count} 次工具调用', { count: String(items.length) })}</strong>
-        <small>{running ? `${items.length} ${t('步')}${lastDone ? '' : ` · ${last?.tool?.name ?? ''}`}` : items.map((item) => item.tool?.name).filter(Boolean).slice(0, 6).join(' · ')}</small>
+      <span className={`work-spinner${running ? ' is-running' : ''}`} aria-hidden="true" />
+      <span className="work-copy">
+        <strong>{workSummary(counts)}</strong>
+        <small>{running ? tWith('{name} 进行中…', { name: active ? (active.tool?.name || t('工具调用')) : t('思考') }) : tWith('{count} 个步骤', { count: String(items.length) })}</small>
       </span>
       <ChevronDown size={15} aria-hidden="true" />
     </summary>
-    <div className="tool-group-body">{items.map((item) => <ToolRow item={item} hostId={hostId} key={item.id} />)}</div>
+    <div className="work-body">{items.map((item) => <WorkStep item={item} hostId={hostId} key={item.id} />)}</div>
+  </details>;
+}
+
+/** One step inside a folded run; opens to its input, output and pictures. */
+function WorkStep({ item, hostId }: { item: ChatItem; hostId: string }) {
+  const images = toolImages(item);
+  if (isThinking(item)) {
+    // Thinking has no input or output, only prose: shown in place, dimmed, so
+    // the reasoning is readable without pretending it is an answer.
+    return <div className="work-step is-thinking">{item.text || item.summary}</div>;
+  }
+  const done = item.tool?.done === true;
+  const detail = stepDetail(item);
+  return <details className="work-step">
+    <summary>
+      <span className={`tool-dot${done ? '' : ' is-running'}`} aria-hidden="true" />
+      <span className="work-step-name">{stepLabel(item)}</span>
+      {detail && <span className="work-step-detail">{detail}</span>}
+      <span className="work-step-state">{done ? t('完成') : t('进行中')}</span>
+      <ChevronDown size={13} aria-hidden="true" />
+    </summary>
+    {item.tool?.input !== undefined && <div className="tool-section"><span className="field-label">{t('输入')}</span><pre tabIndex={0}>{printable(item.tool.input)}</pre></div>}
+    {images.length > 0 && <div className="transcript-images is-tool">{images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} />)}</div>}
+    {item.tool?.output !== undefined && <div className="tool-section"><span className="field-label">{t('输出')}</span><pre tabIndex={0}>{printable(item.tool.output)}</pre></div>}
   </details>;
 }
 
@@ -272,8 +317,13 @@ function toolImages(item: ChatItem): ImageRef[] {
 
 function Message({ item, markdown, hostId }: { item: ChatItem; markdown: boolean; hostId: string }) {
   const isUser = item.kind === 'user' || item.from === 'user' || item.from === 'human';
-  const role = isUser ? t('你') : item.kind === 'system' ? t('系统') : item.kind === 'error' ? t('错误') : item.tool ? t('工具') : t('助手');
-  const text = item.text || item.summary;
+  const role = isUser ? t('你') : item.kind === 'system' ? t('系统') : item.kind === 'error' ? t('错误') : t('助手');
+  // Pictures written as paths in the body are shown as pictures. The desktop's
+  // transcript often references a screenshot by path only, and a reader who has
+  // to copy that path to a computer to see it is not being shown the result.
+  const inlineImages = useMemo(() => imagePaths(item.text || item.summary), [item.text, item.summary]);
+  const body = useMemo(() => inlineImages.length ? withoutImagePaths(item.text || item.summary || '', inlineImages) : (item.text || item.summary), [item.text, item.summary, inlineImages]);
+  const text = body;
   const time = formatTime(item.time);
   // Only replies are worth copying: a tap on your own message, a system line or
   // an error row would just hand back what is already on screen.
@@ -285,8 +335,9 @@ function Message({ item, markdown, hostId }: { item: ChatItem; markdown: boolean
       </span>
     </div>
     {text && <RichText text={text} markdown={markdown} />}
-    {item.images && item.images.length > 0 && <div className="transcript-images">{item.images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} />)}</div>}
-    {item.tool && <ToolRow item={item} hostId={hostId} />}
+    {(item.images?.length || inlineImages.length) ? <div className="transcript-images">
+      {[...(item.images ?? []), ...inlineImages.map((url): ImageRef => ({ url }))].map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} />)}
+    </div> : null}
     {!text && !item.tool && <p className="muted">{t('此条记录没有文本内容')}</p>}
   </article>;
 }
@@ -897,13 +948,17 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   // a pane that has no chat at all is taken away from the message view.
   const noMessages = session.unsupported && (gap === 'terminal' || gap === 'unsupported');
   // Start on messages unless this pane is known to have no transcript.
-  const [mode, setMode] = useState<'messages' | 'terminal'>(() => noMessages ? 'terminal' : 'messages');
+  // Three views over the same session: the reader (messages), the raw terminal,
+  // and the answer as Markdown source. `source` is not a third transcript — it
+  // is the message view with rendering turned off — so it shares the reader's
+  // data and only changes how it is drawn.
+  const [mode, setMode] = useState<'messages' | 'terminal' | 'source'>(() => noMessages ? 'terminal' : 'messages');
   // A pane that turns out to have no transcript at all moves to the terminal.
   useEffect(() => { if (noMessages) setMode('terminal'); }, [noMessages]);
   // Once a transcript finally arrives, leave the terminal view automatically.
   useEffect(() => { if (!session.unsupported && session.items.length > 0) setMode('messages'); }, [session.unsupported, session.items.length]);
   const [wrap, setWrap] = useState(true);
-  const [markdown, setMarkdown] = useState(markdownEnabled);
+  const [markdownPreference] = useState(markdownEnabled);
   const [draft, setDraft] = useState(() => loadDraft(session.hostId, session.paneId));
   // Persist on every change so leaving the session or losing the process keeps it.
   useEffect(() => { saveDraft(session.hostId, session.paneId, draft) }, [draft, session.hostId, session.paneId]);
@@ -927,12 +982,18 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   const composer = useRef<HTMLTextAreaElement>(null);
   const ready = canUseHost(host);
   const terminal = noMessages || mode === 'terminal';
+  const source = !terminal && mode === 'source';
+  // The 源码 view is the same reader with rendering off. The saved preference
+  // still drives the default, but an explicit view choice wins while the user
+  // is in it.
+  const markdown = source ? false : markdownPreference;
   // Any newly arrived item means the agent has produced something.
   // The desktop reads the model and effort out of the transcript; the screen is
   // only a fallback for desktops too old to send them. Context usage has no
   // other source, so that part is always scraped.
   const info = useMemo(() => headerInfo(stripAnsi(session.screen ?? ''), session.settings), [session.screen, session.settings]);
   const agents = useMemo(() => backgroundAgents(session.items), [session.items]);
+  const sessionRoute = host ? routeLabel(host) : undefined;
   // Every dispatched agent, background or not: the notification is about the
   // session, but the sheet is where a user checks what is still running.
   const allAgents = useMemo(() => runningAgents(session.items), [session.items]);
@@ -1148,7 +1209,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     finally { setRefreshing(false); }
   }
 
-  function switchMode(next: 'messages' | 'terminal') {
+  function switchMode(next: 'messages' | 'terminal' | 'source') {
     followBottom.current = true;
     olderAnchor.current = null;
     setNewContent(false);
@@ -1158,26 +1219,41 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   return <section className="conversation-view">
     <header className="page-header conversation-header"><button className="icon-button" title={t('返回会话')} aria-label={t('返回会话')} onClick={() => { controller.backToSessions(); back() }}><ArrowLeft size={21} /></button>
       <AgentBadge agent={pane?.agent ?? pane?.agent_session?.agent} />
-      <div className="header-copy"><h1>{paneTitle(pane, tabLabelOf(host?.snapshot, pane))}</h1><p className="session-host-name"><span className="session-host-id"><Server size={12} aria-hidden="true" />{host?.host.name || t('未知节点')}</span>
-        {/* The chips scroll rather than wrap: the header must not change height
-            as a model name or a context figure comes and goes. */}
-        <span className="session-chips">
-          {pane?.agent_status && <span className={`session-chip is-status is-${statusTone(pane.agent_status)}`} title={t('当前状态')}><span className={`agent-status-dot is-${statusTone(pane.agent_status)}`} aria-hidden="true" />{t(statusWord(pane.agent_status))}</span>}
-          {info.model && <span className="session-chip" title={t('当前模型')}>{info.model}{info.effort ? ` · ${info.effort}` : ''}</span>}
-          {info.contextLabel && <span className="session-chip" title={info.contextRatio === undefined ? t('上下文用量') : `${t('上下文已用')} ${Math.round((info.contextRatio ?? 0) * 100)}%`}><span className="sr-only">{t('上下文')}</span>{info.contextLabel}</span>}
-          {agents.length > 0 && <button type="button" className="session-chip is-agents" onClick={() => setAgentsOpen(true)} title={t('查看运行中的 agent')}>
-            <span className="agents-dot" aria-hidden="true" />{agents.length} {t('个 agent 运行中')}
-          </button>}
-        </span>
-      </p></div>{host && <Status host={host} compact />}</header>
-    <div className="view-toolbar"><div className="view-tabs" role="tablist" aria-label={t('会话视图')}><button role="tab" id="messages-tab" aria-controls="session-content" aria-selected={!terminal} disabled={noMessages} className={!terminal ? 'is-active' : ''} onClick={() => switchMode('messages')}><MessageSquare size={16} />{t('消息')}</button><button role="tab" id="terminal-tab" aria-controls="session-content" aria-selected={terminal} className={terminal ? 'is-active' : ''} onClick={() => switchMode('terminal')}><Terminal size={16} />{t('终端')}</button></div>{terminal ? <div className="terminal-options"><button className={`icon-button ${wrap ? 'is-active' : ''}`} title={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-label={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-pressed={wrap} onClick={() => setWrap(value => !value)}><WrapText size={18} /></button><button className="icon-button" title={t('刷新终端')} aria-label={t('刷新终端')} disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={18} className={refreshing ? 'spin' : ''} /></button></div>
-      : <div className="message-options"><button className="text-toggle" aria-pressed={markdown} title={t(markdown ? '显示 Markdown 源码' : '渲染 Markdown')} onClick={() => { const next = !markdown; setMarkdown(next); setMarkdownEnabled(next) }}>{markdown ? <FileCode size={15} /> : <FileText size={15} />}{t(markdown ? '源码' : '渲染')}</button></div>}
+      <div className="header-copy"><h1>{paneTitle(pane, tabLabelOf(host?.snapshot, pane))}</h1>
+        <p className="session-host-name"><span className="session-host-id"><Server size={12} aria-hidden="true" />{host?.host.name || t('未知节点')}</span>
+          {sessionRoute && <span className="session-chip is-route" title={t('当前连接方式')}>{sessionRoute}</span>}
+        </p>
+      </div>{host && <Status host={host} compact />}</header>
+    {/* Model, effort, context and running agents get their own row. Beside the
+        title they widened the header until the pane name was clipped on the
+        left; here they can wrap or scroll without touching it. */}
+    {(info.model || info.contextLabel || agents.length > 0 || info.effort) && <div className="session-facts">
+      {info.model && <span className="session-fact" title={t('当前模型')}><strong>{info.model}</strong>{info.effort ? <span className="session-fact-effort">{info.effort}</span> : null}</span>}
+      {info.contextLabel && <span className="session-fact" title={info.contextRatio === undefined ? t('上下文用量') : `${t('上下文已用')} ${Math.round((info.contextRatio ?? 0) * 100)}%`}><span className="sr-only">{t('上下文')}</span>{info.contextLabel}</span>}
+      {agents.length > 0 && <button type="button" className="session-fact is-agents" onClick={() => setAgentsOpen(true)} title={t('查看运行中的 agent')}>
+        <span className="agents-dot" aria-hidden="true" />{agents.length} {t('个 agent 运行中')}
+      </button>}
+    </div>}
+    {/* Three views, one segmented control. Separate tab, wrap and markdown
+        buttons in a single row made it read as four unrelated actions; the
+        view is one choice, and what each view offers sits beside it. */}
+    <div className="view-toolbar">
+      <div className="view-segments" role="tablist" aria-label={t('会话视图')}>
+        <button role="tab" id="messages-tab" aria-controls="session-content" aria-selected={!terminal && !source} disabled={noMessages} className={!terminal && !source ? 'is-active' : ''} onClick={() => switchMode('messages')}><MessageSquare size={15} />{t('消息')}</button>
+        <button role="tab" id="terminal-tab" aria-controls="session-content" aria-selected={terminal} className={terminal ? 'is-active' : ''} onClick={() => switchMode('terminal')}><Terminal size={15} />{t('终端')}</button>
+        <button role="tab" id="source-tab" aria-controls="session-content" aria-selected={source} disabled={noMessages} className={source ? 'is-active' : ''} onClick={() => switchMode('source')}><FileCode size={15} />{t('源码')}</button>
+      </div>
       <div className="view-actions">
+        {terminal && <>
+          <button type="button" className={`icon-button${wrap ? ' is-active' : ''}`} title={wrap ? t('切换为保留原始行') : t('切换为自动换行')} aria-label={wrap ? t('切换为保留原始行') : t('切换为自动换行')} aria-pressed={wrap} onClick={() => setWrap(value => !value)}><WrapText size={18} /></button>
+          <button type="button" className="icon-button" title={t('刷新终端')} aria-label={t('刷新终端')} disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={18} className={refreshing ? 'spin' : ''} /></button>
+        </>}
         {/* Muting is stored on the desktop, so the switch reads back its own
             answer: the label is derived from the list, not from a local flag. */}
         <button type="button" className={`icon-button${muted ? ' is-active' : ''}`} aria-pressed={muted} disabled={!ready || !pane?.tab_id} title={muted ? t('恢复提醒') : t('静音这个会话')} aria-label={muted ? t('恢复提醒') : t('静音这个会话')} onClick={() => void toggleMute()}><BellOff size={17} /></button>
         <button type="button" className="icon-button" disabled={!ready || restarting} title={t('重启这个 agent')} aria-label={t('重启这个 agent')} onClick={() => void restart()}>{restarting ? <Loader2 size={17} className="spin" /> : <RotateCcw size={17} />}</button>
-      </div></div>
+      </div>
+    </div>
     <div className="session-notices">
       {!ready && <Notice error>{t(host?.status === 'connecting' ? '连接恢复中，暂时无法发送。' : '节点未连接，暂时无法发送。')}{host && host.status !== 'connecting' && <button className="inline-button" onClick={() => controller.retryHost(host.host.id)}>{t('重新连接')}</button>}</Notice>}
       {session.unsupported && (gap === 'terminal'
@@ -1236,8 +1312,8 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
             ? <Notice error>{subagent.error}</Notice>
             : subagent.items.length === 0
               ? <p className="muted">{t('这个子 agent 还没有可读的记录')}</p>
-              : <div className="subagent-transcript">{timeline(subagent.items).map(entry => entry.kind === 'tools'
-                  ? <ToolGroup items={entry.items} running={entry.running} hostId={session.hostId} key={entry.key} />
+              : <div className="subagent-transcript">{timeline(subagent.items).map(entry => entry.kind === 'work'
+                  ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} key={entry.key} />
                   : <Message item={entry.item} markdown={markdown} hostId={session.hostId} key={entry.key} />)}</div>}
         <button type="button" className="secondary-button sheet-cancel" onClick={() => setSubagent(undefined)}>{t('关闭')}</button>
       </div>
@@ -1246,8 +1322,8 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
       <div ref={scroll} id="session-content" className={`transcript-scroll ${terminal ? 'terminal-scroll' : ''}`} role="tabpanel" aria-labelledby={terminal ? 'terminal-tab' : 'messages-tab'} aria-busy={session.loading} onScroll={trackScroll} tabIndex={0}>
         {terminal ? <>{session.loading && !session.screen && <Loading label={t('正在读取终端…')} />}{session.screen ? <pre className={`terminal-screen ${wrap ? 'is-wrapped' : ''}`} tabIndex={0} aria-label={t('终端画面')}>{stripAnsi(session.screen)}</pre> : !session.loading && <EmptyState icon={<Terminal size={28} />} title={session.error ? t('终端画面暂不可用') : t('尚无终端画面')}><button className="secondary-button" disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={16} />{t('读取终端')}</button></EmptyState>}</> : <>
           {session.start > 0 && <div className="older-messages"><button className="text-button" disabled={session.loadingOlder || !ready} onClick={() => void loadOlder()}>{session.loadingOlder ? <Loader2 size={15} className="spin" /> : <ArrowUp size={15} />}{session.loadingOlder ? t('正在加载') : t('更早的记录')}</button></div>}
-          {session.loading && !session.items.length ? <Loading label={t('正在读取消息…')} /> : !session.items.length ? <EmptyState icon={<MessageSquare size={28} />} title={session.error ? t('消息暂不可用') : t('暂无消息记录')} /> : <div className="messages">{timeline(session.items).map(entry => entry.kind === 'tools'
-                ? <ToolGroup items={entry.items} running={entry.running} hostId={session.hostId} key={entry.key} />
+          {session.loading && !session.items.length ? <Loading label={t('正在读取消息…')} /> : !session.items.length ? <EmptyState icon={<MessageSquare size={28} />} title={session.error ? t('消息暂不可用') : t('暂无消息记录')} /> : <div className="messages">{timeline(session.items).map(entry => entry.kind === 'work'
+                ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} key={entry.key} />
                 : <Message item={entry.item} markdown={markdown} hostId={session.hostId} key={entry.key} />)}
               {awaitingReply && !session.uncertain && <div className="thinking" role="status" aria-live="polite">
                 <span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span>

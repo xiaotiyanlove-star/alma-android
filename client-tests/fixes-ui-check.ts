@@ -62,8 +62,9 @@ try {
   await page.locator('.session-row').filter({ hasText: '会话 A' }).click()
   await page.waitForTimeout(700)
 
-  // Session info chips come from the terminal status line.
-  const chips = await page.locator('.session-chip').allTextContents()
+  // Session info comes from the terminal status line. The model and context
+  // live on their own row under the title; the pane's state stays beside it.
+  const chips = await page.locator('.session-facts, .session-chip').allTextContents()
 
   // Draft survives leaving the session and coming back.
   const composer = page.getByRole('textbox', { name: '消息' })

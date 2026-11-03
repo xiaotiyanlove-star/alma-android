@@ -39,6 +39,11 @@ export interface Snapshot { panes: Pane[]; workspaces: Workspace[]; tabs?: Tab[]
 export interface ImageRef { url: string; mediaType?: string }
 export interface ChatItem {
   id: string
+  /**
+   * `user`, `assistant`, `thinking`, `tool`, `notice`… — the desktop's own
+   * vocabulary. `thinking` is the agent's running commentary, folded away with
+   * the tool calls rather than shown as an answer.
+   */
   kind: string
   text?: string
   summary?: string

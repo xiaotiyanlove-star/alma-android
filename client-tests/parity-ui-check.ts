@@ -141,7 +141,8 @@ try {
   await page.locator('.session-row').filter({ hasText: '合成会话' }).click()
 
   // ── the model chip comes from the desktop, not the screen ──────────────
-  await expect(page.getByText('claude-opus-5-5 · high')).toBeVisible()
+  // Model and effort share a fact on their own row under the title.
+  await expect(page.locator('.session-facts').getByText('claude-opus-5-5')).toBeVisible()
 
   // ── transcript images are fetched through the tunnel ───────────────────
   // A user attachment is reported as a local absolute path, which the client
@@ -149,11 +150,11 @@ try {
   await expect(page.locator('.transcript-image img').first()).toBeVisible()
   expect(imageServed).toBe(true)
   // A tool result lives inside its (collapsed) call, under the official
-  // client's `result_images` field: it is there, not silently dropped. The
-  // burst itself is folded too, so both layers are opened.
-  await page.locator('.tool-group summary').first().click()
-  await page.locator('.tool-detail summary').first().click()
-  await expect(page.locator('.tool-detail .transcript-image img')).toHaveCount(1)
+  // client's `result_images` field: it is there, not silently dropped. The run
+  // and the step are both folded, so both layers are opened.
+  await page.locator('.work-group summary').first().click()
+  await page.locator('.work-step summary').first().click()
+  await expect(page.locator('.work-step .transcript-image img')).toHaveCount(1)
 
   // ── mute round-trips through the desktop ───────────────────────────────
   await page.getByRole('button', { name: '静音这个会话' }).click()

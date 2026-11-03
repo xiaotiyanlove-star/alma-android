@@ -75,7 +75,7 @@ try {
   await page.waitForTimeout(900)
 
   // 1. The header reports the two still-running background agents.
-  const badge = page.locator('.session-chip.is-agents')
+  const badge = page.locator('.session-fact.is-agents')
   const badgeText = (await badge.textContent())?.trim()
   await badge.click()
   await page.waitForTimeout(300)

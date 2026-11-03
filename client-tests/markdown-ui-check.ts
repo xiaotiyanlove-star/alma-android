@@ -81,7 +81,8 @@ try {
     timeText: document.querySelector('.message-meta time')?.textContent,
   }))
 
-  await page.getByRole('button', { name: '源码' }).click()
+  // The three views are one segmented tablist; 源码 is a tab, not a toggle.
+  await page.getByRole('tab', { name: '源码' }).click()
   await page.waitForTimeout(300)
   await page.screenshot({ path: 'test-artifacts/md-source.png' })
   const source = await page.evaluate(() => ({
