@@ -1,4 +1,5 @@
 import { Capacitor } from '@capacitor/core'
+import { t } from './i18n'
 import type { HostState, Pane, Snapshot } from './model'
 
 export type AlertKind = 'blocked' | 'done' | 'offline'
@@ -6,10 +7,27 @@ export interface Alert {
   hostId: string
   hostName: string
   paneId: string
+  /** The tab and workspace, so an action can reach the desktop's own mutes. */
+  tabId?: string
+  workspaceId?: string
   title: string
   body: string
   kind: AlertKind
+  /** SHA-256 of the approval menu shown when the alert was created. */
+  promptFingerprint?: string
+  /** The screen at the moment the transition was seen, for drift evidence. */
+  screen?: string
 }
+
+/**
+ * Notification buttons.
+ *
+ * A `blocked` alert gets Allow/Deny; a `done` alert gets an inline reply field.
+ * Both are wired to the same drift-checked path the in-app prompt uses, so a
+ * button on a stale notification is refused rather than pressing whatever the
+ * terminal shows by then.
+ */
+export type AlertAction = 'allow' | 'deny' | 'reply' | 'open'
 
 /** Statuses worth waking a phone for: the agent needs input, or it just finished. */
 const LOUD: Record<string, AlertKind | undefined> = { blocked: 'blocked', done: 'done' }
@@ -20,16 +38,23 @@ export interface Notifier {
   request(): Promise<'granted' | 'denied' | 'prompt'>
 }
 
+/** Action type ids, registered once at launch. */
+export const ACTION_BLOCKED = 'herdr.blocked'
+export const ACTION_DONE = 'herdr.done'
+
 const KIND_LABEL: Record<AlertKind, string> = { blocked: '需要你处理', done: '已完成', offline: '节点离线' }
 
 /**
  * Pure state diff. Kept free of Capacitor so it can be unit-tested in node.
+ *
  * A pane must be seen once before it can alert, so opening the app after the
- * fact does not replay old transitions.
+ * fact does not replay old transitions. Muting is checked here rather than at
+ * the notifier: a silenced session must not even produce an alert, otherwise
+ * the same pane would keep waking the device through a path the UI already
+ * considers quiet.
  */
 export class AlertTracker {
   private seen = new Map<string, { status: string; snapshotReady: boolean }>()
-  constructor(private mutedHosts: ReadonlySet<string> = new Set()) {}
 
   update(hosts: HostState[]): Alert[] {
     const alerts: Alert[] = []
@@ -44,7 +69,9 @@ export class AlertTracker {
         this.seen.set(key, { status: next, snapshotReady: true })
         if (!previous?.snapshotReady) continue
         if (previous.status === next) continue
-        if (this.mutedHosts.has(host.host.id)) continue
+        // The desktop's mute list is authoritative: silence applies to both the
+        // in-app badge and this diff, because it is a statement about the work.
+        if (mutedOn(host, pane)) continue
         // Only real transitions into a loud state, never a snapshot that starts there.
         const kind = LOUD[next]
         if (!kind) continue
@@ -58,16 +85,44 @@ export class AlertTracker {
   reset() { this.seen.clear() }
 }
 
+/** Whether a pane's tab or its workspace is silenced on that desktop. */
+export function mutedOn(host: HostState, pane: { tab_id?: string; workspace_id?: string }): boolean {
+  const mutes = host.mutes
+  if (!mutes) return false
+  return Boolean(pane.tab_id && mutes.tabs.includes(pane.tab_id))
+    || Boolean(pane.workspace_id && mutes.workspaces.includes(pane.workspace_id))
+}
+
 function buildAlert(host: HostState, pane: Pane, kind: AlertKind): Alert {
   const name = pane.terminal_title_stripped?.trim() || pane.cwd?.split('/').filter(Boolean).pop() || pane.agent || '终端'
   return {
     hostId: host.host.id,
     hostName: host.host.name,
     paneId: pane.pane_id,
+    tabId: pane.tab_id,
+    workspaceId: pane.workspace_id,
     title: `${KIND_LABEL[kind]} · ${name}`,
     body: host.host.name,
     kind,
   }
+}
+
+/**
+ * What a tapped notification action means.
+ *
+ * `open` is the body tap and every action whose id is not one of ours; a
+ * notification from an older build has no actions at all, so it must still
+ * open the session rather than do nothing.
+ */
+export function actionFor(
+  alert: Pick<Alert, 'kind'>,
+  actionId?: string,
+  input?: string,
+): { kind: AlertAction; text?: string } {
+  if (actionId === 'allow' && alert.kind === 'blocked') return { kind: 'allow' }
+  if (actionId === 'deny' && alert.kind === 'blocked') return { kind: 'deny' }
+  if (actionId === 'reply' && alert.kind === 'done') return { kind: 'reply', text: (input ?? '').trim() }
+  return { kind: 'open' }
 }
 
 /** Statuses a pane can reach that a user cares about; exported for tests. */
@@ -98,10 +153,50 @@ export const localNotifier: Notifier = {
         body: alert.body,
         channelId: 'herdr-alerts',
         smallIcon: 'ic_stat_herdr',
-        extra: { hostId: alert.hostId, paneId: alert.paneId },
+        // Without a registered action type Android shows no buttons at all;
+        // the id is what the tap handler reads back.
+        ...(alert.kind === 'blocked' ? { actionTypeId: ACTION_BLOCKED } : {}),
+        ...(alert.kind === 'done' ? { actionTypeId: ACTION_DONE } : {}),
+        extra: {
+          hostId: alert.hostId,
+          paneId: alert.paneId,
+          kind: alert.kind,
+          ...(alert.tabId ? { tabId: alert.tabId } : {}),
+          ...(alert.workspaceId ? { workspaceId: alert.workspaceId } : {}),
+          ...(alert.promptFingerprint ? { promptFingerprint: alert.promptFingerprint } : {}),
+        },
       }],
     })
   },
+}
+
+/**
+ * Registers the notification buttons once per launch.
+ *
+ * `reply` is an inline text field: Capacitor's Android implementation maps it
+ * to a `RemoteInput`, so the answer is typed in the shade and arrives with the
+ * action instead of opening the app.
+ */
+export async function registerAlertActions(): Promise<void> {
+  if (!Capacitor.isNativePlatform()) return
+  try {
+    const { LocalNotifications } = await import('@capacitor/local-notifications')
+    await LocalNotifications.registerActionTypes({
+      types: [
+        {
+          id: ACTION_BLOCKED,
+          actions: [
+            { id: 'allow', title: t('允许') },
+            { id: 'deny', title: t('拒绝'), destructive: true },
+          ],
+        },
+        {
+          id: ACTION_DONE,
+          actions: [{ id: 'reply', title: t('回复'), input: true }],
+        },
+      ],
+    })
+  } catch { /* An older shell simply shows no buttons. */ }
 }
 
 function hashId(value: string): number {

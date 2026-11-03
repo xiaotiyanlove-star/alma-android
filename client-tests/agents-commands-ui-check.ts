@@ -49,7 +49,9 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
       if (f.t === 'hreq') {
         if (f.path === '/api/herdr/info') await reply(f.id, { online: true })
         else if (f.path.startsWith('/api/herdr/chat')) await reply(f.id, { session_id: 's1', page: { start: 0, end: ITEMS.length, items: ITEMS } })
+        else if (f.path === '/api/herdr/mutes') await reply(f.id, { workspaces: [], tabs: [] })
         else {
+          // A bodyless GET is not an RPC; decoding it unconditionally throws.
           const rpc = JSON.parse(new TextDecoder().decode(fromBase64url(f.b)))
           if (rpc.method === 'pane.send_text') sentText.push(rpc.params.text)
           await reply(f.id, { result: rpc.method === 'pane.read' ? { read: { text: '' } } : {} })

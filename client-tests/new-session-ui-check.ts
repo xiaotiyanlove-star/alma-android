@@ -41,6 +41,8 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
           await reply(frame.id, { session_id: 's9', page: { start: 0, end: 1, items: [{ id: 'n1', kind: 'assistant', text: '新建的会话已就绪' }] } })
           return
         }
+        if (frame.path === '/api/herdr/mutes') { await reply(frame.id, { workspaces: [], tabs: [] }); return }
+        // A bodyless GET is not an RPC; decoding it unconditionally throws.
         const rpc = JSON.parse(new TextDecoder().decode(fromBase64url(frame.b)))
         calls.push({ method: rpc.method, params: rpc.params, headers: frame.headers })
         if (rpc.method === 'layout.apply') {

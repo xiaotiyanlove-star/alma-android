@@ -693,3 +693,43 @@ pre { max-width: 100%; }
   from { opacity: 0; transform: translate(-50%, 6px); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
+
+/* ── session actions, subagent sheet, transcript images ──────────────── */
+
+.view-toolbar { flex-wrap: wrap; }
+.view-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+
+.icon-button.is-active { color: var(--clay); }
+
+.agents-dot.is-foreground { opacity: 0.45; }
+
+.subagent-sheet { max-height: 78vh; display: flex; flex-direction: column; }
+.subagent-sheet h2 { margin: 0 0 4px; font-size: 1rem; }
+.subagent-transcript {
+  overflow-y: auto;
+  margin: 10px 0 14px;
+  padding-right: 2px;
+  min-height: 0;
+}
+.subagent-transcript .message { margin-bottom: 14px; }
+
+/* A picture in the transcript: bounded, tappable, never wider than the column. */
+.transcript-images { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+.transcript-images.is-tool { margin: 6px 0 0 10px; }
+.transcript-image {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-3);
+}
+.transcript-image img { display: block; max-width: 100%; max-height: 320px; height: auto; }
+.transcript-image.is-loading, .transcript-image.is-blocked {
+  min-width: 88px;
+  min-height: 64px;
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}

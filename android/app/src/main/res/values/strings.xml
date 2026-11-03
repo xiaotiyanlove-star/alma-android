@@ -6,8 +6,8 @@
     <string name="custom_url_scheme">local.almaandroid.herdr</string>
     <string name="alert_channel_name">Herdr 提醒</string>
     <string name="alert_channel_description">Agent 需要你处理或已完成时提醒</string>
-    <string name="keepalive_channel_name">后台连接</string>
-    <string name="keepalive_channel_description">保持与节点的连接以接收提醒</string>
-    <string name="keepalive_title">Herdr 正在后台保持连接</string>
-    <string name="keepalive_text">退出应用后停止</string>
+    <string name="keepalive_channel_name">保持连接</string>
+    <string name="keepalive_channel_description">在 agent 工作期间短暂保持连接，或按设置长期保持</string>
+    <string name="keepalive_title">正在保持连接</string>
+    <string name="keepalive_text">agent 结束或按设置停止后自动退出</string>
 </resources>

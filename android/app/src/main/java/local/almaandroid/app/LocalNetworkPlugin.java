@@ -87,9 +87,11 @@ public class LocalNetworkPlugin extends Plugin {
 
     private void collect(ConnectivityManager manager, Network network, List<LinkAddress> into) {
         NetworkCapabilities capabilities = manager.getNetworkCapabilities(network);
-        // Only links that actually carry IP traffic; a VPN or a proxy with no
-        // address of its own would otherwise add nothing useful.
-        if (capabilities == null) return;
+        // A carrier's private APN can also be 10.x/192.168.x, but it is not the
+        // local network the user means and must not trigger a /24 scan. Wi-Fi
+        // and Ethernet are the only transports that can represent a shared LAN.
+        if (capabilities == null || (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                && !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))) return;
         LinkProperties properties = manager.getLinkProperties(network);
         if (properties == null) return;
         for (LinkAddress address : properties.getLinkAddresses()) {

@@ -49,9 +49,14 @@ public class KeepAliveService extends Service {
         }
     }
 
+    /**
+     * Not sticky: the service exists to cover a specific reply, and reviving it
+     * after a kill would leave a notification claiming work that is no longer
+     * being watched. The page starts it again when it has something to cover.
+     */
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        return START_STICKY;
+        return START_NOT_STICKY;
     }
 
     /**

@@ -37,6 +37,8 @@ const UI_CHECKS = [
   'settings-groups-check',
   // Weak-network behaviour: detection time and background retry silence.
   'weaknet-check',
+  // Features taken from the official client: settings, mutes, restart, subagents, images.
+  'parity-ui-check',
 ]
 
 /**

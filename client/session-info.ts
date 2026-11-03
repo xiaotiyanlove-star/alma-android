@@ -1,7 +1,12 @@
 /**
  * Reads the facts a coding agent prints in its own status line: which model is
- * active and how full the context window is. This is parsed from the terminal
- * because Herdr's socket API exposes neither value.
+ * active and how full the context window is.
+ *
+ * The model and effort have a better source — the desktop reads them from the
+ * transcript and sends them with the chat page (`settings`) — so they are only
+ * parsed here as a fallback for desktops too old to send them, and the caller
+ * prefers the desktop's answer. The context figure has no other source, which
+ * is why the terminal is still the place for it.
  *
  * Everything is best-effort: a line that does not match yields no value and the
  * UI omits the field rather than showing a guess.
@@ -14,6 +19,30 @@ export interface SessionInfo {
   /** The number as printed, e.g. "74%". */
   contextLabel?: string
   thinking?: string
+}
+
+/** What the header shows, after the desktop's settings win over the screen. */
+export interface HeaderInfo extends SessionInfo {
+  /** Only when the desktop reported one. */
+  effort?: string
+}
+
+/**
+ * Merges the desktop's transcript settings over what the screen printed.
+ *
+ * A desktop that sends `settings` is authoritative even when a field is null
+ * there: "the transcript says no model" is a real answer, and falling back to
+ * a scraped one would re-introduce the guess. A desktop that sends nothing (an
+ * older build) leaves the scraped values alone.
+ */
+export function headerInfo(screen: string, settings?: { model?: string | null; effort?: string | null } | null): HeaderInfo {
+  const parsed = parseSessionInfo(screen)
+  if (!settings) return parsed
+  return {
+    ...parsed,
+    model: settings.model ?? undefined,
+    effort: settings.effort ?? undefined,
+  }
 }
 
 // The value must be a single word with no colon: "model:  context: 400%"

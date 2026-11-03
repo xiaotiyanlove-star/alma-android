@@ -4,7 +4,7 @@ import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown,
   Camera, CircleAlert, CornerDownLeft, Eye, EyeOff, Loader2, MessageSquare, Plus, RefreshCw,
   Send, Server, Settings, Square, Terminal, Trash2, WrapText, X, FileCode, FileText, Pencil, ChevronUp, Paperclip, PlusCircle,
-  QrCode, Copy,
+  QrCode, Copy, BellOff, RotateCcw,
 } from 'lucide-react';
 import { controller } from './controller';
 import { watchNetwork } from './network';
@@ -12,10 +12,10 @@ import { pairingLink } from './pairing';
 import { Capacitor } from '@capacitor/core';
 import { Clipboard } from '@capacitor/clipboard';
 import { ScanPairing } from './ScanPairs';
-import { AlertTracker, localNotifier } from './notify';
-import { applyKeepAlive, keepAliveEnabled, setKeepAliveEnabled } from './keepalive';
+import { AlertTracker, actionFor, localNotifier, registerAlertActions } from './notify';
+import { applyKeepAlive, keepAliveMode, replyInProgress, setKeepAliveMode, type KeepAliveMode } from './keepalive';
 import { lanDiscoveryEnabled, setLanDiscoveryEnabled } from './lanprefs';
-import { parsePrompt } from './prompt';
+import { parsePrompt, promptFingerprint } from './prompt';
 import { buildMessage, checkFile, MAX_ATTACHMENTS } from './attachments';
 import { Markdown } from './Markdown';
 import { CopyButton } from './CodeBlock';
@@ -23,12 +23,13 @@ import { APP_VERSION, APP_ID, BUILD_TIME } from './version';
 import { t, tWith } from './i18n';
 import { loadDraft, saveDraft } from './drafts';
 import { back, closeOverlay, openOverlay, push, replace, useOverlay, useRoute } from './router';
+import { takePendingLink } from './pending-link';
 import { initialState, step } from './lifecycle';
 import { stopMessage } from './backoff';
-import { parseSessionInfo } from './session-info';
+import { headerInfo } from './session-info';
 import { agentLook, statusTone, statusWord } from './agents';
 import { timeline } from './timeline';
-import { backgroundAgents } from './subagents';
+import { backgroundAgents, runningAgents } from './subagents';
 import { commandsFor, filterCommands, slashQuery } from './commands';
 import { formatTime, localeChoice, setLocaleChoice, timeZoneChoice, setTimeZoneChoice, resolvedTimeZone, resolvedLocale, COMMON_ZONES, markdownEnabled, setMarkdownEnabled, themeChoice, setThemeChoice, resolvedTheme, applyTheme, type LocaleChoice, type ThemeChoice } from './prefs';
 import type { AppState, ChatItem, HostState, Pane, SessionState, Snapshot } from './model';
@@ -224,7 +225,40 @@ function ToolGroup({ items, running }: { items: ChatItem[]; running: boolean }) 
   </details>;
 }
 
-function Message({ item, markdown }: { item: ChatItem; markdown: boolean }) {
+/**
+ * One image from the transcript.
+ *
+ * Fetched through the tunnel rather than pointed at with an `<img src>`: the
+ * path is only meaningful inside the encrypted connection, and a message must
+ * not be able to make the WebView issue a request of its choosing. The object
+ * URL is owned by this component and revoked when it unmounts or the source
+ * changes, so opening a long conversation cannot leak every picture it showed.
+ */
+function TranscriptImage({ hostId, url, mediaType }: { hostId: string; url: string; mediaType?: string }) {
+  const [src, setSrc] = useState<string>();
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    let objectUrl: string | undefined;
+    setSrc(undefined);
+    setError(false);
+    void controller.fetchImage(hostId, url).then(({ bytes, contentType }) => {
+      if (!alive) return;
+      // The desktop's header wins; the transcript's own hint is the fallback.
+      const type = contentType || mediaType || 'image/png';
+      // A copy into a plain ArrayBuffer: the tunnel hands back a subarray view
+      // whose backing store is typed as possibly shared.
+      objectUrl = URL.createObjectURL(new Blob([bytes.slice().buffer as ArrayBuffer], { type }));
+      setSrc(objectUrl);
+    }).catch(() => { if (alive) setError(true) });
+    return () => { alive = false; if (objectUrl) URL.revokeObjectURL(objectUrl) };
+  }, [hostId, url, mediaType]);
+  if (error) return <div className="transcript-image is-blocked">{t('图片无法显示')}</div>;
+  if (!src) return <div className="transcript-image is-loading" role="status" aria-label={t('正在读取图片')}><Loader2 size={16} className="spin" /></div>;
+  return <a className="transcript-image" href={src} target="_blank" rel="noopener noreferrer"><img src={src} alt={t('对话中的图片')} loading="lazy" /></a>;
+}
+
+function Message({ item, markdown, hostId }: { item: ChatItem; markdown: boolean; hostId: string }) {
   const isUser = item.kind === 'user' || item.from === 'user' || item.from === 'human';
   const role = isUser ? t('你') : item.kind === 'system' ? t('系统') : item.kind === 'error' ? t('错误') : item.tool ? t('工具') : t('助手');
   const text = item.text || item.summary;
@@ -239,7 +273,9 @@ function Message({ item, markdown }: { item: ChatItem; markdown: boolean }) {
       </span>
     </div>
     {text && <RichText text={text} markdown={markdown} />}
+    {item.images && item.images.length > 0 && <div className="transcript-images">{item.images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} />)}</div>}
     {item.tool && <ToolRow item={item} />}
+    {item.tool?.images && item.tool.images.length > 0 && <div className="transcript-images is-tool">{item.tool.images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} />)}</div>}
     {!text && !item.tool && <p className="muted">{t('此条记录没有文本内容')}</p>}
   </article>;
 }
@@ -250,7 +286,11 @@ function Message({ item, markdown }: { item: ChatItem; markdown: boolean }) {
  */
 function AddHost({ onBack, onAdded }: { onBack(): void; onAdded(): void }) {
   const [name, setName] = useState('');
-  const [pairing, setPairing] = useState('');
+  // A link that arrived from the system (`alma://connect`) is already on the
+  // clipboard-equivalent path: it fills the field, and everything else about
+  // the form stays the same, so the user still sees and confirms what is
+  // being paired before it is saved.
+  const [pairing, setPairing] = useState(() => takePendingLink());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [reveal, setReveal] = useState(false);
@@ -328,6 +368,14 @@ function AddHost({ onBack, onAdded }: { onBack(): void; onAdded(): void }) {
       />
     </div>
   </section>;
+}
+
+/** One line explaining what the chosen mode actually costs. */
+function keepAliveHint(): string {
+  const mode = keepAliveMode()
+  if (mode === 'always') return t('一直保持连接，通知栏会有一条常驻提示。')
+  if (mode === 'off') return t('不保持连接，只在应用打开时提醒。')
+  return t('只在 agent 工作时短暂保活，结束就自动停止；通知栏不会常驻。')
 }
 
 function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostState[]; onClose: () => void; onOpen: (id: string) => void; onLocaleChange(): void }) {
@@ -495,9 +543,13 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
             if (event.target.checked) void localNotifier.request()
           }} aria-label={t('agent 需要你或已完成时提醒')} /><span className="switch-track" aria-hidden="true" /></span>
         </label>
-        <label className="toggle-row">
-          <span><strong>{t('后台保持连接')}</strong><small>{t('退出应用后仍能收到提醒。系统要求这项功能在通知栏留一条常驻提示，关掉它就只在应用内收提醒。')}</small></span>
-          <span className="switch"><input type="checkbox" defaultChecked={keepAliveEnabled()} onChange={event => { setKeepAliveEnabled(event.target.checked); void applyKeepAlive(event.target.checked) }} aria-label={t('后台保持连接')} /><span className="switch-track" aria-hidden="true" /></span>
+        <label className="select-row">
+          <span><strong>{t('后台保活')}</strong><small>{keepAliveHint()}</small></span>
+          <select defaultValue={keepAliveMode()} onChange={event => { setKeepAliveMode(event.target.value as KeepAliveMode); void applyKeepAlive(event.target.value as KeepAliveMode, replyInProgress(hosts)) }} aria-label={t('后台保活')}>
+            <option value="reply">{t('仅回复进行中')}</option>
+            <option value="always">{t('始终')}</option>
+            <option value="off">{t('从不')}</option>
+          </select>
         </label>
         <button type="button" className="secondary-button" onClick={() => void localNotifier.notify({ hostId: 'test', hostName: '本机', paneId: 'test', title: '测试通知 · Herdr', body: '如果你看到这条，通知功能正常。', kind: 'done' }).catch(() => undefined)}>{t('发送测试通知')}</button>
       </section>
@@ -506,7 +558,7 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
         <h2 className="group-title">{t('网络')}</h2>
         <label className="toggle-row">
           <span><strong>{t('查找局域网直连')}</strong><small>{t('在同一网络时自动改用直连，明显更快。会扫描当前网段来定位已配对的桌面；在公司等受管网络可以关闭。')}</small></span>
-          <span className="switch"><input type="checkbox" defaultChecked={lanDiscoveryEnabled()} onChange={event => setLanDiscoveryEnabled(event.target.checked)} aria-label={t('查找局域网直连')} /><span className="switch-track" aria-hidden="true" /></span>
+          <span className="switch"><input type="checkbox" defaultChecked={lanDiscoveryEnabled()} onChange={event => { setLanDiscoveryEnabled(event.target.checked); controller.lanDiscoveryChanged(event.target.checked) }} aria-label={t('查找局域网直连')} /><span className="switch-track" aria-hidden="true" /></span>
         </label>
       </section>
 
@@ -594,7 +646,21 @@ function useAlerts(hosts: HostState[]) {
         ? { ...host.snapshot, panes: host.snapshot.panes.map(pane => ({ ...pane, agent_status: pane.agent_status })) }
         : undefined,
     }))
-    for (const alert of tracker.current!.update(hostStates)) void localNotifier.notify(alert).catch(() => undefined)
+    for (const alert of tracker.current!.update(hostStates)) {
+      void (async () => {
+        // Bind approval buttons to the menu that caused the alert. If the
+        // screen moves before this read, the tap path will still compare the
+        // current menu against this fingerprint and fail closed.
+        if (alert.kind === 'blocked') {
+          try {
+            const screen = await controller.readPaneScreen(alert.hostId, alert.paneId)
+            const prompt = parsePrompt(stripAnsi(screen))
+            if (prompt) alert.promptFingerprint = await promptFingerprint(prompt)
+          } catch { /* a body tap can still open the session */ }
+        }
+        await localNotifier.notify(alert)
+      })().catch(() => undefined)
+    }
   }, [hosts, alertsRevision])
 }
 
@@ -839,6 +905,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   const [attachments, setAttachments] = useState<{ id: string; file: File; state: 'pending' | 'uploading' | 'done' | 'failed'; path?: string; error?: string }[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  const [subagent, setSubagent] = useState<{ id: string; title: string; kind?: string; finished: boolean; loading: boolean; error?: string; items: ChatItem[] }>();
   const sentAtCount = useRef(-1);
   const composing = useRef(false);
   const actionLock = useRef(false);
@@ -849,8 +916,14 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   const ready = canUseHost(host);
   const terminal = noMessages || mode === 'terminal';
   // Any newly arrived item means the agent has produced something.
-  const info = useMemo(() => parseSessionInfo(stripAnsi(session.screen ?? '')), [session.screen]);
+  // The desktop reads the model and effort out of the transcript; the screen is
+  // only a fallback for desktops too old to send them. Context usage has no
+  // other source, so that part is always scraped.
+  const info = useMemo(() => headerInfo(stripAnsi(session.screen ?? ''), session.settings), [session.screen, session.settings]);
   const agents = useMemo(() => backgroundAgents(session.items), [session.items]);
+  // Every dispatched agent, background or not: the notification is about the
+  // session, but the sheet is where a user checks what is still running.
+  const allAgents = useMemo(() => runningAgents(session.items), [session.items]);
   const itemCount = session.items.length;
   // Count captured when the message was sent; later growth clears the hint.
   useEffect(() => {
@@ -866,6 +939,8 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   );
   const commandOpen = query !== null && availableCommands.length > 0 && !terminal;
   const disabled = !ready || busy || session.sending || session.loading || Boolean(session.uncertain);
+  const [restarting, setRestarting] = useState(false);
+  const muted = pane ? controller.isMuted(session.hostId, pane) : false;
 
   useLayoutEffect(() => {
     const element = scroll.current;
@@ -1024,6 +1099,34 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     finally { setBusy(false); actionLock.current = false; }
   }
 
+  async function openSubagent(toolId: string, title: string) {
+    setSubagent({ id: toolId, title, finished: false, loading: true, items: [] })
+    try {
+      const result = await controller.loadSubagent(session.hostId, session.paneId, toolId)
+      setSubagent({
+        id: toolId, title: result.agent.description || title, kind: result.agent.type,
+        finished: result.agent.finished === true, loading: false, items: result.items,
+      })
+    } catch (error) {
+      setSubagent({ id: toolId, title, finished: false, loading: false, items: [], error: error instanceof Error ? error.message : t('无法读取子 agent') })
+    }
+  }
+
+  async function restart() {
+    if (restarting || !ready) return
+    setRestarting(true)
+    setLocalError('')
+    try { await controller.restartAgent(session.hostId, session.paneId) }
+    catch (error) { setLocalError(error instanceof Error ? error.message : t('重启失败')) }
+    finally { setRestarting(false) }
+  }
+
+  async function toggleMute() {
+    if (!pane?.tab_id) return
+    try { await controller.setMuted(session.hostId, { tab: pane.tab_id }, !muted) }
+    catch { setLocalError(t('未能修改静音状态，请重试。')) }
+  }
+
   async function refresh() {
     if (refreshing || !ready) return;
     setRefreshing(true);
@@ -1048,7 +1151,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
             as a model name or a context figure comes and goes. */}
         <span className="session-chips">
           {pane?.agent_status && <span className={`session-chip is-status is-${statusTone(pane.agent_status)}`} title={t('当前状态')}><span className={`agent-status-dot is-${statusTone(pane.agent_status)}`} aria-hidden="true" />{t(statusWord(pane.agent_status))}</span>}
-          {info.model && <span className="session-chip" title={t('当前模型')}>{info.model}</span>}
+          {info.model && <span className="session-chip" title={t('当前模型')}>{info.model}{info.effort ? ` · ${info.effort}` : ''}</span>}
           {info.contextLabel && <span className="session-chip" title={info.contextRatio === undefined ? t('上下文用量') : `${t('上下文已用')} ${Math.round((info.contextRatio ?? 0) * 100)}%`}><span className="sr-only">{t('上下文')}</span>{info.contextLabel}</span>}
           {agents.length > 0 && <button type="button" className="session-chip is-agents" onClick={() => setAgentsOpen(true)} title={t('查看运行中的 agent')}>
             <span className="agents-dot" aria-hidden="true" />{agents.length} {t('个 agent 运行中')}
@@ -1056,7 +1159,13 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
         </span>
       </p></div>{host && <Status host={host} compact />}</header>
     <div className="view-toolbar"><div className="view-tabs" role="tablist" aria-label={t('会话视图')}><button role="tab" id="messages-tab" aria-controls="session-content" aria-selected={!terminal} disabled={noMessages} className={!terminal ? 'is-active' : ''} onClick={() => switchMode('messages')}><MessageSquare size={16} />{t('消息')}</button><button role="tab" id="terminal-tab" aria-controls="session-content" aria-selected={terminal} className={terminal ? 'is-active' : ''} onClick={() => switchMode('terminal')}><Terminal size={16} />{t('终端')}</button></div>{terminal ? <div className="terminal-options"><button className={`icon-button ${wrap ? 'is-active' : ''}`} title={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-label={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-pressed={wrap} onClick={() => setWrap(value => !value)}><WrapText size={18} /></button><button className="icon-button" title={t('刷新终端')} aria-label={t('刷新终端')} disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={18} className={refreshing ? 'spin' : ''} /></button></div>
-      : <div className="message-options"><button className="text-toggle" aria-pressed={markdown} title={t(markdown ? '显示 Markdown 源码' : '渲染 Markdown')} onClick={() => { const next = !markdown; setMarkdown(next); setMarkdownEnabled(next) }}>{markdown ? <FileCode size={15} /> : <FileText size={15} />}{t(markdown ? '源码' : '渲染')}</button></div>}</div>
+      : <div className="message-options"><button className="text-toggle" aria-pressed={markdown} title={t(markdown ? '显示 Markdown 源码' : '渲染 Markdown')} onClick={() => { const next = !markdown; setMarkdown(next); setMarkdownEnabled(next) }}>{markdown ? <FileCode size={15} /> : <FileText size={15} />}{t(markdown ? '源码' : '渲染')}</button></div>}
+      <div className="view-actions">
+        {/* Muting is stored on the desktop, so the switch reads back its own
+            answer: the label is derived from the list, not from a local flag. */}
+        <button type="button" className={`icon-button${muted ? ' is-active' : ''}`} aria-pressed={muted} disabled={!ready || !pane?.tab_id} title={muted ? t('恢复提醒') : t('静音这个会话')} aria-label={muted ? t('恢复提醒') : t('静音这个会话')} onClick={() => void toggleMute()}><BellOff size={17} /></button>
+        <button type="button" className="icon-button" disabled={!ready || restarting} title={t('重启这个 agent')} aria-label={t('重启这个 agent')} onClick={() => void restart()}>{restarting ? <Loader2 size={17} className="spin" /> : <RotateCcw size={17} />}</button>
+      </div></div>
     <div className="session-notices">
       {!ready && <Notice error>{t(host?.status === 'connecting' ? '连接恢复中，暂时无法发送。' : '节点未连接，暂时无法发送。')}{host && host.status !== 'connecting' && <button className="inline-button" onClick={() => controller.retryHost(host.host.id)}>{t('重新连接')}</button>}</Notice>}
       {session.unsupported && (gap === 'terminal'
@@ -1095,11 +1204,30 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     {agentsOpen && <div className="sheet-backdrop" role="presentation" onClick={() => setAgentsOpen(false)}>
       <div className="host-sheet" role="dialog" aria-modal="true" aria-label={t('运行中的 agent')} onClick={(event) => event.stopPropagation()}>
         <h2>{agents.length} {t('个 agent 运行中')}</h2>
-        <ul className="agents-list">{agents.map((agent) => <li key={agent.id} className="agents-row">
-          <span className="agents-dot" aria-hidden="true" />
+        <ul className="agents-list">{allAgents.map((agent) => <li key={agent.id} className="agents-row">
+          <span className={`agents-dot${agent.background ? '' : ' is-foreground'}`} aria-hidden="true" />
           <span className="agents-copy"><strong>{agent.title}</strong>{agent.kind && <small>{agent.kind}</small>}</span>
+          {/* The desktop keeps each dispatched agent's own transcript, and this
+              is the only place the phone can read what it actually did. */}
+          <button type="button" className="text-button" onClick={() => { setAgentsOpen(false); void openSubagent(agent.id, agent.title) }}>{t('查看')}</button>
         </li>)}</ul>
         <button type="button" className="secondary-button sheet-cancel" onClick={() => setAgentsOpen(false)}>{t('关闭')}</button>
+      </div>
+    </div>}
+    {subagent && <div className="sheet-backdrop" role="presentation" onClick={() => setSubagent(undefined)}>
+      <div className="host-sheet subagent-sheet" role="dialog" aria-modal="true" aria-label={t('子 agent 记录')} onClick={(event) => event.stopPropagation()}>
+        <h2>{subagent.title}</h2>
+        <p className="field-hint">{subagent.kind ? `${subagent.kind} · ` : ''}{subagent.finished ? t('已结束') : t('仍在运行')}</p>
+        {subagent.loading
+          ? <Loading label={t('正在读取子 agent…')} />
+          : subagent.error
+            ? <Notice error>{subagent.error}</Notice>
+            : subagent.items.length === 0
+              ? <p className="muted">{t('这个子 agent 还没有可读的记录')}</p>
+              : <div className="subagent-transcript">{timeline(subagent.items).map(entry => entry.kind === 'tools'
+                  ? <ToolGroup items={entry.items} running={entry.running} key={entry.key} />
+                  : <Message item={entry.item} markdown={markdown} hostId={session.hostId} key={entry.key} />)}</div>}
+        <button type="button" className="secondary-button sheet-cancel" onClick={() => setSubagent(undefined)}>{t('关闭')}</button>
       </div>
     </div>}
     <div className="transcript-shell">
@@ -1108,7 +1236,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
           {session.start > 0 && <div className="older-messages"><button className="text-button" disabled={session.loadingOlder || !ready} onClick={() => void loadOlder()}>{session.loadingOlder ? <Loader2 size={15} className="spin" /> : <ArrowUp size={15} />}{session.loadingOlder ? t('正在加载') : t('更早的记录')}</button></div>}
           {session.loading && !session.items.length ? <Loading label={t('正在读取消息…')} /> : !session.items.length ? <EmptyState icon={<MessageSquare size={28} />} title={session.error ? t('消息暂不可用') : t('暂无消息记录')} /> : <div className="messages">{timeline(session.items).map(entry => entry.kind === 'tools'
                 ? <ToolGroup items={entry.items} running={entry.running} key={entry.key} />
-                : <Message item={entry.item} markdown={markdown} key={entry.key} />)}
+                : <Message item={entry.item} markdown={markdown} hostId={session.hostId} key={entry.key} />)}
               {awaitingReply && !session.uncertain && <div className="thinking" role="status" aria-live="polite">
                 <span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span>
                 <span className="thinking-label">{t('正在等待回复…')}</span>
@@ -1168,6 +1296,41 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
  * desktop first and only then the pane keeps a deleted session from leaving the
  * user on a dead screen.
  */
+/**
+ * Runs a notification's button against the live desktop.
+ *
+ * The notification describes a transition that happened minutes ago, so
+ * neither Allow nor Deny may replay a remembered row: the controller re-reads
+ * the terminal and resolves the button by wording, refusing when the menu has
+ * changed or two options could match. A reply is different in kind — it is
+ * text the user just typed, so it goes through the ordinary prompt path.
+ *
+ * Anything that cannot be done silently opens the session instead, which is
+ * always a safe answer for a tap the user did make.
+ */
+async function handleAlertAction(hostId: string, paneId: string, kind: string | undefined, actionId: string | undefined, input: string | undefined, promptFingerprint?: string) {
+  const extra = { kind: kind === 'done' ? 'done' as const : 'blocked' as const }
+  const intent = actionFor(extra, actionId, input)
+  if (intent.kind === 'open') return openSessionFromAlert(hostId, paneId)
+  try {
+    if (intent.kind === 'allow' || intent.kind === 'deny') {
+      await controller.answerPromptFromAlert(hostId, paneId, intent.kind, promptFingerprint)
+      return
+    }
+    if (intent.kind === 'reply' && intent.text) {
+      // The session behind a notification may not be the one on screen; open
+      // it first so the send goes to the pane the user tapped.
+      await openSessionFromAlert(hostId, paneId)
+      await controller.sendMessage(intent.text)
+      return
+    }
+  } catch {
+    // Silent success is what makes a button feel like a button; a refusal
+    // opens the session so the user can see why.
+    await openSessionFromAlert(hostId, paneId)
+  }
+}
+
 async function openSessionFromAlert(hostId: string, paneId: string) {
   controller.selectHost(hostId)
   try {
@@ -1186,19 +1349,27 @@ export function App() {
   // owns the control, so the tree is keyed by the active locale.
   const [localeRevision, setLocaleRevision] = useState(0);
   useEffect(initialize, []);
-  // Reconcile the foreground service with the saved preference on every launch.
-  useEffect(() => { void applyKeepAlive(); }, []);
+  // Reconcile the foreground service with the saved mode on every launch.
+  // `reply` needs to know whether anything is running, which the first
+  // snapshot will tell us; until then the service stays off.
+  useEffect(() => { void applyKeepAlive(keepAliveMode(), false); }, []);
+  // A `reply` keep-alive follows the work itself: on when an agent starts,
+  // off when the last one finishes, so the service's own timeout is a backstop
+  // rather than the normal way it ends.
+  const workingNow = replyInProgress(state.hosts);
+  useEffect(() => { void applyKeepAlive(keepAliveMode(), workingNow); }, [workingNow]);
 
   // Tapping a notification opens the conversation that raised it. The camera
   // tunnel stays closed; only the panes and the transcript are loaded.
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return
     let cancel: (() => void) | undefined
+    void registerAlertActions()
     void import('@capacitor/local-notifications').then(async ({ LocalNotifications }) => {
       const handle = await LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
-        const extra = action.notification.extra as { hostId?: string; paneId?: string } | undefined
+        const extra = action.notification.extra as { hostId?: string; paneId?: string; kind?: string; promptFingerprint?: string } | undefined
         if (!extra?.hostId || !extra.paneId) return
-        void openSessionFromAlert(extra.hostId, extra.paneId)
+        void handleAlertAction(extra.hostId, extra.paneId, extra.kind, action.actionId, action.inputValue, extra.promptFingerprint)
       })
       cancel = () => { void handle.remove() }
     }).catch(() => undefined)
@@ -1229,7 +1400,7 @@ export function App() {
     // and the old socket survives the switch looking open. Redialing as soon
     // as the path moves beats waiting for the probe to notice the silence.
     let watcher: { stop(): void } | undefined
-    void watchNetwork(() => controller.retryStopped()).then((created) => { watcher = created })
+    void watchNetwork(() => controller.networkChanged()).then((created) => { watcher = created })
     document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('online', onOnline)
     // The tick only matters while hidden, and a timer that wakes the page
@@ -1240,9 +1411,6 @@ export function App() {
       if (document.visibilityState !== 'hidden' && timer) { clearInterval(timer); timer = undefined }
     }
     syncTimer()
-    // Watch open tunnels for silence, so a dead link becomes visible in about
-    // five seconds instead of waiting out a request deadline.
-    controller.startLiveness()
     const onVisibilityAndTimer = () => { onVisibility(); syncTimer() }
     document.removeEventListener('visibilitychange', onVisibility)
     document.addEventListener('visibilitychange', onVisibilityAndTimer)
@@ -1250,7 +1418,6 @@ export function App() {
       document.removeEventListener('visibilitychange', onVisibilityAndTimer)
       window.removeEventListener('online', onOnline)
       watcher?.stop()
-      controller.stopLiveness()
       if (timer) clearInterval(timer)
     }
   }, []);

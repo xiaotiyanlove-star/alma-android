@@ -1,4 +1,4 @@
-import type { AppState, ChatItem, Host, Pane, SessionState, Snapshot, TranscriptGap } from './model'
+import type { AgentSettings, AppState, ChatItem, Host, Mutes, Pane, SessionState, Snapshot, TranscriptGap } from './model'
 import { parsePairing } from './pairing'
 import { t, tWith } from './i18n'
 import { isOnLocalNetwork, parseLanAddress, usableLanAddress } from './lan'
@@ -6,19 +6,49 @@ import { deviceSubnets } from './localnet'
 import { directAllowed, recordDirect } from './breaker'
 import { discoverDesktop } from './discovery'
 import { lanDiscoveryEnabled } from './lanprefs'
+import { forgetSubnets } from './localnet'
+import { clearAllBreakers } from './breaker'
+import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, sessionDelay, stopMessage, type RetryContext } from './backoff'
+import { metrics } from './metrics'
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, uploadRoute, type UploadResponse, type UploadedFile } from './attachments'
+import { moveKeys, needsSpace, optionForIntent, parsePrompt, promptFingerprint, samePrompt, type Prompt } from './prompt'
 
 /** How often a desktop with no known local address is looked for. */
 const DISCOVERY_INTERVAL_MS = 10 * 60_000
-import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, sessionDelay, stopMessage, type RetryContext } from './backoff'
-import { LIVENESS_TICK_MS, PROBE_TIMEOUT_MS, shouldProbe } from './liveness'
-import { metrics } from './metrics'
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, uploadRoute, type UploadResponse, type UploadedFile } from './attachments'
-import { moveKeys, needsSpace, parsePrompt, samePrompt, type Prompt } from './prompt'
+/** Deadline for the foreground liveness read; a healthy desktop answers at once. */
+const VERIFY_TIMEOUT_MS = 5_000
 import { hostStorage, type HostStorage } from './storage'
-import { EncryptedTunnel, OperationUncertainError, RejectedError, type Transport, type TunnelError, type TunnelSocket } from './transport'
+import { EncryptedTunnel, OperationUncertainError, RejectedError, type BinaryResponse, type Transport, type TunnelError, type TunnelSocket } from './transport'
 
-type Page = { session_id?: string; page?: { items?: ChatItem[]; start?: number; end?: number }; queued?: { id: string; text: string }[]; error?: { code?: string; message?: string } }
+/**
+ * One page of a transcript.
+ *
+ * `settings` is the model and effort the desktop read from the transcript
+ * itself. It is the only authoritative source: the terminal prints a model name
+ * only sometimes, and what it prints is what the agent chose to draw.
+ */
+type Page = {
+  session_id?: string
+  page?: { items?: ChatItem[]; start?: number; end?: number }
+  queued?: { id: string; text: string }[]
+  settings?: { model?: string | null; effort?: string | null }
+  error?: { code?: string; message?: string }
+}
 const message = (error: unknown) => error instanceof Error ? error.message : t('请求失败')
+
+/** Narrows the desktop's `settings`, which may be missing or partial. */
+function readSettings(value: Page['settings']): AgentSettings | undefined {
+  if (!value) return undefined
+  const model = typeof value.model === 'string' && value.model ? value.model : null
+  const effort = typeof value.effort === 'string' && value.effort ? value.effort : null
+  return { model, effort }
+}
+
+/** True when the desktop's answer changes what the header shows. */
+function settingsChanged(current: AgentSettings | undefined, next: AgentSettings | undefined): boolean {
+  if (!next) return false
+  return (current?.model ?? null) !== next.model || (current?.effort ?? null) !== next.effort
+}
 
 /**
  * The argv Herdr should start for a new session.
@@ -98,10 +128,8 @@ interface Runtime {
   retry?: ReturnType<typeof setTimeout>
   attempts: number
   stopped?: 'exhausted' | 'auth' | 'unknown-host'
-  /** When this runtime last went online, used until a frame arrives. */
-  onlineAt?: number
-  /** A liveness probe is in flight; never stack them. */
-  probing?: boolean
+  /** Stops the idle probe when this runtime is replaced or closed. */
+  stopHeartbeat?: () => void
 }
 export class Controller {
   private state: AppState = { hosts: [], loading: true, foreground: true }
@@ -116,8 +144,6 @@ export class Controller {
   private openingHost = false
   private initializedStorage = false
   private sessionRefresh?: Promise<void>
-  /** Desktops where `layout.apply` is not offered to the phone. */
-  private legacyOnly = new Set<string>()
   /** Consecutive failed session loads, which pace the refresh retries. */
   private sessionFailures = 0
   constructor(private storage: HostStorage = hostStorage, private createTransport = (host: Host, status: (state: 'connecting' | 'online' | 'offline', error?: string, code?: TunnelError['code']) => void): Transport => new EncryptedTunnel(host, status)) {}
@@ -153,11 +179,14 @@ export class Controller {
     const runtime: Runtime = { transport: undefined as unknown as Transport, epoch: 0, attempts: 0 }
     runtime.transport = this.createTransport(host, (status, error, code) => {
       if (this.runtimes.get(host.id) !== runtime) return
-      if (status === 'online') {
-        runtime.onlineAt = Date.now()
-        // The UI is honest again, so close out any run that started while it
-        // was not. This is the number the stale-detection metric reports.
-        metrics.markHealthy()
+      if (status === 'offline') {
+        // The transport calls this synchronously when its idle probe gives up.
+        // The last inbound frame is the last point the UI knows the tunnel was
+        // carrying traffic, so the gap to this callback is the observed stale
+        // detection time. Ordinary successful writes are deliberately not
+        // counted as outages.
+        const last = runtime.transport.lastInboundAt()
+        if (last) metrics.record({ staleDetectMs: Math.max(0, Date.now() - last) })
       }
       this.patchHost(host.id, { status, ...(status === 'online' ? {} : { herdrOnline: false }), error })
       if (status === 'offline') this.scheduleHost(host.id, runtime, code)
@@ -202,7 +231,7 @@ export class Controller {
       useDirect?(address: Host['lan'], allow?: (address: NonNullable<Host['lan']>) => Promise<boolean>): void
     }
     transport.useDirect?.(lan, async (address) => {
-      if (!usableLanAddress(address)) return false
+      if (!usableLanAddress(address) || !lanDiscoveryEnabled()) return false
       // A path that keeps failing is not offered the two-second wait again
       // until the cooldown lapses or the network changes.
       if (!directAllowed(hostId)) return false
@@ -237,16 +266,82 @@ export class Controller {
     return lan
   }
 
+  /** Drops addresses discovered on a previous network, preserving user input. */
+  clearDiscoveredLan = () => {
+    const hosts = this.state.hosts.map((item) => {
+      if (!item.discoveredLan) return item
+      const { discoveredLan: _discarded, ...remaining } = item
+      return remaining
+    })
+    this.publish({ hosts })
+  }
+
+  /** Applies the user's discovery switch to already-open tunnels. */
+  lanDiscoveryChanged = (enabled: boolean) => {
+    this.discoveryEpoch++
+    this.discovering.clear()
+    this.lastDiscover.clear()
+    if (!enabled) this.clearDiscoveredLan()
+    for (const [id, runtime] of this.runtimes) {
+      const host = this.state.hosts.find((item) => item.host.id === id)
+      if (!host || host.host.enabled === false) continue
+      this.rebuild(id, runtime)
+      if (enabled) this.maybeDiscover(id)
+    }
+  }
+
+  /**
+   * Rebinds every enabled node to the new network.
+   *
+   * `window.online` only reports offline → online; a Wi-Fi/cellular handover
+   * stays "online" while every existing socket belongs to the old route.
+   * Rebuild rather than retrying stopped runtimes, because a healthy-looking
+   * old WebSocket is exactly what the event tells us is stale. Any scan that
+   * was in progress belongs to the old subnet and is discarded.
+   */
+  networkChanged = () => {
+    this.discoveryEpoch++
+    this.discovering.clear()
+    this.lastDiscover.clear()
+    this.clearDiscoveredLan()
+    forgetSubnets()
+    clearAllBreakers()
+    for (const [id, runtime] of this.runtimes) {
+      const host = this.state.hosts.find((item) => item.host.id === id)
+      if (!host || host.host.enabled === false) continue
+      this.rebuild(id, runtime)
+    }
+  }
+
   /** Where a desktop's current connection actually goes, for the status line. */
   routeOf = (id: string): 'direct' | 'relay' | undefined => {
     const transport = this.runtimes.get(id)?.transport as Transport & { currentRoute?(): 'direct' | 'relay' | undefined }
     return transport?.currentRoute?.()
   }
 
+  /**
+   * Releases one runtime: probe, hub, retry timer and transport.
+   *
+   * Kept in one place because every teardown path (suspend, disable, forget,
+   * rebuild, dispose) has to do the same four things, and a missed probe keeps
+   * a timer alive against a socket that no longer exists.
+   */
+  private closeRuntime(runtime: Runtime) {
+    runtime.stopHeartbeat?.()
+    runtime.stopHeartbeat = undefined
+    clearTimeout(runtime.retry)
+    runtime.hub?.close()
+    runtime.transport.close()
+  }
+
   private attach(host: Host) {
     const runtime = this.makeRuntime(host)
     this.runtimes.set(host.id, runtime)
     void this.connectHost(host.id, runtime)
+    // Discovery does not depend on the relay. If the public path is the broken
+    // one and the phone is at home, this is what lets the app find the desktop
+    // without waiting for a relay connection that will never complete.
+    this.maybeDiscover(host.id)
   }
   /**
    * Bounded retry: three attempts, at most 30 s apart, then stop. Automatic
@@ -299,22 +394,34 @@ export class Controller {
   /**
    * Looks for this desktop on the local network, in the background.
    *
-   * Only when it is worth the radio time: the app is on screen, the relay is
-   * already working, there is no cached answer, and the last look was a while
-   * ago. A phone that is out and about fails the subnet check immediately, so
-   * nothing is scanned on a carrier network.
+   * Only when it is worth the radio time: the app is on screen, there is no
+   * cached answer, and the last look was a while ago. It does not depend on the
+   * relay — a dead public route is exactly when the local path matters most.
+   * A phone on cellular has no Wi-Fi/Ethernet subnets from the native plugin,
+   * so nothing is scanned there.
    */
   private discovering = new Set<string>()
+  private discoveryEpoch = 0
   private lastDiscover = new Map<string, number>()
   private maybeDiscover(id: string) {
     if (!lanDiscoveryEnabled()) return
     if (!this.state.foreground) return
     if (this.discovering.has(id)) return
-    const host = this.state.hosts.find((item) => item.host.id === id)?.host
-    if (!host || !host.enabled) return
-    // A known-good address needs no rediscovery; the breaker handles one that
-    // stops working.
-    if (host.lan && directAllowed(id)) return
+    const hostState = this.state.hosts.find((item) => item.host.id === id)
+    const host = hostState?.host
+    // Discovery does not wait for a relay connection: if the public path is
+    // broken, the LAN path is precisely how this phone can still reach home.
+    // It remains background work and only runs while the app is visible.
+    if (!host || host.enabled === false) return
+    if (this.state.foreground !== true) return
+    if (!lanDiscoveryEnabled()) return
+
+    // Once an address is known, the breaker decides whether to dial it. Do not
+    // rescan the same subnet just because that address is in its cooldown —
+    // the cooldown exists precisely to stop spending time on this path. A
+    // network change clears the discovered address and the breaker before the
+    // next scan.
+    if (host.lan || hostState?.discoveredLan) return;
     const at = this.lastDiscover.get(id) ?? 0
     const now = Date.now()
     // Rediscovering is expensive; ten minutes between attempts is plenty for
@@ -322,11 +429,16 @@ export class Controller {
     if (now - at < DISCOVERY_INTERVAL_MS) return
     this.lastDiscover.set(id, now)
     this.discovering.add(id)
+    const startedAt = this.discoveryEpoch
     void (async () => {
       try {
         const subnets = await deviceSubnets()
         const found = await discoverDesktop({ connectCode: host.connectCode, subnets })
-        if (found) await this.adoptLan(id, found)
+        // A network switch during the scan invalidates both its subnet and any
+        // answer it found there. Do not cache an address from the link we left.
+        if (found && startedAt === this.discoveryEpoch && this.state.foreground && lanDiscoveryEnabled()) {
+          await this.adoptLan(id, found)
+        }
       } catch { /* discovery is best effort; the relay still works */ }
       finally { this.discovering.delete(id) }
     })()
@@ -334,11 +446,13 @@ export class Controller {
 
   /** Remembers a discovered address and lets the next connection use it. */
   private async adoptLan(id: string, address: NonNullable<Host['lan']>) {
-    const runtime = this.runtimes.get(id)
-    if (runtime) this.applyLan(runtime, id, address)
-    // Cached, but not persisted as a user setting: it was found, not chosen,
-    // and a stale one only costs a fallback thanks to the breaker.
+    // Cached, but not persisted as a user setting: it was found, not chosen.
+    // Store it before rebuilding so the new runtime receives it immediately;
+    // this switches an existing relay connection to LAN as soon as discovery
+    // succeeds, rather than making the user wait for the next reconnect.
     this.patchHost(id, { discoveredLan: address })
+    const runtime = this.runtimes.get(id)
+    if (runtime) this.rebuild(id, runtime)
   }
 
   /** Clears any pending retry so a manual reconnect happens immediately. */
@@ -347,18 +461,46 @@ export class Controller {
     clearTimeout(runtime.retry)
     runtime.retry = undefined
   }
+  /**
+   * Why Herdr is not answering, in the desktop's own words.
+   *
+   * `online: false` alone cannot tell "Herdr was never started" from "the
+   * socket is there but the desktop's own client is not connected". The
+   * desktop sends `offline_reason` for that; showing it turns an opaque
+   * "offline" badge into something the user can act on.
+   */
+  private herdrOffline(info: { online?: boolean; offline_reason?: unknown; herdr_error?: unknown }): string | undefined {
+    if (info.online === true) return undefined
+    for (const value of [info.offline_reason, info.herdr_error]) {
+      if (typeof value === 'string' && value.trim()) return value.trim()
+    }
+    return t('Alma 已连接，但 Herdr 未运行或不可用')
+  }
+
   private async connectHost(id: string, runtime: Runtime) {
     const epoch = ++runtime.epoch
     runtime.hub?.close()
     try {
       await runtime.transport.connect()
-      const info = await runtime.transport.request<{ online: boolean }>('/api/herdr/info')
+      const info = await runtime.transport.request<{ online: boolean; offline_reason?: string; herdr_error?: string }>('/api/herdr/info')
       if (this.runtimes.get(id) !== runtime || epoch !== runtime.epoch) return
-      this.patchHost(id, { status: 'online', herdrOnline: info.online === true, error: info.online ? undefined : t('Alma 已连接，但 Herdr 未运行或不可用') })
+      this.patchHost(id, {
+        status: 'online',
+        herdrOnline: info.online === true,
+        error: this.herdrOffline(info),
+        offlineReason: info.online === true ? undefined : (typeof info.offline_reason === 'string' ? info.offline_reason : undefined),
+      })
       runtime.hub = runtime.transport.subscribe('/ws/herdr', (event) => {
         if (epoch !== runtime.epoch || this.runtimes.get(id) !== runtime) return
-        if (event.type === 'snapshot' && Array.isArray(event.snapshot?.panes) && Array.isArray(event.snapshot?.workspaces)) this.patchHost(id, { snapshot: event.snapshot as Snapshot, herdrOnline: true, error: undefined })
-        if (event.type === 'herdr') this.patchHost(id, { herdrOnline: event.online === true, error: event.online ? undefined : t('Herdr 暂时不可用') })
+        if (event.type === 'snapshot' && Array.isArray(event.snapshot?.panes) && Array.isArray(event.snapshot?.workspaces)) this.patchHost(id, { snapshot: event.snapshot as Snapshot, herdrOnline: true, error: undefined, offlineReason: undefined })
+        if (event.type === 'herdr') {
+          const reason = typeof event.reason === 'string' && event.reason.trim() ? event.reason.trim() : undefined
+          this.patchHost(id, {
+            herdrOnline: event.online === true,
+            error: event.online === true ? undefined : (reason || t('Herdr 暂时不可用')),
+            offlineReason: event.online === true ? undefined : reason,
+          })
+        }
         if (event.type === 'status' && event.change) {
           const current = this.state.hosts.find((item) => item.host.id === id)?.snapshot
           if (current) this.patchHost(id, { snapshot: { ...current, panes: current.panes.map((pane) => pane.pane_id === event.change.pane_id ? { ...pane, agent_status: event.change.to } : pane) } })
@@ -367,6 +509,15 @@ export class Controller {
       runtime.attempts = 0
       runtime.stopped = undefined
       this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined })
+      // A tunnel that dies without delivering `close` — the page was frozen
+      // when the relay dropped it — would otherwise look healthy until the
+      // next request timed out. The probe turns that into a real reconnect.
+      runtime.stopHeartbeat?.()
+      const transport = runtime.transport as Partial<{ startHeartbeat(): () => void }>
+      runtime.stopHeartbeat = typeof transport.startHeartbeat === 'function' ? transport.startHeartbeat() : undefined
+      // Muting is stored on the desktop, so it has to be read back rather than
+      // assumed; a failure here must not make the desktop look offline.
+      void this.refreshMutes(id).catch(() => undefined)
       if (this.state.session?.hostId === id) void this.refreshSession()
       // The relay is up and working; that is the moment to look for the same
       // desktop on the local network, so the next connection can skip it.
@@ -392,8 +543,6 @@ export class Controller {
   }
   private async addHostNow(name: string, link: string) {
     const host = await parsePairing(name, link)
-    // The desktop may have been updated since; ask again rather than assume.
-    this.legacyOnly.delete(host.id)
     const old = this.state.hosts.find((item) => item.host.id === host.id)?.host
     if (old) {
       host.addedAt = old.addedAt
@@ -405,7 +554,7 @@ export class Controller {
     await this.storage.save(hosts)
     const previous = this.runtimes.get(host.id)
     this.runtimes.delete(host.id)
-    if (previous) { clearTimeout(previous.retry); previous.hub?.close(); previous.transport.close() }
+    if (previous) this.closeRuntime(previous)
     // Always close the open session: the selected host changes, so an old pane must not stay as the mutation target.
     if (this.state.session) this.stopSession()
     this.publish({
@@ -443,96 +592,273 @@ export class Controller {
   }
 
   /**
-   * Creates a new session: a Herdr tab whose root pane runs the agent.
-   *
-   * The agent must not be launched with `agent.start`. That command only checks
-   * that the shell owns the foreground, not that the shell finished its rc
-   * files; a prompt written by an rc file (oh-my-zsh's update question, a p10k
-   * wizard) is still reading, so the first character of the typed command is
-   * swallowed and the rest — `laude` instead of `claude` — runs as a command.
-   * `layout.apply` starts the process directly with its own argv, so nothing is
-   * typed into a shell that may still be prompting.
-   *
-   * The command is the agent wrapped in a login shell that stays after it
-   * exits: closing the agent must leave a usable terminal, not a dead tab
-   * (a pane whose process exits is removed by Herdr).
-   */
-  /**
    * Creates a session.
    *
-   * `layout.apply` starts the agent with its own argv, which avoids typing
-   * into a shell that may still be reading rc files. It is not always
-   * available: Alma's phone bridge refuses any method outside its allowlist,
-   * and older desktops do not know it at all. Both are discovered by asking,
-   * not by version, and both fall back to `tab.create` + `agent.start` — the
-   * methods that allowlist does include.
+   * Two ways in, and the order between them is deliberate.
+   *
+   * `tab.create` + `agent.start` is the path Alma's phone bridge actually
+   * offers: its `/api/herdr/rpc` allowlist names both, and neither is refused.
+   * `agent.start` types `cd …` and then the agent name into the shell, so the
+   * tab ends up with the agent's own argv in the foreground and a shell behind
+   * it — which is also what a desktop user gets from the Herdr UI.
+   *
+   * `layout.apply` would be better still, because it starts the process with
+   * its argv directly and so avoids a shell whose rc files may still be
+   * printing a prompt (the swallowed first letter: `laude` instead of
+   * `claude`). It is not on that allowlist, so a stock desktop answers 403.
+   * It is therefore tried only after the allowlisted path has actually failed
+   * — not before it, which would spend a refused round trip on every create.
    */
   newSession = async (hostId: string, options: { kind: string; cwd?: string; workspaceId?: string; label?: string }): Promise<{ paneId: string; workspaceId: string }> => {
     if (!this.runtimes.has(hostId)) throw new Error(t('节点不存在'))
-    // A refused method would answer identically every time, so remember it
-    // per desktop and skip the round trip from the second session onwards.
-    if (this.legacyOnly.has(hostId)) return this.legacyNewSession(hostId, options)
-    const command = agentLaunchCommand(options.kind)
     try {
-      const created = await this.rpc<{
-        type?: string; tab_id?: string; workspace_id?: string; focused_pane_id?: string
-        layout?: { tab_id?: string; workspace_id?: string; focused_pane_id?: string; root?: unknown }
-      }>(hostId, 'layout.apply', {
-        ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}),
-        ...(options.label ? { tab_label: options.label } : {}),
-        focus: false,
-        root: { type: 'pane', ...(options.cwd ? { cwd: options.cwd } : {}), command },
-      }, CREATE_TIMEOUT_MS)
-      // Herdr answers `{ type: 'layout_apply', layout: {…} }`; a wrapper that
-      // predates that shape put the same fields at the top level. Read both.
-      const paneId = created?.focused_pane_id ?? created?.layout?.focused_pane_id
-      const workspaceId = created?.workspace_id ?? created?.layout?.workspace_id ?? options.workspaceId ?? ''
-      const tabId = created?.tab_id ?? created?.layout?.tab_id
-      if (!paneId) {
-        // The layout was applied but the reply did not name a pane. The tab is
-        // still there, so find its pane in the snapshot instead of reporting a
-        // failure for something that worked.
-        const found = await this.paneOfTab(hostId, tabId)
-        if (!found) throw new Error(t('无法创建会话'))
-        return { paneId: found, workspaceId }
-      }
-      return { paneId, workspaceId }
+      return await this.tabNewSession(hostId, options)
     } catch (error) {
-      // Desktops older than the layout API have no other way to start an agent,
-      // so fall back to the previous path. It may lose the first character to a
-      // shell that is still reading its rc files, which is why it is only the
-      // fallback and not the default.
+      // `layout.apply` is the fallback for a desktop whose bridge refuses
+      // `agent.start` — the inverse of the older build this used to target.
       if (!isUnknownMethod(error)) throw error
-      this.legacyOnly.add(hostId)
-      return this.legacyNewSession(hostId, options)
+      return this.layoutNewSession(hostId, options)
     }
   }
 
-  /** The pre-`layout.apply` path: create the tab, then type the agent in. */
-  private async legacyNewSession(hostId: string, options: { kind: string; cwd?: string; workspaceId?: string; label?: string }) {
+  /**
+   * The allowlisted path: a tab, then the agent typed into it the way the
+   * desktop's own UI does it. The tab is created in the target directory, so
+   * the `cd` is a no-op there in the common case and a correction otherwise.
+   */
+  private async tabNewSession(hostId: string, options: { kind: string; cwd?: string; workspaceId?: string; label?: string }) {
     const created = await this.rpc<{ tab?: { tab_id?: string; workspace_id?: string }; root_pane?: { pane_id?: string; workspace_id?: string } }>(
       hostId, 'tab.create', { ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}), ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.label ? { label: options.label } : {}), focus: false }, CREATE_TIMEOUT_MS,
     )
     const paneId = created?.root_pane?.pane_id
+    const tabId = created?.tab?.tab_id
     const workspaceId = created?.root_pane?.workspace_id ?? created?.tab?.workspace_id ?? options.workspaceId ?? ''
-    if (!paneId) throw new Error(t('无法创建会话'))
+    if (!paneId) return this.layoutNewSession(hostId, { ...options, tabId })
+
     let lastError: unknown
-    for (let attempt = 0; attempt < 6; attempt++) {
+    let retriedSwallowedLetter = false
+    let swallowedLetterTwice = false
+    // A freshly created shell is not instantly able to accept input: it has to
+    // fork, read its rc files and reach a prompt. `agent.start` reports that
+    // window as "not an available shell", so it is retried rather than
+    // surfaced.
+    for (let attempt = 0; attempt < 20; attempt++) {
       try {
-        await this.rpc(hostId, 'agent.start', {
+        // No `cwd` here: `agent.start` reads only `kind`, `args`, `name` and
+        // `timeout_ms` and types the command into the pane's shell, which
+        // started in the directory `tab.create` was given. Passing a directory
+        // it does not read would only suggest the agent starts somewhere else.
+        await this.rpc<{ session_id?: string }>(hostId, 'agent.start', {
           name: `${options.kind}-${Math.random().toString(16).slice(2, 8)}`,
           kind: options.kind,
           pane_id: paneId,
           timeout_ms: 60_000,
         }, CREATE_TIMEOUT_MS)
+        // `agent.start` can answer 200 after typing the command even when a
+        // shell rc prompt (oh-my-zsh's update question, for example) consumed
+        // its first character. That was the original `claude` -> `laude` bug.
+        // The return value alone is therefore not proof the process started:
+        // inspect the visible terminal for the exact command-not-found that
+        // this failure produces, then retry once the rc prompt has completed.
+        if (!retriedSwallowedLetter && await this.commandWasLostToShell(hostId, paneId, options.kind)) {
+          retriedSwallowedLetter = true
+          lastError = new Error(t('终端启动提示吞掉了命令首字母，正在重试'))
+          await new Promise((resolve) => setTimeout(resolve, 400))
+          continue
+        }
+        if (retriedSwallowedLetter && await this.commandWasLostToShell(hostId, paneId, options.kind)) {
+          swallowedLetterTwice = true
+          throw new Error(t('终端启动提示重复吞掉了命令首字母'))
+        }
         return { paneId, workspaceId }
       } catch (error) {
         lastError = error
         if (!/not an available shell/i.test(String(error))) break
-        await new Promise((resolve) => setTimeout(resolve, 800))
+        await new Promise((resolve) => setTimeout(resolve, 300))
       }
     }
+    // If the shell twice proves it ate the command, don't make a second tab
+    // as a fallback: the first one still exists and the user needs the failure
+    // surfaced, not another process in another pane.
+    if (swallowedLetterTwice) throw lastError instanceof Error ? lastError : new Error(t('无法创建会话'))
+    // The tab exists; only the agent did not start. Trying the other path in
+    // that same tab is better than reporting a create that half-worked.
+    try { return await this.layoutNewSession(hostId, { ...options, paneId, tabId }) } catch { /* report the agent failure */ }
     throw lastError instanceof Error ? lastError : new Error(t('无法创建会话'))
+  }
+
+  /**
+   * Detects the specific failure where an rc prompt consumes the first key
+   * typed by `agent.start`. The call can return 200 in that case, so its
+   * acknowledgement is not enough; the terminal has to confirm it did not run
+   * the truncated command. Restrict the check to the shell's explicit
+   * "command not found" response, so normal agent output cannot trigger a
+   * duplicate launch.
+   */
+  private async commandWasLostToShell(hostId: string, paneId: string, kind: string): Promise<boolean> {
+    if (kind.length < 2) return false
+    try {
+      const result = await this.rpc<{ read?: { text?: string } }>(hostId, 'pane.read', {
+        pane_id: paneId, source: 'visible', format: 'text',
+      })
+      const screen = result.read?.text ?? ''
+      // zsh: command not found: laude
+      // bash: laude: command not found
+      const lost = kind.slice(1)
+      return screen.includes(`command not found: ${lost}`) || screen.includes(`${lost}: command not found`)
+    } catch { return false }
+  }
+
+  /**
+   * Starts the agent with its own argv in a tab's root pane.
+   *
+   * Nothing is typed into a shell, so a prompt written by an rc file cannot
+   * swallow the first character of the command. `paneId` reuses a tab that
+   * `tab.create` already made.
+   */
+  private async layoutNewSession(hostId: string, options: { kind: string; cwd?: string; workspaceId?: string; label?: string; paneId?: string; tabId?: string }) {
+    const command = agentLaunchCommand(options.kind)
+    const created = await this.rpc<{
+      type?: string; tab_id?: string; workspace_id?: string; focused_pane_id?: string
+      layout?: { tab_id?: string; workspace_id?: string; focused_pane_id?: string; root?: unknown }
+    }>(hostId, 'layout.apply', {
+      ...(options.tabId ? { tab_id: options.tabId } : {}),
+      ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}),
+      ...(options.label ? { tab_label: options.label } : {}),
+      focus: false,
+      root: { type: 'pane', ...(options.cwd ? { cwd: options.cwd } : {}), command },
+    }, CREATE_TIMEOUT_MS)
+    const paneId = created?.focused_pane_id ?? created?.layout?.focused_pane_id ?? options.paneId
+    const workspaceId = created?.workspace_id ?? created?.layout?.workspace_id ?? options.workspaceId ?? ''
+    const tabId = created?.tab_id ?? created?.layout?.tab_id
+    if (!paneId) {
+      const found = await this.paneOfTab(hostId, tabId)
+      if (!found) throw new Error(t('无法创建会话'))
+      return { paneId: found, workspaceId }
+    }
+    return { paneId, workspaceId }
+  }
+
+  /**
+   * Alerts the desktop is not sending because the user silenced them.
+   *
+   * The list belongs to the desktop (`/api/herdr/mutes`), so muting a session
+   * here also mutes it there and on every other device — muting is a statement
+   * about the work, not about this phone. The local notification diff reads the
+   * same list, so the two agree without a second source of truth.
+   */
+  refreshMutes = async (hostId: string): Promise<Mutes> => {
+    const runtime = this.runtimes.get(hostId)
+    const empty: Mutes = { workspaces: [], tabs: [] }
+    if (!runtime) return empty
+    const answer = await runtime.transport.request<Partial<Mutes> | null>('/api/herdr/mutes', undefined, { kind: 'read' })
+    const clean = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+    const mutes = { workspaces: clean(answer?.workspaces), tabs: clean(answer?.tabs) }
+    this.patchHost(hostId, { mutes })
+    return mutes
+  }
+
+  /**
+   * Silences or unsilences one tab (a session) or one workspace.
+   *
+   * Exactly one of the two identifiers is sent: the desktop refuses a request
+   * naming neither, and naming both would be ambiguous.
+   */
+  setMuted = async (hostId: string, target: { tab?: string; workspace?: string }, muted: boolean) => {
+    const runtime = this.runtimes.get(hostId)
+    if (!runtime) throw new Error(t('节点不存在'))
+    const body = target.tab ? { tab: target.tab, muted } : target.workspace ? { workspace: target.workspace, muted } : null
+    if (!body) throw new Error(t('找不到会话'))
+    const answer = await runtime.transport.request<Partial<Mutes> | null>('/api/herdr/mutes', body, { kind: 'mutation' })
+    const clean = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+    // The desktop answers with the whole list, so the local copy cannot drift
+    // from what it will actually honour.
+    const mutes = { workspaces: clean(answer?.workspaces), tabs: clean(answer?.tabs) }
+    this.patchHost(hostId, { mutes })
+    return mutes
+  }
+
+  /** True when either the tab or its workspace is silenced on that desktop. */
+  isMuted = (hostId: string, pane: { tab_id?: string; workspace_id?: string }): boolean => {
+    const mutes = this.state.hosts.find((item) => item.host.id === hostId)?.mutes
+    if (!mutes) return false
+    return Boolean(pane.tab_id && mutes.tabs.includes(pane.tab_id)) || Boolean(pane.workspace_id && mutes.workspaces.includes(pane.workspace_id))
+  }
+
+  /**
+   * Restarts a stuck agent in its own pane.
+   *
+   * The desktop quits the process tree, starts the same agent again and can
+   * hand it a prompt to continue with — all in the pane the user is looking
+   * at, which a phone could not do by sending keys. Errors are the desktop's
+   * own codes: `pane_not_found`, `unsupported_agent`, `no_agent_session`,
+   * `quit_timeout`.
+   */
+  restartAgent = async (hostId: string, paneId: string, thenPrompt?: string): Promise<{ session_id?: string } | null> => {
+    const runtime = this.runtimes.get(hostId)
+    if (!runtime) throw new Error(t('节点不存在'))
+    const body = { pane_id: paneId, ...(thenPrompt?.trim() ? { then_prompt: thenPrompt.trim() } : {}) }
+    const answer = await runtime.transport.request<{ result?: { session_id?: string }; error?: { code?: string; message?: string } }>(
+      '/api/herdr/restart-agent', body, { kind: 'mutation', timeoutMs: CREATE_TIMEOUT_MS },
+    )
+    if (answer?.error) throw new Error(answer.error.message || t('重启失败'))
+    // Herdr replaces the session id; anything already loaded belongs to the
+    // process that is gone, so the transcript is reloaded from scratch.
+    const open = this.state.session
+    if (open?.hostId === hostId && open.paneId === paneId) {
+      this.stopSession()
+      this.publish({ selectedPaneId: paneId, session: { ...open, items: [], start: -1, end: 0, queued: [], sessionId: undefined, loading: true, unsupported: false, gap: undefined, uncertain: undefined } })
+      void this.refreshSession()
+    }
+    return answer?.result ?? null
+  }
+
+  /**
+   * One subagent's own transcript.
+   *
+   * The desktop keeps each dispatched agent in `<session>/subagents/*.jsonl`
+   * and will page it by the tool-use id that dispatched it. This is the only
+   * way to read what a background agent actually did; the parent transcript
+   * holds one row for it.
+   */
+  loadSubagent = async (hostId: string, paneId: string, toolId: string, before = -1, limit = 200): Promise<{
+    agent: { type?: string; description?: string; finished?: boolean }
+    items: ChatItem[]
+  }> => {
+    const runtime = this.runtimes.get(hostId)
+    if (!runtime) throw new Error(t('节点不存在'))
+    const query = new URLSearchParams({ pane: paneId, tool: toolId, limit: String(limit) })
+    if (before >= 0) query.set('before', String(before))
+    const answer = await runtime.transport.request<{
+      agent?: { type?: string; description?: string; finished?: boolean }
+      page?: { items?: ChatItem[] }
+      error?: { code?: string; message?: string }
+    }>(`/api/herdr/subagent?${query}`, undefined, { kind: 'read' })
+    if (answer?.error) {
+      if (answer.error.code === 'subagent_not_found') throw new Error(t('子 agent 的记录不存在或已被清理'))
+      throw new Error(answer.error.message || t('无法读取子 agent'))
+    }
+    return { agent: answer?.agent ?? {}, items: answer?.page?.items ?? [] }
+  }
+
+  /**
+   * Fetches one transcript image through the tunnel.
+   *
+   * Deliberately not an <img src="…">: the path is only meaningful inside the
+   * encrypted tunnel, and a message must never be able to make the WebView
+   * issue a request of its choosing. The bytes come back here and the caller
+   * turns them into a blob URL it owns.
+   */
+  fetchImage = async (hostId: string, url: string): Promise<{ bytes: Uint8Array; contentType: string }> => {
+    const runtime = this.runtimes.get(hostId)
+    if (!runtime) throw new Error(t('节点不存在'))
+    // The desktop only serves its own image route or an absolute local path
+    // through `/api/herdr/file`; anything else (a remote URL in a message) is
+    // refused rather than fetched.
+    if (!url.startsWith('/api/herdr/image/') && !url.startsWith('/api/herdr/file')) throw new Error(t('不支持这个图片来源'))
+    const answer = await runtime.transport.request<BinaryResponse>(url, undefined, { kind: 'read', responseType: 'bytes', timeoutMs: 30_000 })
+    if (!answer.bytes.length) throw new Error(t('图片为空'))
+    return { bytes: answer.bytes, contentType: answer.contentType }
   }
 
   /**
@@ -590,8 +916,7 @@ export class Controller {
     // Drop it before closing, so the close's 'offline' cannot schedule a retry.
     this.cancelRetry(runtime)
     this.runtimes.delete(id)
-    runtime.hub?.close()
-    runtime.transport.close()
+    this.closeRuntime(runtime)
   }
 
   /** Renames a paired desktop. The credential and connection are untouched. */
@@ -615,7 +940,7 @@ export class Controller {
       await this.storage.save(hosts.map((item) => item.host))
       const runtime = this.runtimes.get(id)
       this.runtimes.delete(id)
-      if (runtime) { clearTimeout(runtime.retry); runtime.hub?.close(); runtime.transport.close() }
+      if (runtime) this.closeRuntime(runtime)
       if (this.state.session?.hostId === id) this.stopSession()
       this.publish({ hosts, ...(this.state.selectedHostId === id ? { selectedHostId: undefined, selectedPaneId: undefined, session: undefined } : {}) })
     })
@@ -645,71 +970,24 @@ export class Controller {
    * short read settles it; a transport that cannot answer rebuilds itself and
    * reports offline, which starts the usual retry ladder.
    */
+  /**
+   * Checks that every open tunnel still carries traffic.
+   *
+   * The idle probe lives in the transport, where it can see pending requests
+   * and queued sends; this only answers "is it alive right now", for the
+   * moment the app comes back to the foreground after a brief absence.
+   */
   verify = async () => {
     for (const [id, runtime] of this.runtimes) {
       if (runtime.stopped) continue
-      await this.probe(id, runtime)
+      const status = this.state.hosts.find((item) => item.host.id === id)?.status
+      if (status !== 'online') continue
+      try {
+        await runtime.transport.request<{ online: boolean }>('/api/herdr/info', undefined, { kind: 'read', timeoutMs: VERIFY_TIMEOUT_MS })
+      } catch { /* the transport has already reported the failure */ }
+      if (this.runtimes.get(id) !== runtime) continue
+      if (this.state.hosts.find((item) => item.host.id === id)?.status !== 'online') this.rebuild(id, runtime)
     }
-  }
-
-  /**
-   * One short read that proves the tunnel still carries traffic.
-   *
-   * It uses its own deadline — much shorter than a request's — because a
-   * healthy desktop answers `/api/herdr/info` from memory. Waiting the usual
-   * 20 s only delays telling the user the link is gone.
-   */
-  private async probe(id: string, runtime: Runtime) {
-    if (runtime.probing) return
-    runtime.probing = true
-    let answered = false
-    try {
-      await runtime.transport.request<{ online: boolean }>('/api/herdr/info', undefined, { kind: 'read', timeoutMs: PROBE_TIMEOUT_MS })
-      answered = true
-    } catch { /* a timeout or a dead socket; both mean the same thing here */ }
-    finally { runtime.probing = false }
-    if (this.runtimes.get(id) !== runtime) return
-    if (answered) {
-      // The probe is traffic, so the idle clock restarts even when no
-      // subscription is receiving anything.
-      runtime.onlineAt = Date.now()
-      return
-    }
-    // A read that times out does not close the tunnel — one slow request must
-    // not drop a working link — so this is the only place that can act on it.
-    // Silence past the idle window plus an unanswered probe *is* a dead link:
-    // rebuild it, which reports offline and starts the ladder.
-    this.rebuild(id, runtime)
-  }
-
-  /**
-   * Watches every open tunnel for silence.
-   *
-   * Runs only while the app is on screen, and only probes a tunnel that has
-   * been quiet longer than a healthy one ever is. A live session streams
-   * frames continuously, so in practice this costs nothing until something is
-   * actually wrong — at which point the user sees the red banner in about five
-   * seconds instead of twenty.
-   */
-  private livenessTimer?: ReturnType<typeof setInterval>
-  startLiveness = () => {
-    if (this.livenessTimer) return
-    this.livenessTimer = setInterval(() => {
-      const now = Date.now()
-      for (const [id, runtime] of this.runtimes) {
-        const status = this.state.hosts.find((item) => item.host.id === id)?.status
-        const lastInboundAt = runtime.transport.lastInboundAt() || runtime.onlineAt || 0
-        if (!shouldProbe({ online: status === 'online', lastInboundAt, probeInFlight: Boolean(runtime.probing), now, foreground: this.state.foreground ?? true })) continue
-        void this.probe(id, runtime)
-      }
-    }, LIVENESS_TICK_MS)
-    // Never hold the process open for a timer.
-    ;(this.livenessTimer as { unref?: () => void }).unref?.()
-  }
-  stopLiveness = () => {
-    if (!this.livenessTimer) return
-    clearInterval(this.livenessTimer)
-    this.livenessTimer = undefined
   }
   /** Replaces a runtime whose transport is known to be dead. */
   private rebuild(id: string, runtime: Runtime) {
@@ -720,8 +998,7 @@ export class Controller {
     // Drop it first: closing reports offline, and a replaced runtime must not
     // schedule a retry of its own.
     this.runtimes.delete(id)
-    runtime.hub?.close()
-    runtime.transport.close()
+    this.closeRuntime(runtime)
     const fresh = this.makeRuntime(host)
     this.runtimes.set(id, fresh)
     this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined, error: undefined })
@@ -762,9 +1039,7 @@ export class Controller {
     this.stopSession()
     for (const [id, runtime] of this.runtimes) {
       this.cancelRetry(runtime)
-      runtime.hub?.close()
-      runtime.hub = undefined
-      runtime.transport.close()
+      this.closeRuntime(runtime)
       this.runtimes.delete(id)
       this.patchHost(id, { status: 'offline', herdrOnline: false })
     }
@@ -792,8 +1067,7 @@ export class Controller {
       if (existing) {
         this.cancelRetry(existing)
         this.runtimes.delete(id)
-        existing.hub?.close()
-        existing.transport.close()
+        this.closeRuntime(existing)
       }
       const runtime = this.makeRuntime(state.host)
       this.runtimes.set(id, runtime)
@@ -881,12 +1155,26 @@ export class Controller {
         const same = session.sessionId === page.session_id
         const items = same ? session.items : merge([], page.page?.items ?? [])
         const cursor = same ? session.end : page.page?.end ?? 0
-        this.patchSession(epoch, { items, sessionId: page.session_id, start: same && session.start >= 0 ? session.start : page.page?.start ?? 0, end: cursor, queued: page.queued ?? [], loading: false, unsupported: false, gap: undefined })
+        const settings = readSettings(page.settings)
+        this.patchSession(epoch, {
+          items, sessionId: page.session_id,
+          start: same && session.start >= 0 ? session.start : page.page?.start ?? 0,
+          end: cursor, queued: page.queued ?? [], loading: false, unsupported: false, gap: undefined,
+          ...(settings ? { settings } : {}),
+        })
         const chat = runtime.transport.subscribe(`/ws/herdr/chat?pane=${encodeURIComponent(session.paneId)}&from=${cursor}`, (event) => {
           if (epoch !== this.sessionEpoch || !this.state.session) return
           if (event.type === 'items' && Array.isArray(event.items)) this.patchSession(epoch, { items: merge(this.state.session.items, event.items), end: Number(event.end) || this.state.session.end })
           if (event.type === 'queued' && Array.isArray(event.queued)) this.patchSession(epoch, { queued: event.queued })
-          if (event.type === 'session_changed') { ++this.sessionIdentity; this.patchSession(epoch, { items: [], queued: [], sessionId: undefined, end: 0, start: -1, loading: true, uncertain: undefined }); this.later(epoch) }
+          // The socket pushes `settings` whenever the transcript's model or
+          // effort changes mid-session, which is exactly when the header chip
+          // would otherwise go stale.
+          if (event.type === 'settings') {
+            const next = readSettings(event.settings)
+            const session = this.state.session
+            if (session && next && (!session.settings || settingsChanged(session.settings, next))) this.patchSession(epoch, { settings: next })
+          }
+          if (event.type === 'session_changed') { ++this.sessionIdentity; this.patchSession(epoch, { items: [], queued: [], sessionId: undefined, end: 0, start: -1, loading: true, uncertain: undefined, settings: undefined }); this.later(epoch) }
         }, () => { if (epoch === this.sessionEpoch) this.later(epoch) })
         this.sessionSockets.push(chat)
       }
@@ -1019,12 +1307,8 @@ export class Controller {
     if (session.sending) return false
     if (session.uncertain) throw new Error(session.uncertain)
     this.patchSession(epoch, { sending: true, error: undefined })
-    // From here until the answer arrives the user sees a spinner that may be
-    // a lie; if the link turns out to be dead, this is when that started.
-    metrics.markUnhealthy()
     try {
       await this.rpc(session.hostId, method, params(session))
-      metrics.markHealthy()
       if (epoch === this.sessionEpoch) await this.readScreen()
       return true
     }
@@ -1066,6 +1350,66 @@ export class Controller {
     } finally { this.patchSession(epoch, { sending: false }) }
   }
 
+  /**
+   * One step of a numbered menu, applied from outside the session screen.
+   *
+   * A notification button is exactly the "may already be stale" case the
+   * in-app prompt guards against, worsened by the fact that the user may be in
+   * another app entirely. So this reads the pane, finds the menu the caller
+   * expected, and refuses if the question, the labels or the highlighted row
+   * moved. `answerPrompt` is only the caller-polished form of this; the
+   * notification path cannot rebuild a `Prompt` from a snapshot, so it opts out
+   * of the exact-match and instead requires the menu to still be there.
+   *
+   * `intent` picks the option by wording (see `optionForIntent`); a number is
+   * accepted for callers that already know which row they mean. Either way the
+   * menu is re-read first, so a notification tapped minutes later cannot press
+   * a row that has since become a different question.
+   */
+  readPaneScreen = async (hostId: string, paneId: string): Promise<string> => {
+    const fresh = await this.rpc<{ read?: { text?: string } }>(hostId, 'pane.read', { pane_id: paneId, source: 'visible', format: 'text' })
+    return fresh.read?.text ?? ''
+  }
+
+  answerPromptFromAlert = async (
+    hostId: string,
+    paneId: string,
+    choice: number | 'allow' | 'deny',
+    expectedFingerprint?: string,
+  ): Promise<void> => {
+    const runtime = this.runtimes.get(hostId)
+    if (!runtime) throw new Error(t('节点不存在'))
+    const screen = await this.readPaneScreen(hostId, paneId)
+    const menu = parsePrompt(screen)
+    if (!menu) throw new Error(t('终端里的选项已经消失，请打开会话确认'))
+    // A notification may sit in the shade while the agent moves on to another
+    // question. Generic "Allow" must not answer whatever happens to be visible
+    // now: require the exact menu fingerprint captured when this alert was
+    // posted. If the alert predates this safeguard or no fingerprint was
+    // captured, fail closed and open the session instead.
+    if (!expectedFingerprint || await promptFingerprint(menu) !== expectedFingerprint) {
+      throw new Error(t('终端中的问题已变化，请打开会话确认'))
+    }
+    const optionNumber = typeof choice === 'number' ? choice : optionForIntent(menu, choice)
+    if (optionNumber === null) throw new Error(t('这个选择在终端里已经不明确了，请打开会话确认'))
+    const target = menu.options.findIndex((item) => item.number === optionNumber)
+    if (target < 0) throw new Error(t('选项已不存在，请刷新后重试。'))
+    const keys: string[] = []
+    const multiSelect = needsSpace(menu.options[target])
+    if (menu.cursor >= 0 && menu.cursor !== target) {
+      const moves = moveKeys(menu.cursor, target)
+      if (!moves) throw new Error(t('无法确定光标位置'))
+      keys.push(...moves)
+    }
+    // Same rule as `answerPrompt`: in a multi-select menu Enter submits the
+    // whole form, so a row is only ever toggled with Space. A notification tap
+    // must not be able to commit a form the user has not finished filling in.
+    if (multiSelect) keys.push(' ')
+    else if (menu.cursor >= 0 && menu.cursor !== target) keys.push('enter')
+    else keys.push(String(optionNumber))
+    await this.rpc(hostId, 'pane.send_keys', { pane_id: paneId, keys: keys.map((key) => key === ' ' ? 'space' : key) })
+  }
+
   sendKeys = async (keys: string[]) => {
     const names: Record<string, string> = { Up: 'up', Down: 'down', Left: 'left', Right: 'right', Enter: 'enter', Escape: 'esc', 'C-c': 'ctrl+c' }
     if (!keys.length || keys.length > 20 || keys.some((key) => !names[key])) throw new Error(t('不支持的终端按键'))
@@ -1090,6 +1434,6 @@ export class Controller {
       throw error
     } finally { this.patchSession(epoch, { sending: false }) }
   }
-  dispose() { this.stopSession(); const runtimes = [...this.runtimes.values()]; this.runtimes.clear(); for (const runtime of runtimes) { clearTimeout(runtime.retry); runtime.hub?.close(); runtime.transport.close() } }
+  dispose() { this.stopSession(); const runtimes = [...this.runtimes.values()]; this.runtimes.clear(); for (const runtime of runtimes) this.closeRuntime(runtime) }
 }
 export const controller = new Controller()

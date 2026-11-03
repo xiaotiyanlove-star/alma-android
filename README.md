@@ -35,21 +35,29 @@ with incremental updates, and a terminal view with the keys you actually need. H
 is paginated by cursor and resumes from the last item received, so a reconnect does not
 replay or skip messages.
 
-**Model and context.** Some agents print their model, context usage and thinking state on
-a status line; when they do, those appear as chips in the session header. Herdr's API
-exposes none of these, so parsing is best-effort and honest about it: an unrecognised line
-yields no chip rather than a guess. Claude Code does not print them at all, so with it the
-header simply has no chips.
+**Model and context.** The model and reasoning effort come from the `settings` the desktop
+reads out of the transcript itself, which is authoritative; the terminal's status line is
+only a fallback for desktops too old to send them. Context usage has no other source and is
+still parsed from the screen. An unrecognised line yields no chip rather than a guess.
 
-**Background agents.** Subagents that Claude Code has dispatched and not yet finished are
-listed for the current session, read from the transcript's tool rows. This is the only
-structured source — the terminal prints a similar list in a layout that differs per agent
-and per version.
+**Background agents.** Subagents that have been dispatched and not yet finished are listed
+for the current session, read from the transcript's tool rows. Opening one reads that
+agent's own transcript — the desktop pages it by the tool-use id that dispatched it, and it
+is the only way to see what a subagent actually did.
+
+**Muting and restarting.** A session can be muted, and the list lives on the desktop, so
+the desktop and any other device go quiet too. A stuck agent can be restarted from the
+phone: the desktop quits its process tree, starts the same agent again, and optionally
+hands it a prompt to continue with — all in the pane it was already in.
 
 **Slash commands.** Typing `/` in the composer filters the commands the current agent
 accepts, resolved per agent rather than from a Herdr API. Read-only and menu-opening
 commands ship; anything that clears, compacts or rewinds a conversation is deliberately
 left out.
+
+**Connection.** An idle tunnel is probed every 20 seconds and is only declared dead after
+10 seconds with no answer. No probe is sent while a request or an upload is in flight,
+since a large attachment legitimately takes longer than that.
 
 **Sending.** Messages go through `agent.prompt`; terminal input uses bracketed paste
 followed by Enter. A request that was sent but never confirmed — a dropped tunnel, a
@@ -69,13 +77,31 @@ WebSocket message and the relay refuses anything over 32 MiB, so a larger file w
 mid-transfer and be reported as an uncertain send rather than a refusal.
 
 **New sessions.** Start Claude Code, Codex or pi in a directory of your choosing,
-defaulting to the one you are already working in.
+defaulting to the one you are already working in. It uses the phone bridge's allowlisted
+`tab.create` + `agent.start` first, and falls back to `layout.apply` (which launches the
+process by argv) only when that path genuinely is not available.
 
 **QR pairing.** Scan the code from Alma's Remote Access screen, or paste the link.
 
 **Local alerts.** A notification when an agent is waiting for you or has finished, based
 on a status diff of the live connection. Nothing is uploaded and no push service is
 involved.
+
+The notifications are actionable: a waiting session offers Allow and Deny, a finished one
+offers an inline reply. The buttons never replay a remembered option — tapping one re-reads
+the terminal and resolves the row by its wording, and refuses (opening the session instead)
+when the question changed, two rows could match, or the menu is a multi-select form.
+
+**Background keep-alive.** By default the connection is held only while an agent is working, then the
+service stops itself and nothing stays in the notification shade. "Always" (a standing
+notification, subject to Android 15's six-hour cap) and "Never" are also available.
+
+**Pairing from a link.** An `alma://connect` link in the system opens the app with the form
+filled in, validated by exactly the same rules as a pasted one.
+
+**Images in the conversation.** Pictures a transcript refers to are fetched through the same
+encrypted tunnel and shown inline; a message still cannot make the web view reach the
+network on its own.
 
 **Display.** Markdown rendering with a per-session switch back to source, and language
 and time zone that follow the system unless you override them.
@@ -185,6 +211,7 @@ client/                The app
   attachments.ts       Upload helpers and message composition
   commands.ts          Per-agent slash commands offered in the composer
   subagents.ts         Running background agents, derived from transcript tool rows
+  pending-link.ts      Staging and reading an alma://connect deep link
   session-info.ts      Model and context, parsed from the agent's status line
   notify.ts            Status diffing and local notifications
   keepalive.ts         Foreground service toggle
@@ -232,8 +259,9 @@ in `ScanPairs.tsx`, `notify.ts` and `attachments.ts` are not covered by it.
   after saving, never logged, and stored only in Keystore-encrypted storage under
   `noBackupFilesDir`; `allowBackup` is off.
 - Only HTTPS relays are accepted, and cleartext traffic is disabled.
-- Markdown from the model is rendered without raw HTML, and images are limited to inline
-  data so a message cannot make the app fetch arbitrary URLs.
+- Markdown from the model is rendered without raw HTML; images in the transcript are
+  fetched through the tunnel, never by a plain URL load, so a message cannot make the app
+  reach the network on its own.
 - Transport failure ends every pending request; responses that arrive for a session you
   have since left are discarded by identity, not merged.
 

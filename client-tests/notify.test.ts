@@ -49,11 +49,27 @@ test('same pane id on two hosts is tracked independently', () => {
   assert.equal(alerts[0].hostId, 'a')
 })
 
-test('muted host is skipped and removed panes stop tracking', () => {
-  const tracker = new AlertTracker(new Set(['h1']))
+test('a muted tab or workspace is skipped by the diff itself', () => {
+  const muted = host([{ agent_status: 'working', tab_id: 't1', workspace_id: 'w1' }])
+  muted.mutes = { workspaces: [], tabs: ['t1'] }
+  const tracker = new AlertTracker()
+  tracker.update([muted])
+  assert.equal(tracker.update([{ ...muted, snapshot: { ...muted.snapshot!, panes: muted.snapshot!.panes.map((pane) => ({ ...pane, agent_status: 'blocked' })) } }]).length, 0, 'silenced on the desktop, so no alert at all')
+
+  const byWorkspace = host([{ agent_status: 'working' }])
+  byWorkspace.mutes = { workspaces: ['w1'], tabs: [] }
+  const other = new AlertTracker()
+  other.update([byWorkspace])
+  assert.equal(other.update([{ ...byWorkspace, snapshot: { ...byWorkspace.snapshot!, panes: byWorkspace.snapshot!.panes.map((pane) => ({ ...pane, agent_status: 'blocked' })) } }]).length, 0)
+})
+
+test('removed panes stop tracking', () => {
+  const tracker = new AlertTracker()
   tracker.update([host([{ agent_status: 'working' }])])
-  assert.equal(tracker.update([host([{ agent_status: 'blocked' }])]).length, 0)
-  tracker.update([])
+  assert.equal(tracker.update([host([{ agent_status: 'blocked' }])]).length, 1)
+  // A pane that vanishes is forgotten, so a new pane reusing its id has to be
+  // seen once before it can alert.
+  tracker.update([host([])])
   tracker.update([host([{ agent_status: 'working' }])])
-  assert.equal(tracker.update([host([{ agent_status: 'blocked' }])]).length, 0, 'reappearing pane is treated as first sight')
+  assert.equal(tracker.update([host([{ agent_status: 'blocked' }])]).length, 1, 'the new pane alerts on its own first transition')
 })

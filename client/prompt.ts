@@ -27,6 +27,21 @@ export interface Prompt {
   signature: string
 }
 
+/**
+ * A compact, non-reversible tag for the exact menu shown by a notification.
+ *
+ * The alert extras survive in Android's notification store, so keeping the raw
+ * prompt there would copy a command/question onto disk. A digest lets the tap
+ * handler prove the visible menu is still the same without persisting its text.
+ */
+export async function promptFingerprint(prompt: Prompt): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(prompt.signature))
+  const bytes = new Uint8Array(digest)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+}
+
 const FRAME = /^[│┃║\s]+|[│┃║\s]+$/g
 const OPTION = /^([❯›>]\s*)?(\d{1,2})[.)]\s+(.+)$/u
 const CLOSING = /^([❯›>]\s*)?(Submit|Next)$/u
@@ -124,4 +139,34 @@ export function moveKeys(from: number, to: number): string[] | null {
 /** Multi-select rows toggle with space; single-choice rows commit with Enter. */
 export function needsSpace(option: PromptOption): boolean {
   return option.checked !== null
+}
+
+/**
+ * Which option a notification's Allow/Deny button means.
+ *
+ * A notification does not carry the menu it was raised for, so the button has
+ * to be resolved against the menu that is on screen *now*. That is only safe
+ * if the answer is unambiguous: the label must start with an approval or a
+ * refusal word, and exactly one option may match. Two matches, no match, or a
+ * multi-select form all yield null, and the caller then refuses the tap rather
+ * than pressing something the user did not choose.
+ *
+ * Anchoring matters: "Yes, and don't ask again" is an allow, but "don't" alone
+ * must never be read as a deny out of the middle of a longer sentence.
+ */
+export function optionForIntent(prompt: Prompt | null, intent: 'allow' | 'deny'): number | null {
+  if (!prompt) return null
+  // A multi-select form toggles rows and needs a separate submit; a single
+  // tap cannot stand in for that, so it is never answered from a notification.
+  if (prompt.submit) return null
+  const ALLOW = /^(?:yes|allow|approve|accept|ok(?:ay)?|同意|允许|批准|确认)\b/iu
+  const DENY = /^(?:no|deny|reject|decline|cancel|不同意|拒绝|取消)\b/iu
+  const pattern = intent === 'allow' ? ALLOW : DENY
+  const other = intent === 'allow' ? DENY : ALLOW
+  const matches = prompt.options.filter((option) => pattern.test(option.label.trim()))
+  if (matches.length !== 1) return null
+  // An option that could be read both ways ("No, don't allow…") is not a
+  // button a notification may press unattended.
+  if (other.test(matches[0].label.trim())) return null
+  return matches[0].number
 }

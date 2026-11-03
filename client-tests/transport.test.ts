@@ -224,6 +224,7 @@ test('inbound traffic is timestamped, which is how silence is detected', async (
 
 // ── local-network direct path ───────────────────────────────────────────
 const lanAddress = { host: '192.168.1.10', port: 23019 }
+const DIRECT_TEST_HANDSHAKE_MS = 3_000
 
 /** Records which URL each dial went to, and can refuse to open. */
 function recordingFactory(opts: { refuse?: (url: string) => boolean; silent?: (url: string) => boolean } = {}) {
@@ -304,27 +305,33 @@ test('a silent local address is abandoned on the short deadline', async () => {
   } finally { tunnel.close() }
 })
 
-test('a local impostor that does not hold the pairing code is rejected', async () => {
-  // This is the point of the direct path being allowed at all: the address is
-  // not a trust signal. Anything that answers on the LAN must still prove it
-  // knows the connect code, exactly as the relay path must.
+test('a local impostor fails identity and the paired desktop still works over the relay', async () => {
+  // The scan finds any Alma-compatible responder, including a neighbour's
+  // machine. It must prove the saved pairing code; a wrong confirmation falls
+  // back to the already-paired relay rather than dropping the desktop.
   let directSocket: FakeSocket | undefined
-  const recorder = recordingFactory()
+  let directFailures = 0
+  const tried: string[] = []
   const tunnel = new EncryptedTunnel(host, () => {}, (url) => {
-    if (!url.startsWith('ws://')) return recorder.factory(url)
-    // The impostor answers the handshake but holds a different connect code,
-    // so its confirmation cannot match.
-    const socket = new FakeSocket(true)
-    directSocket = socket
-    return socket
+    tried.push(url)
+    if (url.startsWith('ws://')) {
+      // The impostor answers the handshake but holds a different connect code,
+      // so its confirmation cannot match.
+      directSocket = new FakeSocket(true)
+      return directSocket
+    }
+    const relay = new FakeSocket()
+    relay.handler = (frame) => { if (frame.t === 'hreq') void relay.response(frame.id, { online: true }) }
+    return relay
   }, 1_000)
   try {
     tunnel.useDirect(lanAddress, async () => true)
-    await assert.rejects(tunnel.connect(), /配对验证失败/)
-    assert.ok(directSocket, 'the direct socket is the one that was tried')
-    // Reaching the impostor is not the failure; trusting it would be. The
-    // handshake is the gate, and it closed.
-    await assert.rejects(tunnel.request('/api/herdr/info', undefined, { kind: 'read' }), /配对验证失败|连接已断开/)
+    tunnel.onDirectFailed = () => { directFailures++ }
+    assert.deepEqual(await tunnel.request('/api/herdr/info'), { online: true })
+    assert.ok(directSocket, 'the candidate was probed')
+    assert.equal(directFailures, 1, 'the wrong pairing proof rejects this candidate')
+    assert.ok(tried.some((url) => url.startsWith('wss://relay.invalid')), 'the paired tunnel fell back to relay')
+    assert.equal(tunnel.currentRoute(), 'relay')
   } finally { tunnel.close() }
 })
 
@@ -370,5 +377,38 @@ test('a policy that fails closed is treated as "no"', async () => {
     tunnel.useDirect(lanAddress, async () => { throw new Error('no network info') })
     assert.deepEqual(await tunnel.request('/api/herdr/info'), { online: true })
     assert.ok(tried.every((url) => url.startsWith('wss://')), 'an unknown network must not open the plain-text path')
+  } finally { tunnel.close() }
+})
+
+test('a direct peer that accepts TCP but never answers hi falls back on the handshake deadline', async () => {
+  const tried: string[] = []
+  const tunnel = new EncryptedTunnel(host, () => {}, (url) => {
+    tried.push(url)
+    if (url.startsWith('ws://')) {
+      // TCP/WebSocket opens, but the peer never sends the Alma `hi`. This is
+      // different from an unreachable IP: the short dial timer has already
+      // stopped, so a separate handshake deadline must trigger fallback.
+      const silent = {
+        binaryType: '', readyState: 1, send() {}, close() { this.readyState = 3 },
+        onopen: null as (() => void) | null,
+        onmessage: null as ((event: { data: unknown }) => void) | null,
+        onerror: null as (() => void) | null,
+        onclose: null as (() => void) | null,
+      }
+      setTimeout(() => silent.onopen?.(), 0)
+      return silent
+    }
+    const relay = new FakeSocket()
+    relay.handler = (frame) => { if (frame.t === 'hreq') void relay.response(frame.id, { online: true }) }
+    return relay
+  }, 10_000)
+  try {
+    tunnel.useDirect(lanAddress, async () => true)
+    const request = tunnel.request('/api/herdr/info')
+    await new Promise((r) => setTimeout(r, DIRECT_TEST_HANDSHAKE_MS + 80))
+    const response = await request
+    assert.deepEqual(response, { online: true })
+    assert.ok(tried.some((url) => url.startsWith('wss://relay.invalid')), 'relay must take over after a silent direct handshake')
+    assert.equal(tunnel.currentRoute(), 'relay')
   } finally { tunnel.close() }
 })

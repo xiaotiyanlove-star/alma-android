@@ -11,6 +11,8 @@ import { lanUrl, usableLanAddress, type LanAddress } from './lan'
  * paid on every connect while away from home.
  */
 const DIRECT_DIAL_MS = 2_000
+/** Once the socket opens, the paired desktop must prove itself quickly too. */
+const DIRECT_HANDSHAKE_MS = 3_000
 import { t } from './i18n'
 
 type Frame = Record<string, any>
@@ -47,7 +49,18 @@ export class OperationUncertainError extends Error {
 }
 interface Pending {
   mutation: boolean; sent: boolean; status: number; chunks: Uint8Array[]
+  /** Headers from `hres`; the image route's content type lives here. */
+  headers: Record<string, string>
+  /** `bytes` keeps the body opaque instead of parsing it as JSON. */
+  responseType: 'json' | 'bytes'
   timer: ReturnType<typeof setTimeout>; resolve(value: unknown): void; reject(error: Error): void
+}
+
+/** What a `responseType: 'bytes'` request resolves to. */
+export interface BinaryResponse {
+  bytes: Uint8Array
+  /** As sent by the desktop, lowercased; empty when it named none. */
+  contentType: string
 }
 interface Subscription { path: string; receive(frame: Frame): void; onClose(): void }
 /** Extra options for requests whose payload is not a JSON body. */
@@ -70,6 +83,12 @@ export interface RequestInit2 {
    * tuned for reads.
    */
   timeoutMs?: number
+  /**
+   * What a 2xx body is. Everything the Herdr API answers is JSON except the
+   * image route, which returns the picture itself; asking for bytes keeps the
+   * caller from having to guess and losing the content type.
+   */
+  responseType?: 'json' | 'bytes'
 }
 export interface Transport {
   connect(): Promise<void>
@@ -103,6 +122,13 @@ export class EncryptedTunnel implements Transport {
   private pending = new Map<string, Pending>()
   private subscriptions = new Map<string, Subscription>()
   /**
+   * Bytes queued for the socket but not yet handed to it; a send in flight.
+   *
+   * A queued send is not evidence of a dead tunnel, so the probe skips while
+   * one is outstanding — but only briefly: see `startHeartbeat`.
+   */
+  private queued = 0
+  /**
    * When the last frame arrived from the desktop.
    *
    * A socket that is dead can still report `readyState === 1`: the close event
@@ -111,9 +137,89 @@ export class EncryptedTunnel implements Transport {
    * liveness check reads.
    */
   private inboundAt = 0
+  /** Set while a liveness probe is outstanding, and when it started. */
+  private probing = 0
+  private probeTimer?: ReturnType<typeof setInterval>
   constructor(private host: Host, private status: StatusSink, private socketFactory: (url: string) => SocketLike = (url) => new WebSocket(url) as unknown as SocketLike, private timeoutMs = 20_000) {}
 
   lastInboundAt(): number { return this.inboundAt }
+
+  /**
+   * How often an idle link is checked, and how long a silent one may stay
+   * silent before it is declared dead.
+   *
+   * A relay connection can die without either end noticing: the phone's radio
+   * sleeps, the relay drops the socket, and no `close` event is ever delivered
+   * because the page was frozen. Without this the user sees "connected" until
+   * their next message times out. The desktop's own client uses the same
+   * shape — ping every 20 s, give up after one unanswered probe.
+   */
+  static readonly PROBE_EVERY_MS = 2_000
+  static readonly SILENCE_LIMIT_MS = 6_000
+  static readonly PROBE_TIMEOUT_MS = 3_000
+  /**
+   * How long an unanswered request may hold off the probe.
+   *
+   * A pending request is normally a reason to wait, not to probe: an upload
+   * legitimately outlives the silence limit. But a request that hangs is
+   * exactly the failure this exists to catch, and a request deadline is 20 s —
+   * five times the probe cadence — so waiting for it would blind the probe for
+   * the whole window that matters. Past this, silence wins.
+   */
+  static readonly PENDING_GRACE_MS = 3_000
+
+  /**
+   * Starts the idle probe.
+   *
+   * The cadence is a parameter so a test can exercise the decision without
+   * waiting twenty real seconds. Production always calls this with no
+   * arguments. Returns a stop function; calling it twice is harmless, so a
+   * runtime can be torn down by whichever path notices first.
+   */
+  startHeartbeat(options: { everyMs?: number; silenceMs?: number; graceMs?: number; probeTimeoutMs?: number } = {}): () => void {
+    if (this.probeTimer) return () => this.stopHeartbeat()
+    const everyMs = options.everyMs ?? EncryptedTunnel.PROBE_EVERY_MS
+    const silenceMs = options.silenceMs ?? EncryptedTunnel.SILENCE_LIMIT_MS
+    const graceMs = options.graceMs ?? EncryptedTunnel.PENDING_GRACE_MS
+    const probeTimeoutMs = options.probeTimeoutMs ?? EncryptedTunnel.PROBE_TIMEOUT_MS
+    this.inboundAt = Date.now()
+    this.probeTimer = setInterval(() => {
+      if (!this.ready || this.stopped) return
+      const current = Date.now()
+      // A silent probe itself gets a short deadline; the ordinary request
+      // deadline is deliberately longer and is not allowed to hold this test
+      // open for twenty seconds.
+      if (this.probing) {
+        if (current - this.probing < probeTimeoutMs) return
+        this.fail(new TunnelError('network', t('连接已无响应，正在重连')))
+        return
+      }
+      if (current - this.inboundAt < silenceMs) return
+      // A mutation or upload may legitimately take a long time, so don't
+      // destroy it just because the remote is quiet. Read-only hangs get a
+      // short grace, after which a probe is safe and a failed probe rebuilds.
+      const hasMutation = [...this.pending.values()].some((item) => item.mutation)
+      if (hasMutation || this.queued > 0) return
+      if (this.pending.size > 0 && current - this.inboundAt < silenceMs + graceMs) return
+      this.probing = current
+      void this.request<unknown>('/api/herdr/info', undefined, { kind: 'read', timeoutMs: probeTimeoutMs }).then(
+        () => { this.probing = 0 },
+        () => {
+          if (this.probing && Date.now() - this.probing >= probeTimeoutMs) {
+            this.fail(new TunnelError('network', t('连接已无响应，正在重连')))
+          } else this.probing = 0
+        },
+      )
+    }, everyMs) as unknown as ReturnType<typeof setInterval> & { unref?: () => void }
+    ;(this.probeTimer as any).unref?.()
+    return () => this.stopHeartbeat()
+  }
+  private stopHeartbeat() {
+    if (!this.probeTimer) return
+    clearInterval(this.probeTimer)
+    this.probeTimer = undefined
+    this.probing = 0
+  }
 
   connect(): Promise<void> {
     if (this.ready) return Promise.resolve()
@@ -202,8 +308,8 @@ export class EncryptedTunnel implements Transport {
     socket.binaryType = 'arraybuffer'
     let settled = false
     let timer: ReturnType<typeof setTimeout> | undefined
-    const fallback = () => {
-      if (settled || epoch !== this.epoch) return
+    const fallback = (force = false) => {
+      if ((settled && !force) || epoch !== this.epoch) return
       settled = true
       if (timer) clearTimeout(timer)
       // Silence the abandoned attempt: its events must never reach `fail`.
@@ -217,7 +323,11 @@ export class EncryptedTunnel implements Transport {
       if (settled || epoch !== this.epoch) return
       settled = true
       if (timer) clearTimeout(timer)
-      this.attach(socket, epoch, pair, 'direct')
+      this.attach(socket, epoch, pair, 'direct', () => {
+        // Only the still-current direct socket may trigger fallback: a late
+        // event from a candidate already abandoned must not replace the relay.
+        if (this.ws === socket) fallback(true)
+      })
       // The socket is already open when `attach` runs, and a real WebSocket
       // does not re-fire `open`, so the greeting has to be sent from here.
       this.ws?.send(JSON.stringify({ t: 'hi', epk: base64url(pair.publicKey), n: base64url(this.nonce), [BINARY_FRAMES_FIELD]: 1 }))
@@ -234,8 +344,23 @@ export class EncryptedTunnel implements Transport {
    * weaker on either path. Whatever a direct peer claims about itself is worth
    * nothing until the pairing confirmation matches.
    */
-  private attach(socket: SocketLike, epoch: number, pair: Awaited<ReturnType<typeof createKeyPair>>, route: 'direct' | 'relay') {
+  private attach(
+    socket: SocketLike,
+    epoch: number,
+    pair: Awaited<ReturnType<typeof createKeyPair>>,
+    route: 'direct' | 'relay',
+    onDirectRejected?: () => void,
+  ) {
     const greeting = JSON.stringify({ t: 'hi', epk: base64url(pair.publicKey), n: base64url(this.nonce), [BINARY_FRAMES_FIELD]: 1 })
+    let directHandshakeTimer: ReturnType<typeof setTimeout> | undefined
+    const rejectDirect = () => {
+      if (directHandshakeTimer) clearTimeout(directHandshakeTimer)
+      directHandshakeTimer = undefined
+      if (route === 'direct' && onDirectRejected && this.ws === socket) onDirectRejected()
+    }
+    if (route === 'direct' && onDirectRejected) {
+      directHandshakeTimer = setTimeout(rejectDirect, DIRECT_HANDSHAKE_MS)
+    }
     this.route = route
     socket.binaryType = 'arraybuffer'
     this.ws = socket
@@ -257,13 +382,18 @@ export class EncryptedTunnel implements Transport {
           if (peer.length !== 65 || nonce.length !== 16) throw new Error('握手参数长度无效')
           const keys = await deriveSessionKeys({ connectCode: this.host.connectCode, myPrivateKey: pair.privateKey, peerPublic: peer, initiatorPublic: pair.publicKey, responderPublic: peer, initiatorNonce: this.nonce, responderNonce: nonce })
           if (epoch !== this.epoch) return
-          if (!constantTimeEqual(fromBase64url(hello.cr), keys.confirmResponder)) throw new TunnelError('auth', t('配对验证失败，请重新导入配对链接'))
+          if (!constantTimeEqual(fromBase64url(hello.cr), keys.confirmResponder)) {
+            if (route === 'direct' && onDirectRejected) { rejectDirect(); return }
+            throw new TunnelError('auth', t('配对验证失败，请重新导入配对链接'))
+          }
+          if (directHandshakeTimer) clearTimeout(directHandshakeTimer)
           // The desktop echoes `bin: 1` only when it supports the binary form;
           // without it we keep sending JSON, which every peer understands.
           this.binary = hello[BINARY_FRAMES_FIELD] === 1
           socket.send(JSON.stringify({ t: 'ok', ci: base64url(keys.confirmInitiator), ...(this.binary ? { [BINARY_FRAMES_FIELD]: 1 } : {}) }))
           this.keys = keys
           this.ready = true
+          this.inboundAt = Date.now()
           clearTimeout(this.handshakeTimer)
           this.connectResolve?.()
           this.connectResolve = undefined; this.connectReject = undefined
@@ -275,17 +405,30 @@ export class EncryptedTunnel implements Transport {
           if (typeof data === 'string') throw new Error(t('收到未加密的数据帧'))
           const bytes = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : null
           if (!bytes || bytes.length > 32 * 1024 * 1024) throw new Error('数据帧无效或过大')
+          this.inboundAt = Date.now()
           const frame = decodeInnerFrame(await openBytes(this.keys!.s2c, bytes, this.recvCounter))
           this.recvCounter++
           if (epoch === this.epoch) this.handle(frame as Frame)
         }
-      }).catch((error) => { if (epoch === this.epoch) this.fail(error instanceof Error ? error : new Error(t('加密数据错误'))) })
+      }).catch((error) => {
+        if (epoch !== this.epoch) return
+        // The LAN scan intentionally finds every Alma-compatible responder,
+        // not just this pairing. A neighbour's Alma can answer `hi` with a
+        // valid key but a confirmation from its own pairing code. Malformed
+        // replies and invalid points are likewise just "not our desktop" on
+        // this untrusted candidate. Fall back rather than letting any
+        // same-subnet service break the relay path. Relay auth failures remain
+        // fatal: only the direct candidate gets this treatment.
+        if (route === 'direct' && onDirectRejected && !this.ready) { rejectDirect(); return }
+        this.fail(error instanceof Error ? error : new Error(t('加密数据错误')))
+      })
     }
     socket.onerror = () => { if (epoch === this.epoch) this.fail(new TunnelError('network', t('中继连接失败'))) }
     socket.onclose = () => { if (epoch === this.epoch) this.fail(new Error(t('连接已断开'))) }
   }
   private send(frame: Frame): Promise<void> {
     const epoch = this.epoch
+    this.queued++
     const next = this.outgoing.then(async () => {
       if (!this.ready || !this.keys || !this.ws || epoch !== this.epoch) throw new Error(t('连接已断开'))
       // A socket that died without firing `close` — the page was frozen when
@@ -300,7 +443,7 @@ export class EncryptedTunnel implements Transport {
       if (epoch !== this.epoch || !this.ready) throw new Error(t('连接已断开'))
       this.ws.send(wire)
     })
-    this.outgoing = next.catch(() => undefined)
+    this.outgoing = next.catch(() => undefined).finally(() => { this.queued = Math.max(0, this.queued - 1) })
     return next
   }
   /**
@@ -320,7 +463,10 @@ export class EncryptedTunnel implements Transport {
         reject(pending.mutation && pending.sent ? new OperationUncertainError() : new Error(t('桌面接口超时')))
         void this.send({ t: 'hcancel', id }).catch(() => undefined)
       }, init?.timeoutMs ?? this.timeoutMs)
-      const pending: Pending = { mutation, sent: false, status: 0, chunks: [], timer, resolve: resolve as (value: unknown) => void, reject }
+      const pending: Pending = {
+        mutation, sent: false, status: 0, chunks: [], headers: {}, responseType: init?.responseType ?? 'json',
+        timer, resolve: resolve as (value: unknown) => void, reject,
+      }
       this.pending.set(id, pending)
       // Mark conservatively before send: a transport exception cannot prove non-delivery.
       pending.sent = true
@@ -350,7 +496,14 @@ export class EncryptedTunnel implements Transport {
     const id = String(frame.id || '')
     const pending = this.pending.get(id)
     if (pending) {
-      if (frame.t === 'hres') pending.status = Number(frame.status)
+      if (frame.t === 'hres') {
+        pending.status = Number(frame.status)
+        // Header names are not case-normalised on the wire; the body route's
+        // content type is the one field that matters here.
+        for (const [name, value] of Object.entries((frame.headers ?? {}) as Record<string, unknown>)) {
+          if (typeof value === 'string') pending.headers[name.toLowerCase()] = value
+        }
+      }
       if (frame.t === 'hchunk') {
         const chunk = typeof frame.b === 'string' ? fromBase64url(frame.b) : frame.b
         if (!(chunk instanceof Uint8Array)) { this.fail(new Error(t('接口响应格式无效'))); return }
@@ -377,6 +530,12 @@ export class EncryptedTunnel implements Transport {
           pending.reject(new RejectedError(pending.status, detail || `桌面接口返回 HTTP ${pending.status}`))
           return
         }
+        // A binary response is the caller's payload as-is; converting it to
+        // text first would corrupt every byte that is not valid UTF-8.
+        if (pending.responseType === 'bytes') {
+          pending.resolve({ bytes, contentType: pending.headers['content-type'] ?? '' } satisfies BinaryResponse)
+          return
+        }
         try { pending.resolve(bytes.length ? JSON.parse(new TextDecoder().decode(bytes)) : null) } catch { pending.reject(pending.mutation ? new OperationUncertainError() : new Error(t('桌面接口返回格式无效'))) }
       }
       return
@@ -390,6 +549,9 @@ export class EncryptedTunnel implements Transport {
   }
   private fail(error: Error) {
     ++this.epoch
+    // The generation is over; a later probe would only report on the socket
+    // that no longer exists. `connect()` starts a fresh one for the next dial.
+    this.probing = 0
     clearTimeout(this.handshakeTimer)
     this.ready = false
     const socket = this.ws
@@ -402,5 +564,5 @@ export class EncryptedTunnel implements Transport {
     for (const id of [...this.subscriptions.keys()]) this.endSubscription(id)
     this.status('offline', error.message, error instanceof TunnelError ? error.code : undefined)
   }
-  close() { this.stopped = true; this.fail(new Error('节点连接已关闭')) }
+  close() { this.stopped = true; this.stopHeartbeat(); this.fail(new Error('节点连接已关闭')) }
 }

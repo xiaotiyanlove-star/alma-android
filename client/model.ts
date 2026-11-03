@@ -20,11 +20,43 @@ export interface Host {
    */
   lan?: { host: string; port: number }
 }
-export interface Pane { pane_id: string; workspace_id: string; tab_id: string; label?: string; tab_label?: string; agent?: string; agent_status?: string; terminal_title_stripped?: string; cwd?: string; agent_session?: { value?: string; agent?: string } }
+export type PaneStatus = 'blocked' | 'working' | 'done' | 'idle' | 'unknown'
+export interface Pane {
+  pane_id: string
+  workspace_id: string
+  tab_id: string
+  label?: string
+  tab_label?: string
+  agent?: string
+  agent_status?: string
+  terminal_title_stripped?: string
+  cwd?: string
+  /** Directory the pane's foreground process actually runs in, when reported. */
+  foreground_cwd?: string
+  agent_session?: { value?: string; agent?: string }
+}
 export interface Workspace { workspace_id: string; label?: string; name?: string; cwd?: string }
 export interface Tab { tab_id: string; workspace_id: string; label?: string }
 export interface Snapshot { panes: Pane[]; workspaces: Workspace[]; tabs?: Tab[] }
-export interface ChatItem { id: string; kind: string; text?: string; summary?: string; from?: string; tool?: { id?: string; name?: string; input?: unknown; output?: unknown; done?: boolean; background?: boolean }; time?: string }
+/**
+ * An image the transcript points at.
+ *
+ * The desktop stores images under `/api/herdr/image/<name>` and reports that
+ * path; it is fetched through the tunnel rather than by a plain URL load, so a
+ * message still cannot make the WebView reach the network on its own.
+ */
+export interface ImageRef { url: string; mediaType?: string }
+export interface ChatItem {
+  id: string
+  kind: string
+  text?: string
+  summary?: string
+  from?: string
+  tool?: { id?: string; name?: string; input?: unknown; output?: unknown; done?: boolean; background?: boolean; images?: ImageRef[] }
+  /** Images the user attached, reported by the desktop. */
+  images?: ImageRef[]
+  time?: string
+}
 /**
  * Why a pane has no transcript to read.
  *
@@ -37,7 +69,23 @@ export interface ChatItem { id: string; kind: string; text?: string; summary?: s
  * agent whose transcript this desktop cannot read at all.
  */
 export type TranscriptGap = 'terminal' | 'waiting' | 'integration' | 'transcript' | 'unsupported'
-export interface SessionState { hostId: string; paneId: string; sessionId?: string; items: ChatItem[]; start: number; end: number; queued: { id: string; text: string }[]; loading: boolean; loadingOlder: boolean; screen: string; error?: string; unsupported: boolean; gap?: TranscriptGap; sentMessage: boolean; sending: boolean; uncertain?: string }
+/**
+ * What the agent is running with, as the desktop reads it from the transcript.
+ *
+ * Both fields are null when the desktop cannot tell — an agent whose transcript
+ * does not record them, or a desktop too old to send them at all.
+ */
+export interface AgentSettings { model: string | null; effort: string | null }
+export interface SessionState { hostId: string; paneId: string; sessionId?: string; items: ChatItem[]; start: number; end: number; queued: { id: string; text: string }[]; loading: boolean; loadingOlder: boolean; screen: string; error?: string; unsupported: boolean; gap?: TranscriptGap; sentMessage: boolean; sending: boolean; uncertain?: string; settings?: AgentSettings }
+/**
+ * Tabs and workspaces the desktop is not alerting for.
+ *
+ * The list lives on the desktop, so silencing a session here also silences it
+ * there and on any other device — which is the point: muting is a statement
+ * about the work, not about this phone.
+ */
+export interface Mutes { workspaces: string[]; tabs: string[] }
+
 export interface HostState {
   host: Host
   /** `disabled` is the user's switch, not a connection result. */
@@ -45,6 +93,10 @@ export interface HostState {
   herdrOnline: boolean
   snapshot?: Snapshot
   error?: string
+  /** Why Herdr itself is unavailable, when the desktop says. */
+  offlineReason?: string
+  /** Empty until the desktop has answered; absent means "unknown, assume none". */
+  mutes?: Mutes
   /** Automatic retries still available; 0 means it stopped. */
   retriesLeft?: number
   /**
