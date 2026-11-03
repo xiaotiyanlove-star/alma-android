@@ -1,6 +1,16 @@
 import { base64url, constantTimeEqual, createKeyPair, deriveSessionKeys, fromBase64url, openBytes, routingId, sealBytes } from './crypto'
 import { BINARY_FRAMES_FIELD, decodeInnerFrame, encodeInnerFrame } from './frames'
 import type { Host } from './model'
+import { lanUrl, usableLanAddress, type LanAddress } from './lan'
+
+/**
+ * How long a direct attempt gets before the relay takes over.
+ *
+ * A reachable LAN answers in single-digit milliseconds, so this only bounds
+ * the case where the phone is not on that network at all. Kept short: it is
+ * paid on every connect while away from home.
+ */
+const DIRECT_DIAL_MS = 2_000
 import { t } from './i18n'
 
 type Frame = Record<string, any>
@@ -117,6 +127,49 @@ export class EncryptedTunnel implements Transport {
     void this.dial(epoch).catch((error) => { if (epoch === this.epoch) this.fail(error instanceof Error ? error : new Error('连接失败')) })
     return promise
   }
+  /**
+   * The path the current generation is using, once it is known.
+   *
+   * `undefined` while dialling, then whichever opened. Reported so the UI can
+   * say where a connection actually goes — the difference in latency is
+   * invisible otherwise, and a failing direct path is otherwise indistinguishable
+   * from a slow relay.
+   */
+  private route?: 'direct' | 'relay'
+
+  /** Where the direct attempt went, when this host has one configured. */
+  private direct?: LanAddress
+
+  /**
+   * Decides whether a direct address may be dialled at all.
+   *
+   * Injected rather than imported so the transport stays free of platform
+   * calls, and so a test can state the answer outright. The rule it implements
+   * is the one that makes plain text acceptable: the address must sit on a
+   * subnet this phone is actually attached to.
+   */
+  private allowDirect: (address: LanAddress) => Promise<boolean> = async () => false
+
+  /**
+   * Uses a local address before the relay.
+   *
+   * Only ever a preference: the relay stays the fallback for every failure,
+   * because the phone spends most of its life away from the desktop's network
+   * and a connection that only works at home would be worse than none.
+   */
+  useDirect(address: LanAddress | undefined, allow?: (address: LanAddress) => Promise<boolean>) {
+    this.direct = usableLanAddress(address) ? address : undefined
+    if (allow) this.allowDirect = allow
+  }
+
+  currentRoute(): 'direct' | 'relay' | undefined { return this.route }
+
+  /** Called once per connection with the path that actually opened. */
+  onRoute?: (route: 'direct' | 'relay') => void
+
+  /** Called when a direct attempt was abandoned in favour of the relay. */
+  onDirectFailed?: () => void
+
   private async dial(epoch: number) {
     const [id, pair] = await Promise.all([routingId(this.host.connectCode), createKeyPair()])
     if (epoch !== this.epoch || this.stopped) return
@@ -129,12 +182,66 @@ export class EncryptedTunnel implements Transport {
     this.inboundAt = 0
     this.incoming = Promise.resolve()
     this.outgoing = Promise.resolve()
-    const socket = this.socketFactory(`${this.host.relayUrl.replace(/^https:/, 'wss:')}/c/${id}/__alma_e2e__`)
+    this.route = undefined
+    const relayUrl = `${this.host.relayUrl.replace(/^https:/, 'wss:')}/c/${id}/__alma_e2e__`
+    // A direct attempt gets a short head start, not a long one. On a reachable
+    // LAN it opens in single-digit milliseconds; the wait only ever costs
+    // something on a phone that is nowhere near the desktop, and that cost is
+    // paid once per connect.
+    const direct = this.direct
+    if (!usableLanAddress(direct)) { this.attach(this.socketFactory(relayUrl), epoch, pair, 'relay'); return }
+    // Plain text is only ever allowed once the platform has confirmed the
+    // desktop shares a subnet with this phone. A configured address that fails
+    // that check is not "tried and falls back" — it is never dialled.
+    const allowed = await this.allowDirect(direct).catch(() => false)
+    if (!allowed || epoch !== this.epoch || this.stopped) {
+      this.attach(this.socketFactory(relayUrl), epoch, pair, 'relay')
+      return
+    }
+    const socket = this.socketFactory(lanUrl(direct, '/__alma_e2e__'))
+    socket.binaryType = 'arraybuffer'
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const fallback = () => {
+      if (settled || epoch !== this.epoch) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      // Silence the abandoned attempt: its events must never reach `fail`.
+      socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null
+      try { socket.close() } catch { /* already gone */ }
+      this.onDirectFailed?.()
+      this.attach(this.socketFactory(relayUrl), epoch, pair, 'relay')
+    }
+    timer = setTimeout(fallback, DIRECT_DIAL_MS)
+    socket.onopen = () => {
+      if (settled || epoch !== this.epoch) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      this.attach(socket, epoch, pair, 'direct')
+      // The socket is already open when `attach` runs, and a real WebSocket
+      // does not re-fire `open`, so the greeting has to be sent from here.
+      this.ws?.send(JSON.stringify({ t: 'hi', epk: base64url(pair.publicKey), n: base64url(this.nonce), [BINARY_FRAMES_FIELD]: 1 }))
+    }
+    socket.onerror = fallback
+    socket.onclose = fallback
+  }
+
+  /**
+   * Wires one socket up as the current connection generation.
+   *
+   * Separated from `dial` because a direct attempt and its relay fallback both
+   * need identical handling — the security checks in particular must not be
+   * weaker on either path. Whatever a direct peer claims about itself is worth
+   * nothing until the pairing confirmation matches.
+   */
+  private attach(socket: SocketLike, epoch: number, pair: Awaited<ReturnType<typeof createKeyPair>>, route: 'direct' | 'relay') {
+    const greeting = JSON.stringify({ t: 'hi', epk: base64url(pair.publicKey), n: base64url(this.nonce), [BINARY_FRAMES_FIELD]: 1 })
+    this.route = route
     socket.binaryType = 'arraybuffer'
     this.ws = socket
     socket.onopen = () => {
       if (epoch !== this.epoch) return
-      socket.send(JSON.stringify({ t: 'hi', epk: base64url(pair.publicKey), n: base64url(this.nonce), [BINARY_FRAMES_FIELD]: 1 }))
+      socket.send(greeting)
     }
     socket.onmessage = ({ data }) => {
       this.incoming = this.incoming.then(async () => {
@@ -160,6 +267,9 @@ export class EncryptedTunnel implements Transport {
           clearTimeout(this.handshakeTimer)
           this.connectResolve?.()
           this.connectResolve = undefined; this.connectReject = undefined
+          // Only a completed handshake counts as reaching the desktop: opening
+          // a TCP socket proves nothing about what answered on it.
+          this.onRoute?.(route)
           this.status('online')
         } else {
           if (typeof data === 'string') throw new Error(t('收到未加密的数据帧'))

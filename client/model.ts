@@ -11,6 +11,14 @@ export interface Host {
    * Absent means enabled, so hosts saved before this field existed still work.
    */
   enabled?: boolean
+  /**
+   * The desktop's address on the local network, when the user has set one.
+   *
+   * Only ever a preference: the relay is still dialled whenever this is
+   * unreachable. Refused unless it is a private address — see `lan.ts` for
+   * why plain text is tolerated there and nowhere else.
+   */
+  lan?: { host: string; port: number }
 }
 export interface Pane { pane_id: string; workspace_id: string; tab_id: string; label?: string; tab_label?: string; agent?: string; agent_status?: string; terminal_title_stripped?: string; cwd?: string; agent_session?: { value?: string; agent?: string } }
 export interface Workspace { workspace_id: string; label?: string; name?: string; cwd?: string }
@@ -39,6 +47,20 @@ export interface HostState {
   error?: string
   /** Automatic retries still available; 0 means it stopped. */
   retriesLeft?: number
+  /**
+   * Which path the current connection uses: the local network or the relay.
+   *
+   * Worth showing: the two differ by two orders of magnitude in latency, and
+   * without it "it feels slow" is impossible to act on.
+   */
+  route?: 'direct' | 'relay'
+  /**
+   * A local address found by scanning, as opposed to one the user typed.
+   *
+   * Kept separate from `Host.lan` because it is not a setting: it is a guess
+   * that has been verified once, and it is safe to forget.
+   */
+  discoveredLan?: { host: string; port: number }
   /** Set when the retry ladder deliberately stopped. */
   stopReason?: 'exhausted' | 'auth' | 'unknown-host'
 }

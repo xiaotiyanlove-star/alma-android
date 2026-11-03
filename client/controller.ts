@@ -1,6 +1,14 @@
 import type { AppState, ChatItem, Host, Pane, SessionState, Snapshot, TranscriptGap } from './model'
 import { parsePairing } from './pairing'
 import { t, tWith } from './i18n'
+import { isOnLocalNetwork, parseLanAddress, usableLanAddress } from './lan'
+import { deviceSubnets } from './localnet'
+import { directAllowed, recordDirect } from './breaker'
+import { discoverDesktop } from './discovery'
+import { lanDiscoveryEnabled } from './lanprefs'
+
+/** How often a desktop with no known local address is looked for. */
+const DISCOVERY_INTERVAL_MS = 10 * 60_000
 import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, sessionDelay, stopMessage, type RetryContext } from './backoff'
 import { LIVENESS_TICK_MS, PROBE_TIMEOUT_MS, shouldProbe } from './liveness'
 import { metrics } from './metrics'
@@ -154,7 +162,85 @@ export class Controller {
       this.patchHost(host.id, { status, ...(status === 'online' ? {} : { herdrOnline: false }), error })
       if (status === 'offline') this.scheduleHost(host.id, runtime, code)
     })
+    // Score the direct path so a dead address stops costing its two-second
+    // wait, and surface which path a connection actually took.
+    const scored = runtime.transport as Transport & {
+      onRoute?: (route: 'direct' | 'relay') => void
+      onDirectFailed?: () => void
+    }
+    scored.onRoute = (route) => {
+      if (this.runtimes.get(host.id) !== runtime) return
+      if (route === 'direct') recordDirect(host.id, true)
+      this.patchHost(host.id, { route })
+    }
+    scored.onDirectFailed = () => {
+      if (this.runtimes.get(host.id) !== runtime) return
+      recordDirect(host.id, false)
+    }
+    // A local address is a preference, not a route: the transport still falls
+    // back to the relay whenever it does not answer.
+    // A discovered address is used exactly like a configured one, but it is
+    // never written into the stored host: it is an observation, not a setting.
+    this.applyLan(runtime, host.id, host.lan ?? this.discoveredLanFor(host.id))
     return runtime
+  }
+
+  /**
+   * Hands a configured local address to a transport, when it supports one.
+   *
+   * The gate travels with it: plain text is only dialled once the platform
+   * confirms the address shares a subnet with this phone. A transport that
+   * cannot ask the platform keeps its own default, which is to refuse.
+   */
+  /** The address a scan found earlier, if it is still remembered. */
+  private discoveredLanFor(id: string): Host['lan'] {
+    return this.state.hosts.find((item) => item.host.id === id)?.discoveredLan
+  }
+
+  private applyLan(runtime: Runtime, hostId: string, lan: Host['lan']) {
+    const transport = runtime.transport as Transport & {
+      useDirect?(address: Host['lan'], allow?: (address: NonNullable<Host['lan']>) => Promise<boolean>): void
+    }
+    transport.useDirect?.(lan, async (address) => {
+      if (!usableLanAddress(address)) return false
+      // A path that keeps failing is not offered the two-second wait again
+      // until the cooldown lapses or the network changes.
+      if (!directAllowed(hostId)) return false
+      const subnets = await deviceSubnets()
+      return isOnLocalNetwork(address.host, subnets)
+    })
+  }
+
+  /**
+   * Sets or clears a desktop's local address.
+   *
+   * Stored with the pairing so it survives a restart; applied to the live
+   * transport straight away, so the next reconnect uses it without waiting
+   * for the app to be relaunched.
+   */
+  setLanAddress = async (id: string, input: string) => {
+    if (!this.initializedStorage) throw new Error(t('安全存储尚未就绪'))
+    const parsed = parseLanAddress(input)
+    if (parsed.error === 'not-lan') throw new Error(t('只支持局域网地址，例如 192.168.1.10'))
+    if (parsed.error === 'invalid') throw new Error(t('地址格式无效'))
+    const lan = parsed.address
+    await this.serialize(async () => {
+      const hosts = this.state.hosts.map((item) => item.host.id === id ? { ...item.host, ...(lan ? { lan } : { lan: undefined }) } : item.host)
+      if (!hosts.some((host) => host.id === id)) throw new Error(t('节点不存在'))
+      await this.storage.save(hosts)
+      this.publish({
+        hosts: this.state.hosts.map((item) => item.host.id === id ? { ...item, host: { ...item.host, ...(lan ? { lan } : { lan: undefined }) } } : item),
+      })
+      const runtime = this.runtimes.get(id)
+      if (runtime) this.applyLan(runtime, id, lan)
+    })
+    return lan
+  }
+
+  /** Where a desktop's current connection actually goes, for the status line. */
+  routeOf = (id: string): 'direct' | 'relay' | undefined => {
+    const transport = this.runtimes.get(id)?.transport as Transport & { currentRoute?(): 'direct' | 'relay' | undefined }
+    return transport?.currentRoute?.()
   }
 
   private attach(host: Host) {
@@ -210,6 +296,51 @@ export class Controller {
     if (foreground) this.retryStopped()
   }
 
+  /**
+   * Looks for this desktop on the local network, in the background.
+   *
+   * Only when it is worth the radio time: the app is on screen, the relay is
+   * already working, there is no cached answer, and the last look was a while
+   * ago. A phone that is out and about fails the subnet check immediately, so
+   * nothing is scanned on a carrier network.
+   */
+  private discovering = new Set<string>()
+  private lastDiscover = new Map<string, number>()
+  private maybeDiscover(id: string) {
+    if (!lanDiscoveryEnabled()) return
+    if (!this.state.foreground) return
+    if (this.discovering.has(id)) return
+    const host = this.state.hosts.find((item) => item.host.id === id)?.host
+    if (!host || !host.enabled) return
+    // A known-good address needs no rediscovery; the breaker handles one that
+    // stops working.
+    if (host.lan && directAllowed(id)) return
+    const at = this.lastDiscover.get(id) ?? 0
+    const now = Date.now()
+    // Rediscovering is expensive; ten minutes between attempts is plenty for
+    // an address that only changes when the desktop moves networks.
+    if (now - at < DISCOVERY_INTERVAL_MS) return
+    this.lastDiscover.set(id, now)
+    this.discovering.add(id)
+    void (async () => {
+      try {
+        const subnets = await deviceSubnets()
+        const found = await discoverDesktop({ connectCode: host.connectCode, subnets })
+        if (found) await this.adoptLan(id, found)
+      } catch { /* discovery is best effort; the relay still works */ }
+      finally { this.discovering.delete(id) }
+    })()
+  }
+
+  /** Remembers a discovered address and lets the next connection use it. */
+  private async adoptLan(id: string, address: NonNullable<Host['lan']>) {
+    const runtime = this.runtimes.get(id)
+    if (runtime) this.applyLan(runtime, id, address)
+    // Cached, but not persisted as a user setting: it was found, not chosen,
+    // and a stale one only costs a fallback thanks to the breaker.
+    this.patchHost(id, { discoveredLan: address })
+  }
+
   /** Clears any pending retry so a manual reconnect happens immediately. */
   private cancelRetry(runtime: Runtime) {
     if (!runtime.retry) return
@@ -237,6 +368,9 @@ export class Controller {
       runtime.stopped = undefined
       this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined })
       if (this.state.session?.hostId === id) void this.refreshSession()
+      // The relay is up and working; that is the moment to look for the same
+      // desktop on the local network, so the next connection can skip it.
+      this.maybeDiscover(id)
     } catch (error) {
       if (this.runtimes.get(id) !== runtime || epoch !== runtime.epoch) return
       this.patchHost(id, { status: 'error', herdrOnline: false, error: message(error) })

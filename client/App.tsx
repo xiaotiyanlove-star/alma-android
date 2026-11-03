@@ -14,6 +14,7 @@ import { Clipboard } from '@capacitor/clipboard';
 import { ScanPairing } from './ScanPairs';
 import { AlertTracker, localNotifier } from './notify';
 import { applyKeepAlive, keepAliveEnabled, setKeepAliveEnabled } from './keepalive';
+import { lanDiscoveryEnabled, setLanDiscoveryEnabled } from './lanprefs';
 import { parsePrompt } from './prompt';
 import { buildMessage, checkFile, MAX_ATTACHMENTS } from './attachments';
 import { Markdown } from './Markdown';
@@ -97,13 +98,43 @@ function canUseHost(host?: HostState): boolean {
  * Connection state. In the session header the word is dropped while online:
  * the dot carries it, and the room is worth more to the chips beside it.
  */
+/** Which way a connection currently reaches the desktop. */
+function routeLabel(host: HostState): string | undefined {
+  if (!canUseHost(host) || !host.route) return undefined;
+  return host.route === 'direct' ? t('局域网直连') : t('经中继');
+}
+
 function Status({ host, compact = false }: { host: HostState; compact?: boolean }) {
   const ready = canUseHost(host);
-  const label = hostStatus(host);
+  const route = routeLabel(host);
+  const label = route ? `${hostStatus(host)} · ${route}` : hostStatus(host);
   return <span className={`connection-status ${ready ? 'is-online' : host.status === 'error' ? 'is-error' : host.status === 'disabled' ? 'is-disabled' : ''}${compact && ready ? ' is-compact' : ''}`} title={label}>
     <span className={`status-dot ${host.status === 'connecting' ? 'is-pending' : ''}`} aria-hidden="true" />
     {compact && ready ? <span className="sr-only">{label}</span> : label}
   </span>;
+}
+
+/** A one-off confirmation that a connection took the local path. */
+function useDirectToast(hosts: HostState[]) {
+  const [shown, setShown] = useState<string>();
+  const seen = useRef(new Set<string>());
+  useEffect(() => {
+    if (!shown) return;
+    const timer = setTimeout(() => setShown(undefined), 2600);
+    return () => clearTimeout(timer);
+  }, [shown]);
+  useEffect(() => {
+    for (const host of hosts) {
+      if (host.route !== 'direct') continue;
+      // Once per desktop per app run: the point is to explain the first
+      // switch, not to keep announcing something that is now normal.
+      if (seen.current.has(host.host.id)) continue;
+      seen.current.add(host.host.id);
+      setShown(host.host.name);
+      break;
+    }
+  }, [hosts]);
+  return shown;
 }
 
 /** The agent's mark on a tinted square; a plain terminal gets a terminal glyph. */
@@ -469,6 +500,14 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
           <span className="switch"><input type="checkbox" defaultChecked={keepAliveEnabled()} onChange={event => { setKeepAliveEnabled(event.target.checked); void applyKeepAlive(event.target.checked) }} aria-label={t('后台保持连接')} /><span className="switch-track" aria-hidden="true" /></span>
         </label>
         <button type="button" className="secondary-button" onClick={() => void localNotifier.notify({ hostId: 'test', hostName: '本机', paneId: 'test', title: '测试通知 · Herdr', body: '如果你看到这条，通知功能正常。', kind: 'done' }).catch(() => undefined)}>{t('发送测试通知')}</button>
+      </section>
+
+      <section className="settings-group">
+        <h2 className="group-title">{t('网络')}</h2>
+        <label className="toggle-row">
+          <span><strong>{t('查找局域网直连')}</strong><small>{t('在同一网络时自动改用直连，明显更快。会扫描当前网段来定位已配对的桌面；在公司等受管网络可以关闭。')}</small></span>
+          <span className="switch"><input type="checkbox" defaultChecked={lanDiscoveryEnabled()} onChange={event => setLanDiscoveryEnabled(event.target.checked)} aria-label={t('查找局域网直连')} /><span className="switch-track" aria-hidden="true" /></span>
+        </label>
       </section>
 
       <section className="settings-group">
@@ -1216,6 +1255,7 @@ export function App() {
     }
   }, []);
   useAlerts(state.hosts);
+  const directToast = useDirectToast(state.hosts);
 
   // The window behind the WebView is native. It has to know the theme the page
   // actually resolved, or the status-bar and navigation-bar strips stay the
@@ -1264,6 +1304,7 @@ export function App() {
           />;
 
   return <main className="app-shell" key={localeRevision}>
+    {directToast && <div className="direct-toast" role="status">{tWith('已切换到局域网直连 · {name}', { name: directToast })}</div>}
     {(state.storageWarning || state.error) && <div className="app-notices">{state.storageWarning && <Notice error>{state.storageWarning}</Notice>}{state.error && <Notice error>{state.error}</Notice>}</div>}
     {screen}
   </main>;
