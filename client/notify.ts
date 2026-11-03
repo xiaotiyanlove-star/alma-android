@@ -43,13 +43,19 @@ export const ACTION_BLOCKED = 'herdr.blocked'
 export const ACTION_DONE = 'herdr.done'
 
 /**
- * The notification title's prefix.
+ * The notification title's prefix, in the language chosen when the alert is
+ * built.
  *
- * Resolved through `t` at build time rather than stored as a literal: Android
- * keeps the notification after it is posted, so the title has to be written in
- * the language the user is reading now, and the alert is built at that moment.
+ * Resolved per alert rather than once at import: `t()` follows the saved
+ * preference, and a table built at import time would keep the language the
+ * module happened to load under — so switching language at runtime would leave
+ * new notifications in the old one.
  */
-const KIND_LABEL: Record<AlertKind, string> = { blocked: t('需要你处理'), done: t('已完成'), offline: t('节点离线') }
+function kindLabel(kind: AlertKind): string {
+  if (kind === 'blocked') return t('需要你处理')
+  if (kind === 'done') return t('已完成')
+  return t('节点离线')
+}
 
 /**
  * Pure state diff. Kept free of Capacitor so it can be unit-tested in node.
@@ -108,7 +114,7 @@ function buildAlert(host: HostState, pane: Pane, kind: AlertKind): Alert {
     paneId: pane.pane_id,
     tabId: pane.tab_id,
     workspaceId: pane.workspace_id,
-    title: `${KIND_LABEL[kind]} · ${name}`,
+    title: `${kindLabel(kind)} · ${name}`,
     body: host.host.name,
     kind,
   }
