@@ -322,6 +322,9 @@ pre { max-width: 100%; }
 .confirm-dialog h2 { font-size: 17px; margin-bottom: 12px; }
 .confirm-dialog p { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .confirm-dialog .confirm-host { color: var(--text); font-weight: 600; margin-bottom: 8px; }
+/* The pairing link is a credential: monospace, selectable, never ambiguous
+   about where it starts and ends. */
+.share-link { width: 100%; min-height: 92px; margin: 4px 0 12px; padding: 10px 11px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-3); color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; resize: none; }
 .dialog-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; margin-top: 24px; }
 
 .conversation-header { padding-left: 10px; gap: 8px; }
@@ -354,6 +357,11 @@ pre { max-width: 100%; }
 .older-messages .text-button { font-size: 12px; }
 .message { min-width: 0; padding: 20px 0; border-bottom: 1px solid var(--line); }
 .message-user { background: var(--surface-3); padding: 16px 14px; margin: 16px 0; border-left: 2px solid var(--line-strong); border-bottom: 0; }
+.message-meta-right { display: inline-flex; align-items: center; gap: 4px; }
+/* The per-message copy sits quietly in the metadata row; it is a convenience,
+   not a control that should compete with the message. */
+.md-code-copy.is-compact { min-height: 24px; padding: 0 5px; color: var(--muted); }
+.md-code-copy.is-compact:hover { color: var(--text-2); background: var(--surface-3); }
 .message-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 11px; color: var(--muted); margin-bottom: 8px; }
 .message-meta > span:first-child { font-weight: 600; }
 .message-meta time { max-width: 70%; overflow-wrap: anywhere; text-align: right; }

@@ -1,0 +1,50 @@
+// The "connect on another device" flow: open a saved desktop's link, copy it,
+// and prove the copied text re-pairs to the same desktop.
+import { chromium } from '@playwright/test'
+import { addDesktop } from './helpers.ts'
+import { base64url } from '../client/crypto.ts'
+import { parsePairing } from '../client/pairing.ts'
+
+const code = base64url(new Uint8Array(32).fill(81))
+const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
+const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN', permissions: ['clipboard-read', 'clipboard-write'] })
+await context.addInitScript({ content: `try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch (e) {}` })
+const page = await context.newPage()
+const errors: string[] = []
+page.on('pageerror', (error: Error) => errors.push(error.message))
+
+try {
+  await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
+  await addDesktop(page, '家里的 Mac', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
+  await page.getByRole('button', { name: '节点设置' }).click().catch(() => undefined)
+  await page.waitForTimeout(400)
+
+  await page.getByRole('button', { name: '连接链接 家里的 Mac' }).click()
+  await page.getByRole('dialog', { name: '在另一台设备上连接' }).waitFor()
+  const shown = await page.getByRole('textbox', { name: '连接链接' }).inputValue()
+  await page.screenshot({ path: 'test-artifacts/share-link.png' })
+
+  await page.getByRole('button', { name: '复制链接' }).click()
+  await page.waitForTimeout(300)
+  const copied = await page.evaluate(() => navigator.clipboard.readText()).catch(() => '')
+  const copiedButton = await page.getByRole('button', { name: '已复制' }).isVisible().catch(() => false)
+
+  await page.getByRole('button', { name: '关闭' }).click()
+  await page.waitForTimeout(300)
+  const closed = !(await page.getByRole('dialog', { name: '在另一台设备上连接' }).isVisible().catch(() => false))
+
+  // The whole point: what was copied must pair to the same desktop.
+  const reparsed = await parsePairing('公司电脑', copied || shown).catch(() => null)
+  const original = await parsePairing('家里', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
+  console.log(JSON.stringify({
+    shownLooksLikeLink: /^alma:\/\/connect\?/.test(shown),
+    showsRelay: shown.includes('relay.invalid'),
+    copiedMatchesShown: copied === shown,
+    copiedButton,
+    closed,
+    sameDesktop: reparsed?.id === original.id,
+    pageErrors: errors,
+  }))
+} finally {
+  await browser.close()
+}

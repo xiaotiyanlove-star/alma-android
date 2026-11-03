@@ -28,7 +28,7 @@ function textOf(children: ReactNode): string {
  * unavailable in a WebView served from the app scheme, so a plain call would
  * silently fail there.
  */
-export function CopyButton({ text, label }: { text: string; label?: string }) {
+export function CopyButton({ text, label, compact = false, className = '' }: { text: string; label?: string; compact?: boolean; className?: string }) {
   const [copied, setCopied] = useState(false)
 
   async function copy() {
@@ -40,9 +40,9 @@ export function CopyButton({ text, label }: { text: string; label?: string }) {
     } catch { /* Nothing useful to say: the text is still selectable. */ }
   }
 
-  return <button type="button" className="md-code-copy" onClick={() => void copy()} aria-label={copied ? t('已复制') : (label ?? t('复制代码'))}>
+  return <button type="button" className={`md-code-copy${compact ? ' is-compact' : ''}${className ? ` ${className}` : ''}`} onClick={() => void copy()} aria-label={copied ? t('已复制') : (label ?? t('复制代码'))}>
     {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
-    {copied ? t('已复制') : t('复制')}
+    {copied ? t('已复制') : compact ? '' : t('复制')}
   </button>
 }
 

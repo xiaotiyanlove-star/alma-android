@@ -4,9 +4,12 @@ import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown,
   Camera, CircleAlert, CornerDownLeft, Eye, EyeOff, Loader2, MessageSquare, Plus, RefreshCw,
   Send, Server, Settings, Square, Terminal, Trash2, WrapText, X, FileCode, FileText, Pencil, ChevronUp, Paperclip, PlusCircle,
+  QrCode, Copy,
 } from 'lucide-react';
 import { controller } from './controller';
+import { pairingLink } from './pairing';
 import { Capacitor } from '@capacitor/core';
+import { Clipboard } from '@capacitor/clipboard';
 import { ScanPairing } from './ScanPairs';
 import { AlertTracker, localNotifier } from './notify';
 import { applyKeepAlive, keepAliveEnabled, setKeepAliveEnabled } from './keepalive';
@@ -194,8 +197,15 @@ function Message({ item, markdown }: { item: ChatItem; markdown: boolean }) {
   const role = isUser ? t('你') : item.kind === 'system' ? t('系统') : item.kind === 'error' ? t('错误') : item.tool ? t('工具') : t('助手');
   const text = item.text || item.summary;
   const time = formatTime(item.time);
+  // Only replies are worth copying: a tap on your own message, a system line or
+  // an error row would just hand back what is already on screen.
+  const copyable = Boolean(text) && !isUser && item.kind !== 'system' && item.kind !== 'error' && !item.tool;
   return <article className={`message ${isUser ? 'message-user' : ''} ${item.kind === 'error' ? 'message-error' : ''}`}>
-    <div className="message-meta"><span>{role}</span>{time && <time dateTime={item.time}>{time}</time>}</div>
+    <div className="message-meta"><span>{role}</span>
+      <span className="message-meta-right">{time && <time dateTime={item.time}>{time}</time>}
+        {copyable && <CopyButton text={stripAnsi(text!)} label={t('复制回复')} compact className="message-copy" />}
+      </span>
+    </div>
     {text && <RichText text={text} markdown={markdown} />}
     {item.tool && <ToolRow item={item} />}
     {!text && !item.tool && <p className="muted">{t('此条记录没有文本内容')}</p>}
@@ -298,6 +308,10 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
   const [scanning, setScanning] = useState(false);
   const [collapsed, setCollapsed] = useState(true);
   const [renaming, setRenaming] = useState<string>();
+  /** Host whose pairing link is on screen; the value is only built on request. */
+  const [sharing, setSharing] = useState<string>();
+  const [shareLink, setShareLink] = useState('');
+  const [shareCopied, setShareCopied] = useState(false);
   const [renameValue, setRenameValue] = useState('');
   // Long lists stay short by default; a user who expands keeps it expanded.
   const visibleHosts = collapsed && hosts.length > COLLAPSE_AFTER ? hosts.slice(0, COLLAPSE_AFTER) : hosts;
@@ -310,6 +324,7 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
     if (overlay) return
     if (forgetting) setForgetting(undefined)
     if (renaming) setRenaming(undefined)
+    if (sharing) { setSharing(undefined); setShareLink('') }
     if (scanning) setScanning(false)
   }, [overlay]);
   const bump = () => setTick(value => value + 1);
@@ -324,6 +339,15 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
     dialog?.showModal();
     return () => { dialog?.close(); };
   }, [forgetting]);
+
+  async function copyShareLink() {
+    try {
+      if (Capacitor.isNativePlatform()) await Clipboard.write({ string: shareLink })
+      else await navigator.clipboard.writeText(shareLink)
+      setShareCopied(true)
+      setTimeout(() => setShareCopied(false), 1600)
+    } catch { setError(t('未能复制，请长按链接手动选择。')) }
+  }
 
   async function rename(event: FormEvent) {
     event.preventDefault();
@@ -374,6 +398,7 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
               {/* Turning a desktop off releases its tunnel and stops retries:
                   that is the point of the switch, so it lives with the node
                   rather than in a submenu. */}
+              <button className="icon-button" title={tWith('连接链接 {name}', { name: host.host.name })} aria-label={tWith('连接链接 {name}', { name: host.host.name })} onClick={() => { setSharing(host.host.id); setShareLink(pairingLink(host.host)); setShareCopied(false); openOverlay({ kind: 'share' }) }}><QrCode size={17} /></button>
               <button className="icon-button" title={tWith('重命名 {name}', { name: host.host.name })} aria-label={tWith('重命名 {name}', { name: host.host.name })} onClick={() => { setRenaming(host.host.id); setRenameValue(host.host.name); setError(''); openOverlay({ kind: 'rename' }) }}><Pencil size={17} /></button>
               <button className="icon-button" title={tWith('重新连接 {name}', { name: host.host.name })} aria-label={tWith('重新连接 {name}', { name: host.host.name })} disabled={host.status === 'connecting' || host.host.enabled === false} onClick={() => controller.retryHost(host.host.id)}><RefreshCw size={18} className={host.status === 'connecting' ? 'spin' : ''} /></button>
               <button className="icon-button danger-button" title={tWith('忘记 {name}', { name: host.host.name })} aria-label={tWith('忘记 {name}', { name: host.host.name })} onClick={() => { setForgetting(host.host.id); openOverlay({ kind: 'forget' }) }}><Trash2 size={18} /></button>
@@ -480,6 +505,16 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
           <button type="submit" className="primary-button" disabled={saving || !renameValue.trim()}>{saving ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{t('保存')}</button>
         </div>
       </form>
+    </dialog>}
+    {sharing && <dialog className="confirm-dialog share-dialog" open aria-labelledby="share-title">
+      <h2 id="share-title">{t('在另一台设备上连接')}</h2>
+      <p className="confirm-host">{hosts.find(item => item.host.id === sharing)?.host.name}</p>
+      <p className="field-hint">{t('把这段链接粘贴到另一台手机的「添加节点」里即可。它等同于这台桌面的完整访问权，请只发给你自己。')}</p>
+      <textarea className="share-link" readOnly value={shareLink} rows={4} spellCheck={false} aria-label={t('连接链接')} onFocus={(event) => event.currentTarget.select()} />
+      <div className="dialog-actions">
+        <button type="button" className="secondary-button" onClick={() => { setSharing(undefined); setShareLink(''); closeOverlay() }}>{t('关闭')}</button>
+        <button type="button" className="primary-button" onClick={() => void copyShareLink()}>{shareCopied ? <Check size={16} /> : <Copy size={16} />}{shareCopied ? t('已复制') : t('复制链接')}</button>
+      </div>
     </dialog>}
     {forgetting && <dialog className="confirm-dialog" ref={confirmation} onCancel={event => { if (removing) event.preventDefault(); else setForgetting(undefined); }} aria-labelledby="forget-title" aria-describedby="forget-description">
       <h2 id="forget-title">{t('忘记此节点？')}</h2>

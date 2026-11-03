@@ -1,4 +1,5 @@
 import { chromium } from '@playwright/test'
+import { addDesktop } from './helpers.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, routingId, sealFrame } from '../client/crypto.ts'
 
 const code = base64url(new Uint8Array(32).fill(71))
@@ -51,9 +52,7 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
 try {
   await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await page.getByRole('button', { name: '添加节点', exact: true }).first().click()
-  await page.getByLabel('节点名称', { exact: true }).fill('N')
-  await page.getByLabel('配对链接', { exact: true }).fill(`alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
-  await page.getByRole('button', { name: '添加节点', exact: true }).last().click()
+  await addDesktop(page, 'N', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
   await page.getByRole('button', { name: /S/ }).first().click()
   await page.waitForTimeout(800)
 

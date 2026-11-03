@@ -17,7 +17,7 @@ export type Route =
   | { name: 'pickHost' }
   | { name: 'addHost' }
 
-type Overlay = { kind: 'scan' } | { kind: 'rename' } | { kind: 'forget' } | { kind: 'hostPicker' }
+type Overlay = { kind: 'scan' } | { kind: 'rename' } | { kind: 'forget' } | { kind: 'hostPicker' } | { kind: 'share' }
 
 let route: Route = { name: 'sessions' }
 /** Screens the user came from, so Back retraces their path. */
