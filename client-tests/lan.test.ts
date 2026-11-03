@@ -117,3 +117,16 @@ test('IPv4 integers and masks are computed exactly', () => {
   assert.equal(prefixMask(0) | 0, 0)
   assert.equal(prefixMask(32) | 0, -1)
 })
+
+test('an address with a leading zero is refused, because the dialer reads it differently', () => {
+  // `Number('016')` is 16 to this module but octal to a URL parser: the gate
+  // would vet 172.16.0.1 while the socket opened the public 172.14.0.1.
+  for (const ip of ['172.016.0.1', '010.0.0.1', '192.168.001.010', '192.168.01.1']) {
+    assert.equal(isLanHost(ip), false, ip)
+    assert.notEqual(parseLanAddress(ip).address, ip)
+  }
+  // Canonical decimal still works, including a single zero octet.
+  assert.equal(isLanHost('172.16.0.1'), true)
+  assert.equal(isLanHost('10.0.0.0'), true)
+  assert.equal(isLanHost('192.168.0.0'), true)
+})

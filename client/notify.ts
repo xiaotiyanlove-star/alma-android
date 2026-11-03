@@ -42,7 +42,14 @@ export interface Notifier {
 export const ACTION_BLOCKED = 'herdr.blocked'
 export const ACTION_DONE = 'herdr.done'
 
-const KIND_LABEL: Record<AlertKind, string> = { blocked: '需要你处理', done: '已完成', offline: '节点离线' }
+/**
+ * The notification title's prefix.
+ *
+ * Resolved through `t` at build time rather than stored as a literal: Android
+ * keeps the notification after it is posted, so the title has to be written in
+ * the language the user is reading now, and the alert is built at that moment.
+ */
+const KIND_LABEL: Record<AlertKind, string> = { blocked: t('需要你处理'), done: t('已完成'), offline: t('节点离线') }
 
 /**
  * Pure state diff. Kept free of Capacitor so it can be unit-tested in node.

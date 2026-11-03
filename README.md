@@ -55,9 +55,11 @@ accepts, resolved per agent rather than from a Herdr API. Read-only and menu-ope
 commands ship; anything that clears, compacts or rewinds a conversation is deliberately
 left out.
 
-**Connection.** An idle tunnel is probed every 20 seconds and is only declared dead after
-10 seconds with no answer. No probe is sent while a request or an upload is in flight,
-since a large attachment legitimately takes longer than that.
+**Connection.** While the app is on screen, a tunnel that has been quiet for six seconds
+gets a short read on a three-second deadline, and is declared dead when that probe goes
+unanswered. A probe is never sent while a mutation or an upload is in flight, since a
+large attachment legitimately takes longer than that; a read that hangs is given three
+seconds of grace and then probed anyway. Nothing is probed while the app is hidden.
 
 **Sending.** Messages go through `agent.prompt`; terminal input uses bracketed paste
 followed by Enter. A request that was sent but never confirmed — a dropped tunnel, a
@@ -70,7 +72,7 @@ highlighted row must all match; if anything changed the tap is cancelled and the
 refreshes. Menus without a cursor or checkbox — plain numbered lists in agent output —
 are never turned into buttons.
 
-**Attachments.** Up to six files per message, 24 MB each, uploaded to the desktop over
+**Attachments.** Up to six files per message, 16 MB each, uploaded to the desktop over
 the same tunnel and referenced by their absolute path. Images use the image route; other
 files use the generic one. The ceiling is the tunnel, not Alma: an upload is one sealed
 WebSocket message and the relay refuses anything over 32 MiB, so a larger file would fail
@@ -122,11 +124,11 @@ A phone loses its link constantly and silently, and a WebSocket that is dead can
 report itself open — the close event never runs when Android freezes the page, and a
 Wi-Fi link can vanish without a FIN. Three things cover that:
 
-- **Silence is a signal.** While the app is on screen, a tunnel quiet for eight seconds
+- **Silence is a signal.** While the app is on screen, a tunnel quiet for six seconds
   is probed with a short read on a three-second deadline. An answered probe resets the
   clock; an unanswered one rebuilds the tunnel. A dead link that used to take twenty
   seconds to show now takes about ten, and a healthy one is never probed at all because
-  its own traffic proves it is alive.
+  its own traffic proves it is alive. A hidden app does not probe at all.
 - **Handovers redial.** The OS reports a Wi-Fi/cellular switch, which keeps the app
   "online" while invalidating every socket. The app redials immediately instead of
   waiting for a timeout, and the retry ladder restarts from the top.
@@ -135,8 +137,9 @@ Wi-Fi link can vanish without a FIN. Three things cover that:
   the user tapping anything. A visible app keeps trying at a patient one-a-minute pace,
   indefinitely.
 
-Uploads are limited to 24 MB for the same reason: the relay refuses a single WebSocket
-message over 32 MiB, so a bigger attachment would fail half-way through.
+Uploads are limited to 16 MB for the same reason: the relay refuses a single WebSocket
+message over 32 MiB, and a desktop without binary frames receives the body base64-encoded,
+so a bigger attachment would fail half-way through.
 
 ## Requirements
 

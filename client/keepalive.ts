@@ -38,7 +38,11 @@ export function setKeepAliveMode(mode: KeepAliveMode) {
 /** Whether a reply is in progress, which is what `reply` mode keys on. */
 export function replyInProgress(hosts: Array<{ host?: { enabled?: boolean }; status?: string; snapshot?: { panes: Array<{ agent_status?: string }> } }>): boolean {
   return hosts.some((host) => host.host?.enabled !== false
-    && host.status !== 'disabled'
+    // Only a live connection can finish the work: the last snapshot survives a
+    // disconnect, so reading `working` from it kept the service (and its
+    // permanent notification) running until Android's six-hour cap after the
+    // desktop had already gone away.
+    && host.status === 'online'
     && (host.snapshot?.panes ?? []).some((pane) => pane.agent_status === 'working'))
 }
 

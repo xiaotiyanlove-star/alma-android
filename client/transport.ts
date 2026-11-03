@@ -551,7 +551,10 @@ export class EncryptedTunnel implements Transport {
     ++this.epoch
     // The generation is over; a later probe would only report on the socket
     // that no longer exists. `connect()` starts a fresh one for the next dial.
-    this.probing = 0
+    // The interval is cleared with it: `startHeartbeat` refuses to start a
+    // second one, so leaving it running means every later connection keeps an
+    // interval that ticks forever against a transport nobody is using.
+    this.stopHeartbeat()
     clearTimeout(this.handshakeTimer)
     this.ready = false
     const socket = this.ws

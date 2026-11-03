@@ -24,12 +24,15 @@ export const FRAME_LIMIT_BYTES = 32 * 1024 * 1024
 /**
  * The most a single attachment may be.
  *
- * Deliberately below the frame limit: the sealed frame carries the attachment
- * plus its authentication tag and the JSON header that names the route, and a
- * user who picks a file in the last few megabytes of headroom would otherwise
- * hit the wall with no useful error.
+ * The body is base64-encoded inside the sealed frame when the desktop did not
+ * negotiate binary frames, and base64 costs four bytes for every three: at
+ * 24 MiB the encoded body alone lands on the 32 MiB relay limit, before the
+ * IV, the tag and the JSON header. That failed mid-send every time against a
+ * desktop without `bin: 1`, and because an upload is a mutation the user was
+ * told it might have run. 16 MiB encodes to about 21.3 MiB, which leaves the
+ * same headroom in the worst case as the old figure did in the best.
  */
-export const MAX_ATTACHMENT_BYTES = 24 * 1024 * 1024
+export const MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024
 
 /** What the size check and the error copy agree on. */
 export const MAX_ATTACHMENT_MB = MAX_ATTACHMENT_BYTES / (1024 * 1024)
@@ -49,6 +52,26 @@ export interface UploadResponse {
   filename?: string
   size?: number
   error?: string
+}
+
+/**
+ * The path an image reference is fetched from.
+ *
+ * The desktop reports two shapes: a route under `/api/…` that is used as-is,
+ * and a plain absolute path (`/Users/me/shot.png`) for a local file, which the
+ * desktop serves through `/api/herdr/file?path=`. The official client rewrites
+ * exactly the same way, so anything else is refused rather than turned into a
+ * request the message chose.
+ */
+export function imageRequestPath(ref: string): string {
+  if (ref.startsWith('/api/')) return ref
+  // Only absolute paths. `//host` is excluded because a URL parser reads it as
+  // a host, and the desktop resolves a bare `~/` itself, which is how a
+  // transcript names a picture in the user's home directory.
+  if ((ref.startsWith('/') && !ref.startsWith('//')) || ref.startsWith('~/')) {
+    return `/api/herdr/file?path=${encodeURIComponent(ref)}`
+  }
+  throw new Error('不支持这个图片来源')
 }
 
 /** Chooses the image route only for what the desktop will accept there. */

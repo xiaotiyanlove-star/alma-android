@@ -7,12 +7,14 @@
  * to drift. Validation therefore happens exactly where a pasted link is
  * validated: in `parsePairing`, when the user submits.
  *
- * A link received before the page exists is stored in `sessionStorage` rather
- * than memory, so a reload between the tap and the form still lands on the
- * filled form; it is removed as soon as it is read.
+ * The link is a credential, so it is held in a module variable and nowhere
+ * else. It used to go through `sessionStorage`, which is disk-backed and can
+ * outlive the tap it arrived with — not what "never stored" is supposed to
+ * mean for a key.
  */
 
-export const PENDING_LINK_KEY = 'herdr.pendingPairingLink'
+/** The link waiting to be shown, if any. */
+let pending = ''
 
 /** True for anything the shell would forward: scheme and host, nothing more. */
 export function looksLikePairingLink(value: string): boolean {
@@ -22,15 +24,13 @@ export function looksLikePairingLink(value: string): boolean {
 /** Queues a link and returns whether it was one. */
 export function rememberPairingLink(link: string): boolean {
   if (!looksLikePairingLink(link)) return false
-  try { sessionStorage.setItem(PENDING_LINK_KEY, link.trim()) } catch { /* storage blocked */ }
+  pending = link.trim()
   return true
 }
 
 /** The link waiting to be shown, if any. Reading it clears it. */
 export function takePendingLink(): string {
-  try {
-    const value = sessionStorage.getItem(PENDING_LINK_KEY)
-    if (value) sessionStorage.removeItem(PENDING_LINK_KEY)
-    return value ?? ''
-  } catch { return '' }
+  const value = pending
+  pending = ''
+  return value
 }

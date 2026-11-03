@@ -52,7 +52,12 @@ export interface ChatItem {
   text?: string
   summary?: string
   from?: string
-  tool?: { id?: string; name?: string; input?: unknown; output?: unknown; done?: boolean; background?: boolean; images?: ImageRef[] }
+  /**
+   * `result_images` is the desktop's own field for pictures a tool produced;
+   * `images` is kept because item-level and tool-level payloads have used both
+   * spellings, and a tool result that renders nothing is hard to notice.
+   */
+  tool?: { id?: string; name?: string; input?: unknown; output?: unknown; done?: boolean; background?: boolean; images?: ImageRef[]; result_images?: ImageRef[] }
   /** Images the user attached, reported by the desktop. */
   images?: ImageRef[]
   time?: string

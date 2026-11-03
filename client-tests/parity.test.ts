@@ -12,7 +12,8 @@ import './locale.ts'
 import { Controller } from '../client/controller.ts'
 import { headerInfo } from '../client/session-info.ts'
 import { AlertTracker, actionFor, mutedOn } from '../client/notify.ts'
-import { optionForIntent, parsePrompt } from '../client/prompt.ts'
+import { optionForIntent, parsePrompt, promptFingerprint, stripAnsi } from '../client/prompt.ts'
+import { replyInProgress } from '../client/keepalive.ts'
 import { EncryptedTunnel, type SocketLike } from '../client/transport.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openBytes, sealBytes } from '../client/crypto.ts'
 import { decodeInnerFrame, encodeInnerFrame } from '../client/frames.ts'
@@ -301,4 +302,371 @@ test('a request that hangs does not blind the probe for its whole deadline', asy
     assert.equal(statuses.includes('offline'), true, 'a hung request must not hold off the probe indefinitely')
     ;(tunnel as any).stopHeartbeat()
   } finally { tunnel.close() }
+})
+
+// ── regressions found in the full review ───────────────────────────────
+/**
+ * A controller whose transports are replaced on demand, for the paths that
+ * rebuild every runtime (a handover, the discovery switch).
+ */
+function rebuildingController(hostCount = 1) {
+  const hosts: Host[] = Array.from({ length: hostCount }, (_, index) => ({
+    id: `H${index}`, name: `H${index}`, relayUrl: `https://h${index}.invalid`, connectCode: String(index).repeat(43), addedAt: 0,
+  }))
+  const built: Transport[] = []
+  const storage: HostStorage = { persistent: true, async load() { return hosts }, async save() {} }
+  const controller = new Controller(storage, () => {
+    // A real rebuild would spin forever here; the cap turns that into a
+    // failure instead of a hung test run.
+    if (built.length > 20) throw new Error(`unbounded rebuild: ${built.length} transports`)
+    const transport: Transport = {
+      async connect() {},
+      async request<T>(path: string): Promise<T> {
+        if (path === '/api/herdr/info') return { online: true } as T
+        if (path === '/api/herdr/mutes') return { tabs: [], workspaces: [] } as T
+        if (path.startsWith('/api/herdr/chat')) return { session_id: 's', page: { start: 0, end: 1, items: [] }, queued: [] } as T
+        return { result: { read: { text: '' } } } as T
+      },
+      subscribe() { return { close() {} } },
+      lastInboundAt() { return Date.now() },
+      close() {},
+    }
+    built.push(transport)
+    return transport
+  })
+  return { controller, built, hosts }
+}
+
+test('a network change rebuilds each desktop once and returns', async () => {
+  // `rebuild` deletes and re-inserts the same map key; iterating the live map
+  // re-visits it forever. The symptom is a frozen UI dialling without bound.
+  const { controller, built } = rebuildingController(2)
+  try {
+    await controller.initialize(); await wait()
+    const before = built.length
+    controller.networkChanged()
+    assert.ok(built.length - before <= 2, `rebuilt ${built.length - before} transports for 2 desktops`)
+    // Still usable afterwards: a runtime exists for each host and nothing threw.
+    assert.ok(controller.getState().hosts.every((host) => host.status !== 'disabled'))
+  } finally { controller.dispose() }
+})
+
+test('toggling local discovery rebuilds and returns', async () => {
+  const { controller, built } = rebuildingController(1)
+  try {
+    await controller.initialize(); await wait()
+    const before = built.length
+    controller.lanDiscoveryChanged(false)
+    assert.ok(built.length - before <= 1, `rebuilt ${built.length - before} transports`)
+    controller.lanDiscoveryChanged(true)
+    assert.ok(built.length - before <= 2, `rebuilt ${built.length - before} transports`)
+  } finally { controller.dispose() }
+})
+
+test('suspending leaves no retry armed on a discarded runtime', async () => {
+  // `closeRuntime` reports 'offline' synchronously, and the scheduler arms a
+  // retry for whatever is still current. Deleting after the close left a
+  // timer waking a phone that had just been put in a pocket.
+  const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
+  const transports: { runtime?: any; transport: Transport }[] = []
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  let announce: ((state: string) => void) | undefined
+  const controller = new Controller(storage, (_host, status) => {
+    announce = status as (state: string) => void
+    const transport: Transport = {
+      async connect() {},
+      async request<T>(): Promise<T> { return { online: true } as T },
+      subscribe() { return { close() {} } },
+      lastInboundAt() { return Date.now() },
+      close() { announce?.('offline') },
+    }
+    transports.push({ transport })
+    return transport
+  })
+  try {
+    await controller.initialize(); await wait()
+    const runtime = [...((controller as any).runtimes.values())][0] as any
+    controller.suspend()
+    assert.equal(runtime.retry, undefined, 'no timer may survive the suspend')
+    assert.equal((controller as any).runtimes.size, 0)
+  } finally { controller.dispose() }
+})
+
+test('a late mute answer from a replaced runtime does not win', async () => {
+  const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
+  let generation = 0
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const controller = new Controller(storage, () => {
+    const mine = ++generation
+    return {
+      async connect() {},
+      async request<T>(path: string): Promise<T> {
+        if (path === '/api/herdr/mutes') {
+          // The first connection answers slowly; the second answers at once.
+          if (mine === 1) { await new Promise((resolve) => setTimeout(resolve, 60)); return { tabs: ['stale'], workspaces: [] } as T }
+          return { tabs: ['fresh'], workspaces: [] } as T
+        }
+        if (path === '/api/herdr/info') return { online: true } as T
+        return { result: { read: { text: '' } } } as T
+      },
+      subscribe() { return { close() {} } },
+      lastInboundAt() { return Date.now() },
+      close() {},
+    } satisfies Transport
+  })
+  try {
+    await controller.initialize(); await wait()
+    const first = [...((controller as any).runtimes.values())][0] as any
+    ;(controller as any).rebuild('A', first)
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    assert.deepEqual(controller.getState().hosts[0].mutes, { tabs: ['fresh'], workspaces: [] })
+  } finally { controller.dispose() }
+})
+
+test('opening a pane on a desktop with no connection reports failure', async () => {
+  // Returning silently made a notification reply land in whichever session was
+  // open before, because the caller could not tell that nothing happened.
+  const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  let announce: ((state: string) => void) | undefined
+  const controller = new Controller(storage, (_host, status) => {
+    announce = status as (state: string) => void
+    return {
+      async connect() {},
+      async request<T>(path: string): Promise<T> {
+        if (path === '/api/herdr/info') return { online: true } as T
+        if (path.startsWith('/api/herdr/chat')) return { session_id: 's', page: { start: 0, end: 1, items: [] }, queued: [] } as T
+        return { result: { read: { text: '' } } } as T
+      },
+      subscribe() { return { close() {} } },
+      lastInboundAt() { return Date.now() },
+      close() { announce?.('offline') },
+    } satisfies Transport
+  })
+  try {
+    await controller.initialize(); await wait()
+    controller.selectHost('A')
+    await controller.selectPane('w1:p1')
+    controller.suspend()
+    await assert.rejects(controller.selectPane('w1:p2'), /节点未连接/)
+    // The previously opened pane is still what the state says, which is why the
+    // caller has to check rather than assume.
+    assert.equal(controller.getState().session?.paneId, 'w1:p1')
+  } finally { controller.dispose() }
+})
+
+test('a stale direct address is forgotten after it stops answering', async () => {
+  const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  let directFailed: (() => void) | undefined
+  const controller = new Controller(storage, () => ({
+    async connect() {},
+    async request<T>(path: string): Promise<T> {
+      if (path === '/api/herdr/info') return { online: true } as T
+      return { result: { read: { text: '' } } } as T
+    },
+    subscribe() { return { close() {} } },
+    lastInboundAt() { return Date.now() },
+    close() {},
+    set onDirectFailed(handler: () => void) { directFailed = handler },
+    useDirect() {},
+  } as unknown as Transport))
+  try {
+    await controller.initialize(); await wait()
+    ;(controller as any).patchHost('A', { discoveredLan: { host: '192.168.1.50', port: 23019 } })
+    directFailed?.()
+    // Left in place, `maybeDiscover` skips this host forever and the app keeps
+    // dialling an address the desktop no longer has.
+    assert.equal(controller.getState().hosts[0].discoveredLan, undefined)
+  } finally { controller.dispose() }
+})
+
+test('a prompt fingerprint covers the question, not just the rows', async () => {
+  const write = parsePrompt('Allow write to ~/project?\n❯ 1. Yes\n  2. No')!
+  const wipe = parsePrompt('Run rm -rf ~?\n❯ 1. Yes\n  2. No')!
+  assert.notEqual(await promptFingerprint(write), await promptFingerprint(wipe), 'the same rows must not authorize a different question')
+  // The same prompt still matches itself.
+  assert.equal(await promptFingerprint(write), await promptFingerprint(parsePrompt('Allow write to ~/project?\n❯ 1. Yes\n  2. No')!))
+})
+
+test('a Chinese menu can be answered from a notification', () => {
+  // `\b` never matches after a CJK character, so these were silently
+  // unanswerable — the button opened the session instead of pressing anything.
+  const menu = parsePrompt('是否允许执行？\n❯ 1. 同意\n  2. 拒绝')!
+  assert.equal(optionForIntent(menu, 'allow'), 1)
+  assert.equal(optionForIntent(menu, 'deny'), 2)
+  const allowOnly = parsePrompt('是否允许执行？\n❯ 1. 允许\n  2. 取消')!
+  assert.equal(optionForIntent(allowOnly, 'allow'), 1)
+  assert.equal(optionForIntent(allowOnly, 'deny'), 2)
+})
+
+test('the alert and the tap hash the same screen when it is coloured', async () => {
+  // `pane.read` returns escape sequences whether or not text was asked for, so
+  // the capture and the verification both go through `readPaneScreen`.
+  const coloured = 'Allow write?\n\x1b[36m❯ 1. Yes\x1b[0m\n\x1b[2m  2. No\x1b[0m'
+  const stripped = stripAnsi(coloured)
+  assert.ok(parsePrompt(stripped), 'the cleaned screen parses')
+  assert.equal(await promptFingerprint(parsePrompt(stripped)!), await promptFingerprint(parsePrompt(stripAnsi(coloured))!))
+  // Parsing the raw form is what used to make the button fail closed.
+  assert.equal(parsePrompt(coloured), null)
+})
+
+test('a reply in progress requires a live connection', () => {
+  const host = (status: string) => ({
+    host: { enabled: true }, status,
+    snapshot: { panes: [{ agent_status: 'working' }] },
+  })
+  assert.equal(replyInProgress([host('online')]), true)
+  // The last snapshot outlives the connection, so a desktop that dropped
+  // mid-work would otherwise keep the service (and its notification) alive.
+  assert.equal(replyInProgress([host('offline')]), false)
+  assert.equal(replyInProgress([host('error')]), false)
+})
+
+test('a discovered address is retried after it stops answering, not kept forever', async () => {
+  // `maybeDiscover` skips a host that already has an address. Left behind, a
+  // stale one means no rescan ever happens for the rest of the app run.
+  const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const controller = new Controller(storage, () => ({
+    async connect() {},
+    async request<T>(): Promise<T> { return { online: true } as T },
+    subscribe() { return { close() {} } },
+    lastInboundAt() { return Date.now() },
+    close() {},
+  } as Transport))
+  try {
+    await controller.initialize(); await wait()
+    ;(controller as any).patchHost('A', { discoveredLan: { host: '192.168.1.50', port: 23019 } })
+    assert.ok(controller.getState().hosts[0].discoveredLan, 'precondition')
+    controller.networkChanged()
+    assert.equal(controller.getState().hosts[0].discoveredLan, undefined, 'a new network must not inherit the old answer')
+  } finally { controller.dispose() }
+})
+
+test('a scan in flight is abandoned when the network moves', async () => {
+  const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const controller = new Controller(storage, () => ({
+    async connect() {},
+    async request<T>(): Promise<T> { return { online: true } as T },
+    subscribe() { return { close() {} } },
+    lastInboundAt() { return Date.now() },
+    close() {},
+  } as Transport))
+  try {
+    await controller.initialize(); await wait()
+    const scan = { aborted: false }
+    ;(controller as any).scans.add(scan)
+    ;(controller as any).discovering.add('A')
+    controller.networkChanged()
+    assert.equal(scan.aborted, true, 'the old subnet is not worth probing')
+    assert.equal((controller as any).discovering.size, 0, 'the host can be looked for again')
+  } finally { controller.dispose() }
+})
+
+test('the desktop is not asked for a tab association the client already made', async () => {
+  const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
+  const calls: string[] = []
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const controller = new Controller(storage, () => ({
+    async connect() {},
+    async request<T>(path: string, body?: any): Promise<T> {
+      calls.push(body?.method ?? path)
+      if (path === '/api/herdr/info') return { online: true } as T
+      if (path === '/api/herdr/rpc' && body?.method === 'tab.create') return { result: { tab: { tab_id: 'w1:t1', workspace_id: 'w1' } } } as T
+      if (path === '/api/herdr/rpc' && body?.method === 'agent.start') return { result: {} } as T
+      if (path === '/api/herdr/rpc' && body?.method === 'tab.get') { calls.push('TAB.GET'); return { result: {} } as T }
+      return { result: { read: { text: '' } } } as T
+    },
+    subscribe() { return { close() {} } },
+    lastInboundAt() { return Date.now() },
+    close() {},
+  } as Transport))
+  try {
+    await controller.initialize(); await wait()
+    // A desktop that reports no pane at all: the recovery path runs.
+    ;(controller as any).rememberTabAddress('A', 'w1:p1', 'w1:t1')
+    const found = await (controller as any).paneOfTab('A', 'w1:t1')
+    assert.equal(found, 'w1:p1')
+    assert.equal(calls.includes('TAB.GET'), false, 'no round trip for an association this client made')
+  } finally { controller.dispose() }
+})
+
+test('verifying a dead link finishes and does not loop on rebuilt runtimes', async () => {
+  const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
+  let built = 0
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const controller = new Controller(storage, (_host, status) => {
+    built++
+    if (built > 20) throw new Error(`unbounded verify: ${built} transports`)
+    return {
+      async connect() { status('online') },
+      // The read times out but the status sink is not told, which is what a
+      // request deadline produces on a tunnel that still believes it is open.
+      async request<T>(): Promise<T> { throw new Error('桌面接口超时') },
+      subscribe() { return { close() {} } },
+      lastInboundAt() { return Date.now() },
+      close() {},
+    } satisfies Transport
+  })
+  try {
+    await controller.initialize(); await wait()
+    await controller.verify()
+    assert.ok(built <= 3, `rebuilt ${built} transports`)
+  } finally { controller.dispose() }
+})
+
+test('a hidden app does not start an idle probe when it connects', async () => {
+  const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
+  const heartbeats: string[] = []
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const transport = () => ({
+    async connect() {},
+    async request<T>(path: string): Promise<T> {
+      if (path === '/api/herdr/info') return { online: true } as T
+      return { result: { read: { text: '' } } } as T
+    },
+    subscribe() { return { close() {} } },
+    lastInboundAt() { return Date.now() },
+    startHeartbeat() { heartbeats.push('start'); return () => heartbeats.push('stop') },
+    close() {},
+  } as unknown as Transport)
+  const controller = new Controller(storage, () => transport())
+  try {
+    await controller.initialize(); await wait()
+    controller.setForeground(false)
+    // The launch itself happened while visible; only the reconnect made while
+    // hidden is under test.
+    const before = heartbeats.filter((entry) => entry === 'start').length
+    ;(controller as any).rebuild('A', [...((controller as any).runtimes.values())][0])
+    await wait()
+    assert.equal(heartbeats.filter((entry) => entry === 'start').length, before, 'a hidden app must not probe')
+  } finally { controller.dispose() }
+})
+
+test('coming back to the foreground starts the probe again', async () => {
+  const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
+  let running = 0
+  const storage: HostStorage = { persistent: true, async load() { return [host] }, async save() {} }
+  const controller = new Controller(storage, () => ({
+    async connect() {},
+    async request<T>(path: string): Promise<T> {
+      if (path === '/api/herdr/info') return { online: true } as T
+      return { result: { read: { text: '' } } } as T
+    },
+    subscribe() { return { close() {} } },
+    lastInboundAt() { return Date.now() },
+    startHeartbeat() { running++; return () => { running-- } },
+    close() {},
+  } as unknown as Transport))
+  try {
+    await controller.initialize(); await wait()
+    controller.setForeground(false)
+    assert.equal(running, 0, 'hidden: no probe')
+    controller.setForeground(true)
+    assert.equal(running, 1, 'visible: exactly one probe')
+    controller.setForeground(true)
+    assert.equal(running, 1, 'repeating the same state does not stack probes')
+  } finally { controller.dispose() }
 })

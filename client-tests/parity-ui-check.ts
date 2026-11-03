@@ -70,16 +70,27 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
               { id: 'm1', kind: 'assistant', text: '第一条回复' },
               // A user picture and a tool result picture: both paths exist in
               // the desktop's payload and both are fetched through the tunnel.
-              { id: 'm2', kind: 'user', text: '看这张图', images: [{ url: '/api/herdr/image/pic.png', mediaType: 'image/png' }] },
+              // A local absolute path, which is what the desktop actually reports
+              // for a file on its own disk: the client has to turn it into
+              // `/api/herdr/file?path=` itself.
+              { id: 'm2', kind: 'user', text: '看这张图', images: [{ url: '/Users/me/pic.png', mediaType: 'image/png' }] },
               // A dispatch that is still running, which is what the header chip
               // and the subagent sheet key on.
               { id: 'm3', kind: 'tool', tool: { id: 'tool-1', name: 'Agent', background: true, done: false, input: { description: 'Security review of main', subagent_type: 'general-purpose' } } },
+              // A finished tool whose screenshot is reported under the
+              // official client's `result_images` field.
+              { id: 'm4', kind: 'tool', tool: { id: 'tool-2', name: 'Bash', done: true, result_images: [{ url: '/Users/me/shot.png' }] } },
             ] },
             queued: [],
             settings: { model: 'claude-opus-5-5', effort: 'high' },
           })
         }
-        if (path.startsWith('/api/herdr/image/')) { imageServed = true; return bytes(frame.id, PNG, 'image/png') }
+        if (path.startsWith('/api/herdr/file?')) {
+          const file = new URL(path, 'https://relay.invalid').searchParams.get('path') ?? ''
+          if (!file.startsWith('/Users/me/')) return json(frame.id, { error: 'unexpected path ' + file })
+          imageServed = true
+          return bytes(frame.id, PNG, 'image/png')
+        }
         if (path === '/api/herdr/mutes') {
           if (frame.method === 'GET') return json(frame.id, mutes)
           const body = JSON.parse(new TextDecoder().decode(fromBase64url(frame.b)))
@@ -132,9 +143,17 @@ try {
   // ── the model chip comes from the desktop, not the screen ──────────────
   await expect(page.getByText('claude-opus-5-5 · high')).toBeVisible()
 
-  // ── a transcript image is fetched through the tunnel ───────────────────
+  // ── transcript images are fetched through the tunnel ───────────────────
+  // A user attachment is reported as a local absolute path, which the client
+  // has to turn into the file route itself.
   await expect(page.locator('.transcript-image img').first()).toBeVisible()
   expect(imageServed).toBe(true)
+  // A tool result lives inside its (collapsed) call, under the official
+  // client's `result_images` field: it is there, not silently dropped. The
+  // burst itself is folded too, so both layers are opened.
+  await page.locator('.tool-group summary').first().click()
+  await page.locator('.tool-detail summary').first().click()
+  await expect(page.locator('.tool-detail .transcript-image img')).toHaveCount(1)
 
   // ── mute round-trips through the desktop ───────────────────────────────
   await page.getByRole('button', { name: '静音这个会话' }).click()

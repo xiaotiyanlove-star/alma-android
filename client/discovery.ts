@@ -14,8 +14,10 @@
  * them holds this pairing's code.
  *
  * A scan is deliberately rare and bounded: only while the app is on screen,
- * only when the relay is already up, only when there is no cached answer, and
- * only on a subnet small enough to be a home or office network.
+ * only when there is no cached answer, only on a subnet small enough to be a
+ * home or office network, and only when the user has left discovery on. It does
+ * not wait for the relay: a dead public path is exactly when the local one
+ * matters most.
  */
 import { base64url, constantTimeEqual, createKeyPair, deriveSessionKeys, fromBase64url } from './crypto'
 import { DEFAULT_LAN_PORT, isLanHost, probeTargets, scannableSubnet, type DeviceSubnet, type LanAddress } from './lan'

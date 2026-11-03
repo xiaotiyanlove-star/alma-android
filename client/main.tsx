@@ -2,7 +2,7 @@ import ReactDOM from 'react-dom/client'
 import { App } from './App'
 import './styles.css'
 import { controller } from './controller'
-import { back, push, setExitHandler } from './router'
+import { back, replace, setExitHandler } from './router'
 import { rememberPairingLink } from './pending-link'
 import { applyTheme } from './prefs'
 
@@ -33,7 +33,11 @@ if (import.meta.env.DEV) (window as unknown as { __herdrController?: typeof cont
 /** A link the shell forwarded while the page was live. */
 function handlePairingLink(link: string) {
   if (!rememberPairingLink(link)) return
-  push({ name: 'addHost' })
+  // `replace` rather than `push`: `push` is a no-op when the add form is
+  // already open, and that form reads the pending link once, at mount — so a
+  // second link tapped while it was up was silently dropped. Replacing remounts
+  // it, so the field shows the link the user just tapped.
+  replace({ name: 'addHost' })
 }
 
 // The shell calls this when the page is already able to take the link.

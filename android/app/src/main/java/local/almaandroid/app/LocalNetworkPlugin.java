@@ -40,9 +40,10 @@ public class LocalNetworkPlugin extends Plugin {
     /**
      * Every IPv4 subnet the device currently has an address on.
      *
-     * Loopback is included so the desktop's own machine can be reached when
-     * the page is served locally during development, but it is only ever the
-     * /8 the platform reports — not a shortcut to "everything".
+     * Only Wi-Fi and Ethernet links are reported: those are the transports a
+     * shared local network can appear on. Cellular is excluded because a
+     * carrier APN also hands out 10.x addresses, and scanning one is neither
+     * useful nor appropriate.
      */
     @PluginMethod
     public void subnets(PluginCall call) {

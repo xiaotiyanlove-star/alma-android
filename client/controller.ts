@@ -10,8 +10,8 @@ import { forgetSubnets } from './localnet'
 import { clearAllBreakers } from './breaker'
 import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, sessionDelay, stopMessage, type RetryContext } from './backoff'
 import { metrics } from './metrics'
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, uploadRoute, type UploadResponse, type UploadedFile } from './attachments'
-import { moveKeys, needsSpace, optionForIntent, parsePrompt, promptFingerprint, samePrompt, type Prompt } from './prompt'
+import { imageRequestPath, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, uploadRoute, type UploadResponse, type UploadedFile } from './attachments'
+import { moveKeys, needsSpace, optionForIntent, parsePrompt, promptFingerprint, samePrompt, stripAnsi, type Prompt } from './prompt'
 
 /** How often a desktop with no known local address is looked for. */
 const DISCOVERY_INTERVAL_MS = 10 * 60_000
@@ -205,6 +205,12 @@ export class Controller {
     scored.onDirectFailed = () => {
       if (this.runtimes.get(host.id) !== runtime) return
       recordDirect(host.id, false)
+      // A discovered address that has stopped answering is not worth keeping:
+      // left in place it is skipped by `maybeDiscover` forever, so the app
+      // would keep dialling a dead address (and paying the breaker cooldown)
+      // until the phone changes networks. A user-entered address is a setting
+      // and is kept; only observation is discarded.
+      if (this.discoveredLanFor(host.id)) this.patchHost(host.id, { discoveredLan: undefined })
     }
     // A local address is a preference, not a route: the transport still falls
     // back to the relay whenever it does not answer.
@@ -279,10 +285,13 @@ export class Controller {
   /** Applies the user's discovery switch to already-open tunnels. */
   lanDiscoveryChanged = (enabled: boolean) => {
     this.discoveryEpoch++
-    this.discovering.clear()
+    this.abortScans()
     this.lastDiscover.clear()
     if (!enabled) this.clearDiscoveredLan()
-    for (const [id, runtime] of this.runtimes) {
+    // Snapshot first: `rebuild` deletes and re-inserts the same key, and a Map
+    // re-visits a key deleted and re-added during iteration — the loop would
+    // never drain and would dial without bound. See `networkChanged`.
+    for (const [id, runtime] of [...this.runtimes]) {
       const host = this.state.hosts.find((item) => item.host.id === id)
       if (!host || host.host.enabled === false) continue
       this.rebuild(id, runtime)
@@ -301,12 +310,17 @@ export class Controller {
    */
   networkChanged = () => {
     this.discoveryEpoch++
-    this.discovering.clear()
+    this.abortScans()
     this.lastDiscover.clear()
     this.clearDiscoveredLan()
     forgetSubnets()
     clearAllBreakers()
-    for (const [id, runtime] of this.runtimes) {
+    // Snapshot first: `rebuild` deletes and re-inserts the same key while this
+    // loop runs, and JavaScript re-visits such a key at the end of the map.
+    // Iterating the live map therefore never terminates: the UI thread hangs
+    // and a new transport is dialled on every pass. A handover is exactly the
+    // event that runs this.
+    for (const [id, runtime] of [...this.runtimes]) {
       const host = this.state.hosts.find((item) => item.host.id === id)
       if (!host || host.host.enabled === false) continue
       this.rebuild(id, runtime)
@@ -389,6 +403,22 @@ export class Controller {
     if (this.state.foreground === foreground) return
     this.publish({ foreground })
     if (foreground) this.retryStopped()
+    // The idle probe costs a round trip every few seconds. It only exists to
+    // catch a link that died while the user is looking at the app; a hidden
+    // phone should not keep waking its radio to ask.
+    if (foreground) {
+      for (const runtime of this.runtimes.values()) {
+        const transport = runtime.transport as Partial<{ startHeartbeat(): () => void }>
+        if (typeof transport.startHeartbeat !== 'function') continue
+        runtime.stopHeartbeat?.()
+        runtime.stopHeartbeat = transport.startHeartbeat()
+      }
+      return
+    }
+    for (const runtime of this.runtimes.values()) {
+      runtime.stopHeartbeat?.()
+      runtime.stopHeartbeat = undefined
+    }
   }
 
   /**
@@ -401,20 +431,20 @@ export class Controller {
    * so nothing is scanned there.
    */
   private discovering = new Set<string>()
+  /** Scans still running, so a network change can stop them early. */
+  private scans = new Set<{ aborted: boolean }>()
   private discoveryEpoch = 0
   private lastDiscover = new Map<string, number>()
   private maybeDiscover(id: string) {
+    // Discovery does not wait for a relay connection: if the public path is
+    // broken, the LAN path is precisely how this phone can still reach home.
+    // It remains background work and only runs while the app is visible.
     if (!lanDiscoveryEnabled()) return
     if (!this.state.foreground) return
     if (this.discovering.has(id)) return
     const hostState = this.state.hosts.find((item) => item.host.id === id)
     const host = hostState?.host
-    // Discovery does not wait for a relay connection: if the public path is
-    // broken, the LAN path is precisely how this phone can still reach home.
-    // It remains background work and only runs while the app is visible.
     if (!host || host.enabled === false) return
-    if (this.state.foreground !== true) return
-    if (!lanDiscoveryEnabled()) return
 
     // Once an address is known, the breaker decides whether to dial it. Do not
     // rescan the same subnet just because that address is in its cooldown —
@@ -430,22 +460,42 @@ export class Controller {
     this.lastDiscover.set(id, now)
     this.discovering.add(id)
     const startedAt = this.discoveryEpoch
+    // Signalled when the network changes, so a scan of the old subnet stops
+    // probing instead of running all 254 addresses to no purpose. The epoch
+    // alone cannot do that: it only discards the answer after the fact.
+    const scan = { aborted: false }
+    this.scans.add(scan)
     void (async () => {
       try {
         const subnets = await deviceSubnets()
-        const found = await discoverDesktop({ connectCode: host.connectCode, subnets })
+        const found = await discoverDesktop({ connectCode: host.connectCode, subnets, signal: scan })
         // A network switch during the scan invalidates both its subnet and any
         // answer it found there. Do not cache an address from the link we left.
         if (found && startedAt === this.discoveryEpoch && this.state.foreground && lanDiscoveryEnabled()) {
           await this.adoptLan(id, found)
         }
       } catch { /* discovery is best effort; the relay still works */ }
-      finally { this.discovering.delete(id) }
+      finally {
+        this.scans.delete(scan)
+        this.discovering.delete(id)
+      }
     })()
+  }
+
+  /** Stops every scan in flight; the caller has already bumped the epoch. */
+  private abortScans() {
+    for (const scan of this.scans) scan.aborted = true
+    this.scans.clear()
+    this.discovering.clear()
   }
 
   /** Remembers a discovered address and lets the next connection use it. */
   private async adoptLan(id: string, address: NonNullable<Host['lan']>) {
+    // The desktop may have been forgotten or switched off while the scan ran;
+    // writing the address onto it afterwards would leave state that nothing
+    // reads and nothing clears.
+    const host = this.state.hosts.find((item) => item.host.id === id)
+    if (!host || host.host.enabled === false) return
     // Cached, but not persisted as a user setting: it was found, not chosen.
     // Store it before rebuilding so the new runtime receives it immediately;
     // this switches an existing relay connection to LAN as soon as discovery
@@ -513,8 +563,12 @@ export class Controller {
       // when the relay dropped it — would otherwise look healthy until the
       // next request timed out. The probe turns that into a real reconnect.
       runtime.stopHeartbeat?.()
+      // Only while the app is on screen: the probe is a round trip every few
+      // seconds, and a hidden page has nobody to show the result to.
       const transport = runtime.transport as Partial<{ startHeartbeat(): () => void }>
-      runtime.stopHeartbeat = typeof transport.startHeartbeat === 'function' ? transport.startHeartbeat() : undefined
+      runtime.stopHeartbeat = this.state.foreground !== false && typeof transport.startHeartbeat === 'function'
+        ? transport.startHeartbeat()
+        : undefined
       // Muting is stored on the desktop, so it has to be read back rather than
       // assumed; a failure here must not make the desktop look offline.
       void this.refreshMutes(id).catch(() => undefined)
@@ -670,6 +724,7 @@ export class Controller {
           swallowedLetterTwice = true
           throw new Error(t('终端启动提示重复吞掉了命令首字母'))
         }
+        this.rememberTabAddress(hostId, paneId, tabId)
         return { paneId, workspaceId }
       } catch (error) {
         lastError = error
@@ -685,6 +740,29 @@ export class Controller {
     // that same tab is better than reporting a create that half-worked.
     try { return await this.layoutNewSession(hostId, { ...options, paneId, tabId }) } catch { /* report the agent failure */ }
     throw lastError instanceof Error ? lastError : new Error(t('无法创建会话'))
+  }
+
+  /**
+   * A cache of "which tab does this pane belong to" for the panes this app
+   * created, read by `paneOfTab`.
+   *
+   * `layout.apply` reports the tab it made but not, sometimes, the pane, and
+   * `tab.get` does not exist on every desktop. The snapshot can answer, but
+   * only after the desktop publishes another one — which on an idle desktop
+   * can be a long time. The pane this client just created is known locally, so
+   * the fallback is almost never needed.
+   */
+  private tabAddress = new Map<string, string>()
+
+  private rememberTabAddress(hostId: string, paneId: string, tabId?: string) {
+    if (!tabId) return
+    this.tabAddress.set(`${hostId}:${paneId}`, tabId)
+    // Bounded: these are only ever looked up for the pane being created, and a
+    // long-running session must not accumulate one entry per pane forever.
+    if (this.tabAddress.size > 200) {
+      const oldest = this.tabAddress.keys().next().value
+      if (oldest !== undefined) this.tabAddress.delete(oldest)
+    }
   }
 
   /**
@@ -731,6 +809,7 @@ export class Controller {
     const paneId = created?.focused_pane_id ?? created?.layout?.focused_pane_id ?? options.paneId
     const workspaceId = created?.workspace_id ?? created?.layout?.workspace_id ?? options.workspaceId ?? ''
     const tabId = created?.tab_id ?? created?.layout?.tab_id
+    if (paneId) this.rememberTabAddress(hostId, paneId, tabId)
     if (!paneId) {
       const found = await this.paneOfTab(hostId, tabId)
       if (!found) throw new Error(t('无法创建会话'))
@@ -754,6 +833,10 @@ export class Controller {
     const answer = await runtime.transport.request<Partial<Mutes> | null>('/api/herdr/mutes', undefined, { kind: 'read' })
     const clean = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
     const mutes = { workspaces: clean(answer?.workspaces), tabs: clean(answer?.tabs) }
+    // A reconnect during the round trip makes this answer belong to a runtime
+    // that no longer exists; publishing it would overwrite the fresh list with
+    // the previous generation's and flip mute buttons back.
+    if (this.runtimes.get(hostId) !== runtime) return mutes
     this.patchHost(hostId, { mutes })
     return mutes
   }
@@ -807,7 +890,10 @@ export class Controller {
     const open = this.state.session
     if (open?.hostId === hostId && open.paneId === paneId) {
       this.stopSession()
-      this.publish({ selectedPaneId: paneId, session: { ...open, items: [], start: -1, end: 0, queued: [], sessionId: undefined, loading: true, unsupported: false, gap: undefined, uncertain: undefined } })
+      // The screen and the model/effort chips described the process that was
+      // just killed, so they are cleared with the transcript rather than shown
+      // as if the restarted agent were already running that way.
+      this.publish({ selectedPaneId: paneId, session: { ...open, items: [], start: -1, end: 0, queued: [], sessionId: undefined, loading: true, unsupported: false, gap: undefined, uncertain: undefined, screen: '', settings: undefined, sentMessage: false } })
       void this.refreshSession()
     }
     return answer?.result ?? null
@@ -820,15 +906,18 @@ export class Controller {
    * and will page it by the tool-use id that dispatched it. This is the only
    * way to read what a background agent actually did; the parent transcript
    * holds one row for it.
+   *
+   * `limit` is the desktop's own default (400). The previous 200 quietly cut
+   * long dispatches in half: the route takes no cursor, so there was nothing
+   * to page with and the missing part was not even detectable.
    */
-  loadSubagent = async (hostId: string, paneId: string, toolId: string, before = -1, limit = 200): Promise<{
+  loadSubagent = async (hostId: string, paneId: string, toolId: string, limit = 400): Promise<{
     agent: { type?: string; description?: string; finished?: boolean }
     items: ChatItem[]
   }> => {
     const runtime = this.runtimes.get(hostId)
     if (!runtime) throw new Error(t('节点不存在'))
     const query = new URLSearchParams({ pane: paneId, tool: toolId, limit: String(limit) })
-    if (before >= 0) query.set('before', String(before))
     const answer = await runtime.transport.request<{
       agent?: { type?: string; description?: string; finished?: boolean }
       page?: { items?: ChatItem[] }
@@ -852,11 +941,7 @@ export class Controller {
   fetchImage = async (hostId: string, url: string): Promise<{ bytes: Uint8Array; contentType: string }> => {
     const runtime = this.runtimes.get(hostId)
     if (!runtime) throw new Error(t('节点不存在'))
-    // The desktop only serves its own image route or an absolute local path
-    // through `/api/herdr/file`; anything else (a remote URL in a message) is
-    // refused rather than fetched.
-    if (!url.startsWith('/api/herdr/image/') && !url.startsWith('/api/herdr/file')) throw new Error(t('不支持这个图片来源'))
-    const answer = await runtime.transport.request<BinaryResponse>(url, undefined, { kind: 'read', responseType: 'bytes', timeoutMs: 30_000 })
+    const answer = await runtime.transport.request<BinaryResponse>(imageRequestPath(url), undefined, { kind: 'read', responseType: 'bytes', timeoutMs: 30_000 })
     if (!answer.bytes.length) throw new Error(t('图片为空'))
     return { bytes: answer.bytes, contentType: answer.contentType }
   }
@@ -978,7 +1063,9 @@ export class Controller {
    * moment the app comes back to the foreground after a brief absence.
    */
   verify = async () => {
-    for (const [id, runtime] of this.runtimes) {
+    // Snapshot: `rebuild` below replaces the map entry, and a key re-added
+    // during iteration is visited again.
+    for (const [id, runtime] of [...this.runtimes]) {
       if (runtime.stopped) continue
       const status = this.state.hosts.find((item) => item.host.id === id)?.status
       if (status !== 'online') continue
@@ -1037,10 +1124,13 @@ export class Controller {
    */
   suspend = () => {
     this.stopSession()
-    for (const [id, runtime] of this.runtimes) {
+    for (const [id, runtime] of [...this.runtimes]) {
+      // Drop it before closing, like every other teardown path: `close` reports
+      // 'offline' synchronously and the scheduler arms a retry for whatever is
+      // still current, which would leave a timer waking a suspended phone.
       this.cancelRetry(runtime)
-      this.closeRuntime(runtime)
       this.runtimes.delete(id)
+      this.closeRuntime(runtime)
       this.patchHost(id, { status: 'offline', herdrOnline: false })
     }
   }
@@ -1086,7 +1176,11 @@ export class Controller {
   }
   selectPane = async (paneId: string) => {
     const hostId = this.state.selectedHostId
-    if (!hostId || !this.runtimes.has(hostId)) return
+    // Report the failure rather than returning silently: a caller that opens a
+    // session (a notification tap, a new session) would otherwise believe it
+    // succeeded and act on whatever session was open before — which is how a
+    // notification reply ended up in a different conversation.
+    if (!hostId || !this.runtimes.has(hostId)) throw new Error(t('节点未连接，无法打开会话'))
     this.stopSession()
     this.publish({ selectedPaneId: paneId, session: { hostId, paneId, items: [], start: -1, end: 0, queued: [], loading: true, loadingOlder: false, screen: '', unsupported: false, sentMessage: false, sending: false } })
     await this.refreshSession()
@@ -1257,6 +1351,12 @@ export class Controller {
     if (!tabId) return undefined
     const runtime = this.runtimes.get(hostId)
     if (!runtime) return undefined
+    // A tab is created for one pane at a time, and this app is what created it,
+    // so the association is already known. Asking the desktop first would cost
+    // a round trip on a path that exists to recover from a missing one.
+    for (const [key, known] of this.tabAddress) {
+      if (known === tabId && key.startsWith(`${hostId}:`)) return key.slice(hostId.length + 1)
+    }
     try {
       const pane = await this.rpc<{ pane?: { pane_id?: string } }>(hostId, 'tab.get', { tab_id: tabId })
       return pane?.pane?.pane_id
@@ -1368,7 +1468,11 @@ export class Controller {
    */
   readPaneScreen = async (hostId: string, paneId: string): Promise<string> => {
     const fresh = await this.rpc<{ read?: { text?: string } }>(hostId, 'pane.read', { pane_id: paneId, source: 'visible', format: 'text' })
-    return fresh.read?.text ?? ''
+    // Stripped here, once, so the alert that hashes this screen and the action
+    // that re-reads it hash the same text. `pane.read` returns coloured output
+    // whether or not the format asks for text, and a menu with escape codes in
+    // it parses as nothing at all.
+    return stripAnsi(fresh.read?.text ?? '')
   }
 
   answerPromptFromAlert = async (

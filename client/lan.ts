@@ -36,9 +36,13 @@ export const DEFAULT_LAN_PORT = 23019
  */
 export function isLanHost(host: string): boolean {
   const ip = host.trim()
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip)
+  // Octets are matched in canonical decimal form only. `172.016.0.1` reads as
+  // 172.16.0.1 here, but a URL parser reads a leading zero as octal and dials
+  // a completely different address — so accepting it would let the gate vet
+  // one host while the socket opened another.
+  const v4 = /^(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/.exec(ip)
   if (v4) {
-    const [a, b] = [Number(v4[1]), Number(v4[2]), Number(v4[3]), Number(v4[4])]
+    const [a, b] = [Number(v4[1]), Number(v4[2])]
     if ([a, b, Number(v4[3]), Number(v4[4])].some((part) => part > 255)) return false
     if (a === 10) return true
     if (a === 172 && b >= 16 && b <= 31) return true

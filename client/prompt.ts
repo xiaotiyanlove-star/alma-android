@@ -35,11 +35,35 @@ export interface Prompt {
  * handler prove the visible menu is still the same without persisting its text.
  */
 export async function promptFingerprint(prompt: Prompt): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(prompt.signature))
+  // The question is part of the identity, not just the rows. Two prompts can
+  // offer the same "1. Yes / 2. No" while asking for very different things —
+  // approving a file write and deleting a directory look identical by label
+  // alone — so a signature over labels only would let a stale notification
+  // approve the question that replaced the one it was posted for.
+  const identity = `${prompt.question}\n${prompt.signature}`
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(identity))
   const bytes = new Uint8Array(digest)
   let binary = ''
   for (const byte of bytes) binary += String.fromCharCode(byte)
   return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+}
+
+/**
+ * Removes terminal escape sequences so a screen can be parsed as text.
+ *
+ * Lives here rather than in the view because `pane.read` is used from two
+ * paths that must agree: the alert that captures a fingerprint and the action
+ * that verifies it. They were stripping differently, so a coloured menu was
+ * hashed from clean text and checked against raw text, and the button always
+ * refused for a reason that had nothing to do with the prompt changing.
+ */
+export function stripAnsi(value: string): string {
+  return value
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b[P^_][\s\S]*?(?:\x1b\\|\x9c)/g, '')
+    .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[ -/]*[@-Z\\-_]/g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '')
 }
 
 const FRAME = /^[│┃║\s]+|[│┃║\s]+$/g
@@ -159,8 +183,13 @@ export function optionForIntent(prompt: Prompt | null, intent: 'allow' | 'deny')
   // A multi-select form toggles rows and needs a separate submit; a single
   // tap cannot stand in for that, so it is never answered from a notification.
   if (prompt.submit) return null
-  const ALLOW = /^(?:yes|allow|approve|accept|ok(?:ay)?|同意|允许|批准|确认)\b/iu
-  const DENY = /^(?:no|deny|reject|decline|cancel|不同意|拒绝|取消)\b/iu
+  // The trailing guard cannot be `\b`: there is no word boundary after a CJK
+  // character, so `\b` made every Chinese label fail and the buttons silent
+  // no-ops in a Chinese terminal. "Not a letter or digit" is the same rule the
+  // boundary encodes for Latin text, and it works for both.
+  const END = '(?=$|[^\\p{L}\\p{N}])'
+  const ALLOW = new RegExp(`^(?:yes|allow|approve|accept|ok(?:ay)?|同意|允许|批准|确认)${END}`, 'iu')
+  const DENY = new RegExp(`^(?:no|deny|reject|decline|cancel|不同意|拒绝|取消)${END}`, 'iu')
   const pattern = intent === 'allow' ? ALLOW : DENY
   const other = intent === 'allow' ? DENY : ALLOW
   const matches = prompt.options.filter((option) => pattern.test(option.label.trim()))

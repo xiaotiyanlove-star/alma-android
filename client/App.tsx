@@ -15,7 +15,7 @@ import { ScanPairing } from './ScanPairs';
 import { AlertTracker, actionFor, localNotifier, registerAlertActions } from './notify';
 import { applyKeepAlive, keepAliveMode, replyInProgress, setKeepAliveMode, type KeepAliveMode } from './keepalive';
 import { lanDiscoveryEnabled, setLanDiscoveryEnabled } from './lanprefs';
-import { parsePrompt, promptFingerprint } from './prompt';
+import { parsePrompt, promptFingerprint, stripAnsi } from './prompt';
 import { buildMessage, checkFile, MAX_ATTACHMENTS } from './attachments';
 import { Markdown } from './Markdown';
 import { CopyButton } from './CodeBlock';
@@ -32,7 +32,7 @@ import { timeline } from './timeline';
 import { backgroundAgents, runningAgents } from './subagents';
 import { commandsFor, filterCommands, slashQuery } from './commands';
 import { formatTime, localeChoice, setLocaleChoice, timeZoneChoice, setTimeZoneChoice, resolvedTimeZone, resolvedLocale, COMMON_ZONES, markdownEnabled, setMarkdownEnabled, themeChoice, setThemeChoice, resolvedTheme, applyTheme, type LocaleChoice, type ThemeChoice } from './prefs';
-import type { AppState, ChatItem, HostState, Pane, SessionState, Snapshot } from './model';
+import type { AppState, ChatItem, HostState, ImageRef, Pane, SessionState, Snapshot } from './model';
 import './styles.css';
 
 // Above this many desktops the list starts collapsed.
@@ -46,15 +46,6 @@ function initialize() {
   if (initialized) return;
   initialized = true;
   void controller.initialize().catch(() => {});
-}
-
-function stripAnsi(value: string): string {
-  return value
-    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b[P^_][\s\S]*?(?:\x1b\\|\x9c)/g, '')
-    .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1b[ -/]*[@-Z\\-_]/g, '')
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
 }
 
 /**
@@ -190,11 +181,17 @@ function printable(value: unknown): string {
 }
 
 /** One tool call, collapsed to a single row unless opened. */
-function ToolRow({ item }: { item: ChatItem }) {
+function ToolRow({ item, hostId }: { item: ChatItem; hostId: string }) {
   const done = item.tool?.done === true;
+  const images = toolImages(item);
   return <details className="tool-detail">
     <summary><span className={`tool-dot${done ? '' : ' is-running'}`} aria-hidden="true" /><span>{item.tool?.name || t('工具调用')}</span><span className="tool-state">{done ? t('已完成') : t('进行中')}</span><ChevronDown size={14} aria-hidden="true" /></summary>
     {item.tool?.input !== undefined && <div className="tool-section"><span className="field-label">{t('输入')}</span><pre tabIndex={0}>{printable(item.tool.input)}</pre></div>}
+    {/* A screenshot a tool produced belongs to that call, so it is rendered
+        here rather than on the message: a burst of calls is folded into one
+        group, and a picture outside the group would be orphaned from the call
+        that made it. */}
+    {images.length > 0 && <div className="transcript-images is-tool">{images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} />)}</div>}
     {item.tool?.output !== undefined && <div className="tool-section"><span className="field-label">{t('输出')}</span><pre tabIndex={0}>{printable(item.tool.output)}</pre></div>}
   </details>;
 }
@@ -207,7 +204,7 @@ function ToolRow({ item }: { item: ChatItem }) {
  * current tool and whether work is happening, and opens to every row inside so
  * nothing is lost.
  */
-function ToolGroup({ items, running }: { items: ChatItem[]; running: boolean }) {
+function ToolGroup({ items, running, hostId }: { items: ChatItem[]; running: boolean; hostId: string }) {
   const last = items[items.length - 1];
   const lastDone = last?.tool?.done === true;
   // The newest unfinished call is what the agent is doing right now.
@@ -221,7 +218,7 @@ function ToolGroup({ items, running }: { items: ChatItem[]; running: boolean }) 
       </span>
       <ChevronDown size={15} aria-hidden="true" />
     </summary>
-    <div className="tool-group-body">{items.map((item) => <ToolRow item={item} key={item.id} />)}</div>
+    <div className="tool-group-body">{items.map((item) => <ToolRow item={item} hostId={hostId} key={item.id} />)}</div>
   </details>;
 }
 
@@ -246,6 +243,11 @@ function TranscriptImage({ hostId, url, mediaType }: { hostId: string; url: stri
       if (!alive) return;
       // The desktop's header wins; the transcript's own hint is the fallback.
       const type = contentType || mediaType || 'image/png';
+      // Only a picture becomes an object URL. The header comes from the
+      // desktop, and the bytes come from a transcript an agent controls, so a
+      // text/html body here would be a same-origin document built from
+      // message content. It is never rendered as one.
+      if (!/^image\//i.test(type)) { setError(true); return; }
       // A copy into a plain ArrayBuffer: the tunnel hands back a subarray view
       // whose backing store is typed as possibly shared.
       objectUrl = URL.createObjectURL(new Blob([bytes.slice().buffer as ArrayBuffer], { type }));
@@ -255,7 +257,17 @@ function TranscriptImage({ hostId, url, mediaType }: { hostId: string; url: stri
   }, [hostId, url, mediaType]);
   if (error) return <div className="transcript-image is-blocked">{t('图片无法显示')}</div>;
   if (!src) return <div className="transcript-image is-loading" role="status" aria-label={t('正在读取图片')}><Loader2 size={16} className="spin" /></div>;
-  return <a className="transcript-image" href={src} target="_blank" rel="noopener noreferrer"><img src={src} alt={t('对话中的图片')} loading="lazy" /></a>;
+  // No anchor: the tap target used to navigate the WebView to the blob, which
+  // is a same-origin document rather than a picture. The image is the whole
+  // interaction now.
+  return <div className="transcript-image"><img src={src} alt={t('对话中的图片')} loading="lazy" /></div>;
+}
+
+/** The pictures a tool produced, under either spelling the desktop uses. */
+function toolImages(item: ChatItem): ImageRef[] {
+  const tool = item.tool;
+  if (!tool) return [];
+  return [...(tool.result_images ?? []), ...(tool.images ?? [])];
 }
 
 function Message({ item, markdown, hostId }: { item: ChatItem; markdown: boolean; hostId: string }) {
@@ -274,8 +286,7 @@ function Message({ item, markdown, hostId }: { item: ChatItem; markdown: boolean
     </div>
     {text && <RichText text={text} markdown={markdown} />}
     {item.images && item.images.length > 0 && <div className="transcript-images">{item.images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} />)}</div>}
-    {item.tool && <ToolRow item={item} />}
-    {item.tool?.images && item.tool.images.length > 0 && <div className="transcript-images is-tool">{item.tool.images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} />)}</div>}
+    {item.tool && <ToolRow item={item} hostId={hostId} />}
     {!text && !item.tool && <p className="muted">{t('此条记录没有文本内容')}</p>}
   </article>;
 }
@@ -293,7 +304,12 @@ function AddHost({ onBack, onAdded }: { onBack(): void; onAdded(): void }) {
   const [pairing, setPairing] = useState(() => takePendingLink());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [reveal, setReveal] = useState(false);
+  // A link that arrived from the system is shown as text, not masked bullets:
+  // any app or page can hand this app an `alma://connect` intent, and the
+  // credential it carries is the whole question. Hiding it would make a
+  // phishing link indistinguishable from the one the user just asked the
+  // desktop to send.
+  const [reveal, setReveal] = useState(() => Boolean(pairing));
   const [scanning, setScanning] = useState(false);
   const nameInput = useRef<HTMLInputElement>(null);
   const lock = useRef(false);
@@ -654,7 +670,7 @@ function useAlerts(hosts: HostState[]) {
         if (alert.kind === 'blocked') {
           try {
             const screen = await controller.readPaneScreen(alert.hostId, alert.paneId)
-            const prompt = parsePrompt(stripAnsi(screen))
+            const prompt = parsePrompt(screen)
             if (prompt) alert.promptFingerprint = await promptFingerprint(prompt)
           } catch { /* a body tap can still open the session */ }
         }
@@ -1225,7 +1241,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
             : subagent.items.length === 0
               ? <p className="muted">{t('这个子 agent 还没有可读的记录')}</p>
               : <div className="subagent-transcript">{timeline(subagent.items).map(entry => entry.kind === 'tools'
-                  ? <ToolGroup items={entry.items} running={entry.running} key={entry.key} />
+                  ? <ToolGroup items={entry.items} running={entry.running} hostId={session.hostId} key={entry.key} />
                   : <Message item={entry.item} markdown={markdown} hostId={session.hostId} key={entry.key} />)}</div>}
         <button type="button" className="secondary-button sheet-cancel" onClick={() => setSubagent(undefined)}>{t('关闭')}</button>
       </div>
@@ -1235,7 +1251,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
         {terminal ? <>{session.loading && !session.screen && <Loading label={t('正在读取终端…')} />}{session.screen ? <pre className={`terminal-screen ${wrap ? 'is-wrapped' : ''}`} tabIndex={0} aria-label={t('终端画面')}>{stripAnsi(session.screen)}</pre> : !session.loading && <EmptyState icon={<Terminal size={28} />} title={session.error ? t('终端画面暂不可用') : t('尚无终端画面')}><button className="secondary-button" disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={16} />{t('读取终端')}</button></EmptyState>}</> : <>
           {session.start > 0 && <div className="older-messages"><button className="text-button" disabled={session.loadingOlder || !ready} onClick={() => void loadOlder()}>{session.loadingOlder ? <Loader2 size={15} className="spin" /> : <ArrowUp size={15} />}{session.loadingOlder ? t('正在加载') : t('更早的记录')}</button></div>}
           {session.loading && !session.items.length ? <Loading label={t('正在读取消息…')} /> : !session.items.length ? <EmptyState icon={<MessageSquare size={28} />} title={session.error ? t('消息暂不可用') : t('暂无消息记录')} /> : <div className="messages">{timeline(session.items).map(entry => entry.kind === 'tools'
-                ? <ToolGroup items={entry.items} running={entry.running} key={entry.key} />
+                ? <ToolGroup items={entry.items} running={entry.running} hostId={session.hostId} key={entry.key} />
                 : <Message item={entry.item} markdown={markdown} hostId={session.hostId} key={entry.key} />)}
               {awaitingReply && !session.uncertain && <div className="thinking" role="status" aria-live="polite">
                 <span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span>
@@ -1319,8 +1335,12 @@ async function handleAlertAction(hostId: string, paneId: string, kind: string | 
     }
     if (intent.kind === 'reply' && intent.text) {
       // The session behind a notification may not be the one on screen; open
-      // it first so the send goes to the pane the user tapped.
+      // it first so the send goes to the pane the user tapped. Opening can
+      // fail (the desktop is offline), and the previous session would then
+      // still be the target — so the opened pane is checked, not assumed.
       await openSessionFromAlert(hostId, paneId)
+      const open = controller.getState().session
+      if (!open || open.hostId !== hostId || open.paneId !== paneId) throw new Error(t('会话没有打开，回复未发送'))
       await controller.sendMessage(intent.text)
       return
     }
@@ -1355,9 +1375,16 @@ export function App() {
   useEffect(() => { void applyKeepAlive(keepAliveMode(), false); }, []);
   // A `reply` keep-alive follows the work itself: on when an agent starts,
   // off when the last one finishes, so the service's own timeout is a backstop
-  // rather than the normal way it ends.
+  // rather than the normal way it ends. Re-applied only while the app is on
+  // screen: since Android 12 a foreground service cannot be started from the
+  // background, and snapshot frames still arrive while hidden, so a change
+  // seen then would fail silently and leave the reply uncovered.
   const workingNow = replyInProgress(state.hosts);
-  useEffect(() => { void applyKeepAlive(keepAliveMode(), workingNow); }, [workingNow]);
+  const visible = state.foreground !== false;
+  useEffect(() => {
+    if (!visible) return;
+    void applyKeepAlive(keepAliveMode(), workingNow);
+  }, [workingNow, visible]);
 
   // Tapping a notification opens the conversation that raised it. The camera
   // tunnel stays closed; only the panes and the transcript are loaded.

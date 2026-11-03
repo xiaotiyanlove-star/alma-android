@@ -246,9 +246,12 @@ public class MainActivity extends BridgeActivity {
         runOnUiThread(() -> {
             try {
                 // `evaluateJavascript` answers with the JSON form of the value:
-                // the literal `true`, not a Java boolean.
+                // the literal `true`, not a Java boolean. The pending copy is
+                // cleared only on that exact answer. Anything else — a page
+                // that is not ready, a refused call — leaves it for the
+                // one-shot boot read, which is the only other consumer.
                 webView.evaluateJavascript(script, accepted -> {
-                    if (accepted != null && accepted.contains("true")) pendingPairingLink = null;
+                    if ("true".equals(accepted)) pendingPairingLink = null;
                 });
             } catch (Throwable ignored) {
                 // Still loading; the page picks the value up at boot.
@@ -262,9 +265,16 @@ public class MainActivity extends BridgeActivity {
         return value;
     }
 
-    /** A JSON-escaped string literal, safe to splice into a script. */
+    /**
+     * A JSON string literal, safe to splice into a script.
+     *
+     * Delegates to the platform encoder rather than escaping by hand: a hand
+     * written encoder has to remember every character JavaScript treats as a
+     * line break (U+2028/U+2029 as well as \n and \r), and the value here is
+     * a credential. `JSONObject.quote` handles the whole class at once.
+     */
     private static String jsString(String value) {
-        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "") + "\"";
+        return org.json.JSONObject.quote(value);
     }
 
     /**

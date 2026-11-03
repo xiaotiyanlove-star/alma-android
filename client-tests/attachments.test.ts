@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { FRAME_LIMIT_BYTES, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, MAX_ATTACHMENTS, buildMessage, checkFile, uploadRoute } from '../client/attachments.ts'
+import { FRAME_LIMIT_BYTES, imageRequestPath, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, MAX_ATTACHMENTS, buildMessage, checkFile, uploadRoute } from '../client/attachments.ts'
 
 test('images take the image route, everything else the generic one', () => {
   assert.equal(uploadRoute('image/png'), '/api/attachments/image')
@@ -50,4 +50,29 @@ test('a file-only message still reads sensibly', () => {
 
 test('no files leaves the message untouched', () => {
   assert.equal(buildMessage('hello', []), 'hello')
+})
+
+test('the limit survives base64, which the frame uses without binary support', () => {
+  // A desktop that does not echo `bin: 1` gets the body base64-encoded inside
+  // the JSON frame: four bytes for every three, plus the IV, the tag and the
+  // header. At 24 MiB that landed exactly on the relay's limit and every upload
+  // to an older desktop failed mid-send, reported as an uncertain mutation.
+  const encoded = Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4
+  const overhead = 12 + 16 + 1024
+  assert.ok(encoded + overhead < FRAME_LIMIT_BYTES, `base64 makes ${encoded + overhead} bytes, over ${FRAME_LIMIT_BYTES}`)
+})
+
+test('image references become the route the desktop serves them from', () => {
+  // The desktop reports `/api/…` routes as-is and plain absolute paths for a
+  // file on its own disk; the official client rewrites the latter into the
+  // file route, and so must this one.
+  assert.equal(imageRequestPath('/api/herdr/image/pic.png'), '/api/herdr/image/pic.png')
+  assert.equal(imageRequestPath('/api/herdr/file?path=%2Fx'), '/api/herdr/file?path=%2Fx')
+  assert.equal(imageRequestPath('/Users/me/shot.png'), '/api/herdr/file?path=%2FUsers%2Fme%2Fshot.png')
+  assert.equal(imageRequestPath('~/shot.png'), '/api/herdr/file?path=~%2Fshot.png')
+  // Anything that would make the desktop reach somewhere of the message's
+  // choosing is refused rather than rewritten.
+  assert.throws(() => imageRequestPath('https://example.com/x.png'))
+  assert.throws(() => imageRequestPath('//example.com/x.png'))
+  assert.throws(() => imageRequestPath('relative/x.png'))
 })
