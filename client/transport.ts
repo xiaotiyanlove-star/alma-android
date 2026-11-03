@@ -47,6 +47,12 @@ export interface RequestInit2 {
    * retry a harmless read.
    */
   kind?: 'read' | 'mutation'
+  /**
+   * Deadline for this call. A create that waits for an agent to become
+   * interactive legitimately takes longer than a read, and the default is
+   * tuned for reads.
+   */
+  timeoutMs?: number
 }
 export interface Transport {
   connect(): Promise<void>
@@ -179,7 +185,7 @@ export class EncryptedTunnel implements Transport {
         this.pending.delete(id)
         reject(pending.mutation && pending.sent ? new OperationUncertainError() : new Error(t('桌面接口超时')))
         void this.send({ t: 'hcancel', id }).catch(() => undefined)
-      }, this.timeoutMs)
+      }, init?.timeoutMs ?? this.timeoutMs)
       const pending: Pending = { mutation, sent: false, status: 0, chunks: [], timer, resolve: resolve as (value: unknown) => void, reject }
       this.pending.set(id, pending)
       // Mark conservatively before send: a transport exception cannot prove non-delivery.

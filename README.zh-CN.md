@@ -149,11 +149,16 @@ client-tests/          单元测试、Playwright 流程、设备探针（本地�
 
 ```bash
 npm test        # 单元测试：加密、帧编解码、会话、重试、菜单、偏好
-npm run test:ui # Playwright：模拟中继下的完整 UI 流程
+npm run test:ui # 全部 Playwright 流程：逐页逐功能
 npm run check   # 单元测试、类型检查与生产构建
+npm run test:all # 交付前必跑：上面全部
 ```
 
-`npm run check` 只包含单元测试、类型检查与构建，不含 Playwright 流程。
+**交付前跑 `npm run test:all`。** 它把单元测试、类型检查、构建和每个页面的
+Playwright 流程串成一个序列，任何一步失败都会停下并报出是哪一项。
+
+`npm run check` 只包含单元测试、类型检查与构建，不含 Playwright 流程；
+`npm run test:ui` 只跑 Playwright 部分（CI 里先跑过 check，再用它补 UI）。
 
 Playwright 流程驱动真实 UI，配合合成中继：完成加密握手、切换桌面、发送消息、
 回答授权菜单、扫描生成的二维码、切换 Markdown。只使用合成配对码，不接触真实桌面。

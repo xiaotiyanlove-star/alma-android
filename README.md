@@ -176,12 +176,18 @@ client-tests/          Unit tests, Playwright flows, device probes
 
 ```bash
 npm test        # unit tests: crypto, frames, sessions, retries, prompts, prefs
-npm run test:ui # Playwright flows against the dev server with a mocked relay
+npm run test:ui # every Playwright flow, page by page
 npm run check   # unit tests, typecheck and a production build
+npm run test:all # what a hand-over must pass: all of the above
 ```
 
+**Run `npm run test:all` before handing over a build.** It chains the unit suite,
+typecheck, build and every page's Playwright flow into one sequence, and stops at the
+first failure with the name of the check that broke.
+
 `npm run check` is the unit suite plus typecheck and build; the Playwright flows are a
-separate command and are not part of it.
+separate command and are not part of it. CI runs `check` in one job and the flows in the
+same required job, so neither half can ship alone.
 
 The Playwright flows drive the real UI with a synthetic relay: they complete the
 encrypted handshake, switch between desktops, send messages, answer an approval menu,

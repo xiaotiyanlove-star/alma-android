@@ -25,7 +25,7 @@ import { agentLook, statusTone, statusWord } from './agents';
 import { timeline } from './timeline';
 import { backgroundAgents } from './subagents';
 import { commandsFor, filterCommands, slashQuery } from './commands';
-import { formatTime, localeChoice, setLocaleChoice, timeZoneChoice, setTimeZoneChoice, resolvedTimeZone, resolvedLocale, COMMON_ZONES, markdownEnabled, setMarkdownEnabled, themeChoice, setThemeChoice, resolvedTheme, type LocaleChoice, type ThemeChoice } from './prefs';
+import { formatTime, localeChoice, setLocaleChoice, timeZoneChoice, setTimeZoneChoice, resolvedTimeZone, resolvedLocale, COMMON_ZONES, markdownEnabled, setMarkdownEnabled, themeChoice, setThemeChoice, resolvedTheme, applyTheme, type LocaleChoice, type ThemeChoice } from './prefs';
 import type { AppState, ChatItem, HostState, Pane, SessionState, Snapshot } from './model';
 import './styles.css';
 
@@ -1167,6 +1167,11 @@ export function App() {
     }
   }, []);
   useAlerts(state.hosts);
+
+  // The window behind the WebView is native. It has to know the theme the page
+  // actually resolved, or the status-bar and navigation-bar strips stay the
+  // system's colour while the page is the opposite one.
+  useEffect(() => { applyTheme() }, []);
 
   // A desktop that disappears (forgotten, or storage wiped) must not leave the
   // user on a dead screen. Keyed on primitive ids so a re-published host list

@@ -28,6 +28,22 @@ jobs:
       - run: npm ci
       - run: npm run check
 
+      # The unit tests cannot see a layout that broke or a dialog that stopped
+      # opening; these drive the real UI. They are part of the required check
+      # so a regression in one feature cannot ship behind a green build.
+      - name: Install a browser for the UI checks
+        run: npx playwright install --with-deps chromium
+
+      - name: UI checks
+        run: |
+          set -euo pipefail
+          npm run dev &
+          for _ in $(seq 1 40); do
+            curl -sf -o /dev/null http://127.0.0.1:5174/ && break
+            sleep 1
+          done
+          npx tsx client-tests/all.ts --skip-build
+
   android:
     name: Debug APK
     needs: check
@@ -87,6 +103,9 @@ jobs:
     permissions:
       contents: write
     env:
+      # Unset secrets expand to an empty string, so this is 'true' only when the
+      # keystore is genuinely configured. Both the step `if:` and the shell
+      # below read the same value.
       HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
@@ -108,6 +127,19 @@ jobs:
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 
       - run: npm ci
+
+      # A tag that disagrees with the version baked into the APK is how you ship
+      # a "0.1.16" download that installs over itself as 0.1.15 and never
+      # updates. Both files must agree, and both must match the tag.
+      - name: Check the tag matches the build version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          gradle="$(sed -n 's/.*versionName "\([^"]*\)".*/\1/p' android/app/build.gradle | head -1)"
+          echo "tag=$tag package.json=$pkg build.gradle=$gradle"
+          test "$tag" = "$pkg" || { echo "tag $tag != package.json $pkg" >&2; exit 1; }
+          test "$pkg" = "$gradle" || { echo "package.json $pkg != build.gradle $gradle" >&2; exit 1; }
 
       - name: Build web application
         run: npm run build:web

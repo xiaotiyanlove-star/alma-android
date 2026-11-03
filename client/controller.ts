@@ -63,6 +63,14 @@ function isUnknownMethod(error: unknown): boolean {
   return /unknown variant|unknown method|unsupported|not_implemented|invalid_request/i.test(text)
 }
 
+/**
+ * Starting an agent is not a read: Herdr launches a process and waits for it
+ * to become interactive before answering. A cold start on a loaded machine
+ * outlives the read deadline, and the user then sees "may have run" for a
+ * create that actually succeeded.
+ */
+const CREATE_TIMEOUT_MS = 75_000
+
 function merge(current: ChatItem[], incoming: ChatItem[], prepend = false): ChatItem[] {
   const all = new Map(current.map((item) => [item.id, item]))
   for (const item of incoming) all.set(item.id, item)
@@ -266,17 +274,27 @@ export class Controller {
     const command = agentLaunchCommand(options.kind)
     try {
       const created = await this.rpc<{
-        tab_id?: string; workspace_id?: string; focused_pane_id?: string
-        layout?: { tab_id?: string; workspace_id?: string; focused_pane_id?: string }
+        type?: string; tab_id?: string; workspace_id?: string; focused_pane_id?: string
+        layout?: { tab_id?: string; workspace_id?: string; focused_pane_id?: string; root?: unknown }
       }>(hostId, 'layout.apply', {
         ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}),
         ...(options.label ? { tab_label: options.label } : {}),
         focus: false,
         root: { type: 'pane', ...(options.cwd ? { cwd: options.cwd } : {}), command },
-      })
+      }, CREATE_TIMEOUT_MS)
+      // Herdr answers `{ type: 'layout_apply', layout: {…} }`; a wrapper that
+      // predates that shape put the same fields at the top level. Read both.
       const paneId = created?.focused_pane_id ?? created?.layout?.focused_pane_id
       const workspaceId = created?.workspace_id ?? created?.layout?.workspace_id ?? options.workspaceId ?? ''
-      if (!paneId) throw new Error(t('无法创建会话'))
+      const tabId = created?.tab_id ?? created?.layout?.tab_id
+      if (!paneId) {
+        // The layout was applied but the reply did not name a pane. The tab is
+        // still there, so find its pane in the snapshot instead of reporting a
+        // failure for something that worked.
+        const found = await this.paneOfTab(hostId, tabId)
+        if (!found) throw new Error(t('无法创建会话'))
+        return { paneId: found, workspaceId }
+      }
       return { paneId, workspaceId }
     } catch (error) {
       // Desktops older than the layout API have no other way to start an agent,
@@ -291,7 +309,7 @@ export class Controller {
   /** The pre-`layout.apply` path: create the tab, then type the agent in. */
   private async legacyNewSession(hostId: string, options: { kind: string; cwd?: string; workspaceId?: string; label?: string }) {
     const created = await this.rpc<{ tab?: { tab_id?: string; workspace_id?: string }; root_pane?: { pane_id?: string; workspace_id?: string } }>(
-      hostId, 'tab.create', { ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}), ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.label ? { label: options.label } : {}), focus: false },
+      hostId, 'tab.create', { ...(options.workspaceId ? { workspace_id: options.workspaceId } : {}), ...(options.cwd ? { cwd: options.cwd } : {}), ...(options.label ? { label: options.label } : {}), focus: false }, CREATE_TIMEOUT_MS,
     )
     const paneId = created?.root_pane?.pane_id
     const workspaceId = created?.root_pane?.workspace_id ?? created?.tab?.workspace_id ?? options.workspaceId ?? ''
@@ -304,7 +322,7 @@ export class Controller {
           kind: options.kind,
           pane_id: paneId,
           timeout_ms: 60_000,
-        })
+        }, CREATE_TIMEOUT_MS)
         return { paneId, workspaceId }
       } catch (error) {
         lastError = error
@@ -666,10 +684,50 @@ export class Controller {
       throw error
     } finally { this.patchSession(epoch, { sending: false }) }
   }
-  private async rpc<T>(hostId: string, method: string, params: Record<string, unknown>): Promise<T> {
+  /**
+   * The pane a tab holds, asked of Herdr rather than assumed.
+   *
+   * `layout.apply` normally names the pane it focused, but a reply without one
+   * must not turn a created session into a reported failure.
+   */
+  private async paneOfTab(hostId: string, tabId?: string): Promise<string | undefined> {
+    if (!tabId) return undefined
+    const runtime = this.runtimes.get(hostId)
+    if (!runtime) return undefined
+    try {
+      const pane = await this.rpc<{ pane?: { pane_id?: string } }>(hostId, 'tab.get', { tab_id: tabId })
+      return pane?.pane?.pane_id
+    } catch {
+      // The method may not exist on an older desktop; the snapshot still can.
+      return new Promise<string | undefined>((resolve) => {
+        let socket: { close(): void } | undefined
+        const done = (value?: string) => { socket?.close(); resolve(value) }
+        const timer = setTimeout(() => done(undefined), 5000)
+        socket = runtime.transport.subscribe('/ws/herdr', (event) => {
+          if (event.type !== 'snapshot') return
+          clearTimeout(timer)
+          const panes = (event.snapshot?.panes ?? []) as { pane_id?: string; tab_id?: string }[]
+          done(panes.find((item) => item.tab_id === tabId)?.pane_id)
+        }, () => done(undefined))
+      })
+    }
+  }
+
+  /**
+   * One Herdr RPC.
+   *
+   * `timeoutMs` exists because starting an agent is not like reading a pane:
+   * Herdr launches a process and waits for it to become interactive before it
+   * answers, and the default 20 s is shorter than a cold agent start on a busy
+   * machine. The request has already been sent by then, so the user sees the
+   * "may have run" message for what is really a slow but successful create.
+   */
+  private async rpc<T>(hostId: string, method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
     const runtime = this.runtimes.get(hostId)
     if (!runtime) throw new Error(t('节点不存在'))
-    const response = await runtime.transport.request<{ result?: T; error?: { code?: string; message?: string } }>('/api/herdr/rpc', { method, params })
+    const response = await runtime.transport.request<{ result?: T; error?: { code?: string; message?: string } }>(
+      '/api/herdr/rpc', { method, params }, timeoutMs === undefined ? undefined : { timeoutMs },
+    )
     if (response.error) throw new Error(response.error.message || response.error.code || t('Herdr 操作失败'))
     return response.result as T
   }

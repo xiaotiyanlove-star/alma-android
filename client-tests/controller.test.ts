@@ -304,3 +304,63 @@ test('the id arriving after the wait restores the conversation', async () => {
     assert.equal(controller.getState().session?.items[0].text, 'hello')
   } finally { controller.dispose() }
 })
+
+// ── creating a session ──────────────────────────────────────────────────
+test('the real layout.apply reply shape yields the new pane', async () => {
+  // Herdr answers `{ type: 'layout_apply', layout: { … } }`, not a flat object.
+  const { controller, transports } = setup()
+  try {
+    await controller.initialize(); await wait()
+    const transport = transports.get('A')!
+    transport.request = async (path: string, body?: unknown): Promise<any> => {
+      transport.calls.push({ path, body })
+      if (path === '/api/herdr/info') return { online: true }
+      if ((body as any)?.method === 'layout.apply') {
+        // `rpc` unwraps `result`, so this is the Herdr result object verbatim.
+        return { result: { type: 'layout_apply', layout: { workspace_id: 'w1', tab_id: 'w1:t2', zoomed: false, focused_pane_id: 'w1:p2', root: { type: 'pane' } } } }
+      }
+      return { result: { read: { text: '' } } }
+    }
+    const created = await controller.newSession('A', { kind: 'claude', cwd: '/tmp' })
+    assert.deepEqual(created, { paneId: 'w1:p2', workspaceId: 'w1' })
+  } finally { controller.dispose() }
+})
+
+test('a reply without a pane id still finds the created pane', async () => {
+  // The tab exists either way; failing here would report a create that worked
+  // as broken.
+  const { controller, transports } = setup()
+  try {
+    await controller.initialize(); await wait()
+    const transport = transports.get('A')!
+    transport.request = async (path: string, body?: unknown): Promise<any> => {
+      transport.calls.push({ path, body })
+      if (path === '/api/herdr/info') return { online: true }
+      const method = (body as any)?.method
+      if (method === 'layout.apply') return { result: { type: 'layout_apply', layout: { workspace_id: 'w1', tab_id: 'w1:t3' } } }
+      if (method === 'tab.get') return { result: { pane: { pane_id: 'w1:p3' } } }
+      return { result: {} }
+    }
+    const created = await controller.newSession('A', { kind: 'codex' })
+    assert.equal(created.paneId, 'w1:p3')
+  } finally { controller.dispose() }
+})
+
+test('creating a session is allowed to take longer than a read', async () => {
+  // A slow agent start must not become "operation may have run": the request
+  // went out, so a short deadline misreports a success as an uncertain one.
+  const { controller, transports } = setup()
+  try {
+    await controller.initialize(); await wait()
+    const transport = transports.get('A')!
+    const timeouts: unknown[] = []
+    transport.request = async (path: string, body?: unknown, init?: any): Promise<any> => {
+      transport.calls.push({ path, body })
+      if (path === '/api/herdr/info') return { online: true }
+      if ((body as any)?.method === 'layout.apply') { timeouts.push(init?.timeoutMs); return { result: { type: 'layout_apply', layout: { workspace_id: 'w1', focused_pane_id: 'w1:p9' } } } }
+      return { result: {} }
+    }
+    await controller.newSession('A', { kind: 'claude' })
+    assert.ok(typeof timeouts[0] === 'number' && (timeouts[0] as number) >= 60_000, `create deadline was ${timeouts[0]}`)
+  } finally { controller.dispose() }
+})

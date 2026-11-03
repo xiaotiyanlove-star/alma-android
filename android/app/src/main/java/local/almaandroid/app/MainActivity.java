@@ -48,11 +48,24 @@ import java.util.Locale;
  */
 public class MainActivity extends BridgeActivity {
 
-    /** 与 renderer 主题底色一致（shim 的 FOUC 打底同色）。 */
-    private static final int BG_DARK = 0xFF282C34;
+    /**
+     * 与 renderer 的 --surface 一致。
+     *
+     * 这是 WebView 上下边距露出的那块底色，紧贴页面头部，所以要和页面表面
+     * 同色（深色 #121614、浅色 #ffffff），而不是与更暗的页面底色一致。
+     */
+    private static final int BG_DARK = 0xFF121614;
     private static final int BG_LIGHT = Color.WHITE;
 
     private WebView webView;
+
+    /**
+     * 页面最后上报的主题偏好（"dark" | "light" | "system"）。
+     *
+     * 系统深浅色变化时不能直接按 isNightMode() 重设窗口：用户在应用内固定了
+     * 深色，系统切到浅色不该把窗口底色刷白。
+     */
+    private String themeMode = "system";
 
     /** Set while the page is waiting for the user to pick files. */
     private android.webkit.ValueCallback<Uri[]> pendingFileChooser;
@@ -126,6 +139,7 @@ public class MainActivity extends BridgeActivity {
         webView = getBridge() != null ? getBridge().getWebView() : null;
         if (webView != null) {
             applyWebViewBackground(isNightMode());
+            applyWindowBackground(isNightMode());
             applySystemBars(isNightMode());
             attachImeInsetsListener();
             allowLandscapeCutout();
@@ -242,6 +256,33 @@ public class MainActivity extends BridgeActivity {
         if (webView != null) webView.setBackgroundColor(dark ? BG_DARK : BG_LIGHT);
     }
 
+    /**
+     * 窗口底色：状态栏/导航栏下方露出的就是它。
+     *
+     * WebView 按 systemBars 做了上下边距，那两条边距显示的是父容器
+     * (CoordinatorLayout) 的背影，不是页面。父容器原先继承主题里的启动色，
+     * 只在 **系统** 深色时才是深色；应用内手动选深色而系统是浅色时，边距仍
+     * 为白色 —— 深色页面上下各一条白边，浅色的状态栏图标画在白色上等于看不见。
+     *
+     * 所以要改的是 webView 的父容器，而不是 android.R.id.content：
+     * 后者在 Capacitor 的布局里是另一个视图，改了也盖不住父容器。
+     */
+    private void applyWindowBackground(boolean dark) {
+        int color = dark ? BG_DARK : BG_LIGHT;
+        try {
+            getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(color));
+            getWindow().getDecorView().setBackgroundColor(color);
+            View root = findViewById(android.R.id.content);
+            if (root != null) root.setBackgroundColor(color);
+            // The strips above and below the WebView are painted by its parent.
+            if (webView != null && webView.getParent() instanceof View) {
+                ((View) webView.getParent()).setBackgroundColor(color);
+            }
+        } catch (Throwable t) {
+            // 个别 ROM 上设置窗口背景失败不影响功能
+        }
+    }
+
     /** 状态栏/导航栏图标深浅（dark=true 表示页面深色 → 图标用浅色）。 */
     private void applySystemBars(boolean dark) {
         try {
@@ -254,9 +295,15 @@ public class MainActivity extends BridgeActivity {
     }
 
     /** 应用主题（"dark" | "light" | "system"）→ WebView 底色 + 系统栏图标。 */
+    private boolean themeIsDark() {
+        return "dark".equals(themeMode) || (!"light".equals(themeMode) && isNightMode());
+    }
+
     private void applyTheme(String mode) {
-        boolean dark = "dark".equals(mode) || (!"light".equals(mode) && isNightMode());
+        themeMode = mode == null ? "system" : mode;
+        boolean dark = themeIsDark();
         applyWebViewBackground(dark);
+        applyWindowBackground(dark);
         applySystemBars(dark);
     }
 
@@ -327,8 +374,10 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        applyWebViewBackground(isNightMode());
-        applySystemBars(isNightMode());
+        // Follow the in-app choice when there is one; only "system" reacts here.
+        applyWebViewBackground(themeIsDark());
+        applyWindowBackground(themeIsDark());
+        applySystemBars(themeIsDark());
     }
 
     /** 兜底 locale 通道：documentStart 不可用（<API 33）时由 shim 同步调用。 */
