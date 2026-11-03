@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import './locale.ts'
 import { Controller, agentLaunchCommand, transcriptGap } from '../client/controller.ts'
+import { RejectedError } from '../client/transport.ts'
 import type { Host } from '../client/model.ts'
 import type { HostStorage } from '../client/storage.ts'
 import type { Transport } from '../client/transport.ts'
@@ -362,5 +363,57 @@ test('creating a session is allowed to take longer than a read', async () => {
     }
     await controller.newSession('A', { kind: 'claude' })
     assert.ok(typeof timeouts[0] === 'number' && (timeouts[0] as number) >= 60_000, `create deadline was ${timeouts[0]}`)
+  } finally { controller.dispose() }
+})
+
+// ── the phone bridge's allowlist ────────────────────────────────────────
+test('a method the phone may not call falls back to the allowlisted path', async () => {
+  // Alma's phone bridge answers 403 for anything outside its allowlist, and
+  // `layout.apply` is not in it. Reporting that as "may have run" is wrong on
+  // both counts: nothing ran, and tab.create + agent.start would have worked.
+  const { controller, transports } = setup()
+  try {
+    await controller.initialize(); await wait()
+    const transport = transports.get('A')!
+    transport.request = async (path: string, body?: unknown): Promise<any> => {
+      transport.calls.push({ path, body })
+      const method = (body as any)?.method
+      if (path === '/api/herdr/info') return { online: true }
+      if (method === 'layout.apply') throw new RejectedError(403, 'layout.apply is not available from the phone')
+      if (method === 'tab.create') return { result: { tab: { tab_id: 'w1:t4', workspace_id: 'w1' }, root_pane: { pane_id: 'w1:p4', workspace_id: 'w1' } } }
+      return { result: {} }
+    }
+    const created = await controller.newSession('A', { kind: 'claude', cwd: '/tmp', label: 'named' })
+    assert.equal(created.paneId, 'w1:p4')
+    const methods = transport.calls.map((call) => (call.body as any)?.method).filter(Boolean)
+    assert.deepEqual(methods.slice(-3), ['layout.apply', 'tab.create', 'agent.start'])
+
+    // The next create goes straight to the working path.
+    transport.calls.length = 0
+    await controller.newSession('A', { kind: 'codex' })
+    const second = transport.calls.map((call) => (call.body as any)?.method).filter(Boolean)
+    assert.equal(second.includes('layout.apply'), false, 'a refused method is not retried on every create')
+    assert.deepEqual(second.slice(0, 2), ['tab.create', 'agent.start'])
+  } finally { controller.dispose() }
+})
+
+test('the allowlisted path still names and cwds the new session', async () => {
+  const { controller, transports } = setup()
+  try {
+    await controller.initialize(); await wait()
+    const transport = transports.get('A')!
+    transport.request = async (path: string, body?: unknown): Promise<any> => {
+      transport.calls.push({ path, body })
+      const method = (body as any)?.method
+      if (path === '/api/herdr/info') return { online: true }
+      if (method === 'layout.apply') throw new RejectedError(403, 'not available from the phone')
+      if (method === 'tab.create') return { result: { tab: { tab_id: 'w1:t4', workspace_id: 'w1' }, root_pane: { pane_id: 'w1:p4' } } }
+      return { result: {} }
+    }
+    await controller.newSession('A', { kind: 'claude', cwd: '/Users/me/project', label: '发布流程' })
+    const create = transport.calls.find((call) => (call.body as any)?.method === 'tab.create')!.body as any
+    assert.equal(create.params.cwd, '/Users/me/project')
+    assert.equal(create.params.label, '发布流程')
+    assert.equal(create.params.focus, false)
   } finally { controller.dispose() }
 })

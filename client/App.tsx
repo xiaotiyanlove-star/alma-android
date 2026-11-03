@@ -464,7 +464,7 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
           }} aria-label={t('agent 需要你或已完成时提醒')} /><span className="switch-track" aria-hidden="true" /></span>
         </label>
         <label className="toggle-row">
-          <span><strong>{t('后台保持连接')}</strong><small>{t('退出应用后仍能收到提醒。通知栏会常驻一条状态提示。')}</small></span>
+          <span><strong>{t('后台保持连接')}</strong><small>{t('退出应用后仍能收到提醒。系统要求这项功能在通知栏留一条常驻提示，关掉它就只在应用内收提醒。')}</small></span>
           <span className="switch"><input type="checkbox" defaultChecked={keepAliveEnabled()} onChange={event => { setKeepAliveEnabled(event.target.checked); void applyKeepAlive(event.target.checked) }} aria-label={t('后台保持连接')} /><span className="switch-track" aria-hidden="true" /></span>
         </label>
         <button type="button" className="secondary-button" onClick={() => void localNotifier.notify({ hostId: 'test', hostName: '本机', paneId: 'test', title: '测试通知 · Herdr', body: '如果你看到这条，通知功能正常。', kind: 'done' }).catch(() => undefined)}>{t('发送测试通知')}</button>

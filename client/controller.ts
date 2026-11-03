@@ -5,7 +5,7 @@ import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, stopMessage } 
 import { MAX_ATTACHMENT_BYTES, uploadRoute, type UploadResponse, type UploadedFile } from './attachments'
 import { moveKeys, needsSpace, parsePrompt, samePrompt, type Prompt } from './prompt'
 import { hostStorage, type HostStorage } from './storage'
-import { EncryptedTunnel, OperationUncertainError, type Transport, type TunnelError, type TunnelSocket } from './transport'
+import { EncryptedTunnel, OperationUncertainError, RejectedError, type Transport, type TunnelError, type TunnelSocket } from './transport'
 
 type Page = { session_id?: string; page?: { items?: ChatItem[]; start?: number; end?: number }; queued?: { id: string; text: string }[]; error?: { code?: string; message?: string } }
 const message = (error: unknown) => error instanceof Error ? error.message : t('请求失败')
@@ -59,8 +59,12 @@ export function transcriptGap(code: string, pane: Pane | undefined, sentMessage:
  * naming the method, and a desktop too old for it may not answer at all.
  */
 function isUnknownMethod(error: unknown): boolean {
+  // Alma refuses methods the phone may not call with 403 "… is not available
+  // from the phone". That is the same situation as an older desktop not
+  // knowing the method: another path has to be used instead.
+  if (error instanceof RejectedError && error.status === 403) return true
   const text = error instanceof Error ? error.message : String(error)
-  return /unknown variant|unknown method|unsupported|not_implemented|invalid_request/i.test(text)
+  return /unknown variant|unknown method|unsupported|not_implemented|invalid_request|not available from the phone/i.test(text)
 }
 
 /**
@@ -91,6 +95,8 @@ export class Controller {
   private openingHost = false
   private initializedStorage = false
   private sessionRefresh?: Promise<void>
+  /** Desktops where `layout.apply` is not offered to the phone. */
+  private legacyOnly = new Set<string>()
   constructor(private storage: HostStorage = hostStorage, private createTransport = (host: Host, status: (state: 'connecting' | 'online' | 'offline', error?: string, code?: TunnelError['code']) => void): Transport => new EncryptedTunnel(host, status)) {}
   getState = () => this.state
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
@@ -206,6 +212,8 @@ export class Controller {
   }
   private async addHostNow(name: string, link: string) {
     const host = await parsePairing(name, link)
+    // The desktop may have been updated since; ask again rather than assume.
+    this.legacyOnly.delete(host.id)
     const old = this.state.hosts.find((item) => item.host.id === host.id)?.host
     if (old) {
       host.addedAt = old.addedAt
@@ -269,8 +277,21 @@ export class Controller {
    * exits: closing the agent must leave a usable terminal, not a dead tab
    * (a pane whose process exits is removed by Herdr).
    */
+  /**
+   * Creates a session.
+   *
+   * `layout.apply` starts the agent with its own argv, which avoids typing
+   * into a shell that may still be reading rc files. It is not always
+   * available: Alma's phone bridge refuses any method outside its allowlist,
+   * and older desktops do not know it at all. Both are discovered by asking,
+   * not by version, and both fall back to `tab.create` + `agent.start` — the
+   * methods that allowlist does include.
+   */
   newSession = async (hostId: string, options: { kind: string; cwd?: string; workspaceId?: string; label?: string }): Promise<{ paneId: string; workspaceId: string }> => {
     if (!this.runtimes.has(hostId)) throw new Error(t('节点不存在'))
+    // A refused method would answer identically every time, so remember it
+    // per desktop and skip the round trip from the second session onwards.
+    if (this.legacyOnly.has(hostId)) return this.legacyNewSession(hostId, options)
     const command = agentLaunchCommand(options.kind)
     try {
       const created = await this.rpc<{
@@ -302,6 +323,7 @@ export class Controller {
       // shell that is still reading its rc files, which is why it is only the
       // fallback and not the default.
       if (!isUnknownMethod(error)) throw error
+      this.legacyOnly.add(hostId)
       return this.legacyNewSession(hostId, options)
     }
   }

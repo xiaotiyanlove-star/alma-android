@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { Controller } from '../client/controller.ts'
 import type { Host, HostState } from '../client/model.ts'
 import type { HostStorage } from '../client/storage.ts'
-import { EncryptedTunnel, TunnelError, type SocketLike } from '../client/transport.ts'
+import { EncryptedTunnel, OperationUncertainError, RejectedError, TunnelError, type SocketLike } from '../client/transport.ts'
 import { createKeyPair, deriveSessionKeys, openBytes, sealBytes } from '../client/crypto.ts'
 import { isPermanentFailure } from '../client/backoff.ts'
 
@@ -121,7 +121,22 @@ class FakeSocket implements SocketLike {
   onclose: (() => void) | null = null
   private keys?: Awaited<ReturnType<typeof deriveSessionKeys>>
   private chain = Promise.resolve()
+  private recvAsClient = 0n
   constructor() { setTimeout(() => this.onopen?.(), 0) }
+  /** Request ids that went out encrypted, so a test can answer one. */
+  private requestIds: string[] = []
+  hasRequest(): boolean { return this.requestIds.length > 0 }
+  count(): number { return this.requestIds.length }
+  lastId(): string { return this.requestIds[this.requestIds.length - 1] ?? '' }
+  /** Answers the most recent request with a given HTTP status and body. */
+  reply(status: number, body: unknown) {
+    const id = this.requestIds[this.requestIds.length - 1]
+    if (!id) throw new Error('no request to answer')
+    const json = new TextEncoder().encode(JSON.stringify(body))
+    this.onmessage?.({ data: JSON.stringify({ t: 'hres', id, status, headers: {} }) })
+    this.onmessage?.({ data: JSON.stringify({ t: 'hchunk', id, b: b64(json) }) })
+    this.onmessage?.({ data: JSON.stringify({ t: 'hend', id }) })
+  }
   send(data: string | Uint8Array) {
     this.chain = this.chain.then(async () => {
       if (typeof data === 'string') {
@@ -130,6 +145,11 @@ class FakeSocket implements SocketLike {
         const pair = await createKeyPair(), nonce = crypto.getRandomValues(new Uint8Array(16))
         this.keys = await deriveSessionKeys({ connectCode: host.connectCode, myPrivateKey: pair.privateKey, peerPublic: fromBase64urlOf(frame.epk), initiatorPublic: fromBase64urlOf(frame.epk), responderPublic: pair.publicKey, initiatorNonce: fromBase64urlOf(frame.n), responderNonce: nonce })
         this.onmessage?.({ data: JSON.stringify({ t: 'hi', epk: b64(pair.publicKey), n: b64(nonce), cr: b64(this.keys.confirmResponder) }) })
+      } else {
+        // Remember the id so the test can answer a request as the relay would.
+        const frame = await openBytes(this.keys!.c2s, data, this.recvAsClient++)
+        const inner = JSON.parse(new TextDecoder().decode(frame))
+        if (inner.t === 'hreq') this.requestIds.push(String(inner.id))
       }
     })
   }
@@ -225,5 +245,46 @@ test('a request on a socket that died silently fails at once instead of timing o
     const started = Date.now()
     await assert.rejects(tunnel.request('/api/herdr/info', undefined, { kind: 'read' }))
     assert.ok(Date.now() - started < 500, 'fails immediately, not on the timeout')
+  } finally { tunnel.close() }
+})
+
+// ── a refusal is not an uncertain outcome ───────────────────────────────
+test('a 403 on a mutation is a definite refusal, not "may have run"', async () => {
+  // Alma answers methods the phone may not call with 403 and a JSON body.
+  // Reporting that as uncertain tells the user not to retry something that
+  // provably did not happen.
+  const call = new EncryptedTunnel(host, () => {}, () => new FakeSocket(), 1000)
+  try {
+    await call.connect()
+    // Drive the inbound side directly: the point under test is how a response
+    // status is classified, not how frames travel.
+    const pendingId = 'probe'
+    ;(call as any).pending.set(pendingId, {
+      mutation: true, sent: true, status: 0, chunks: [],
+      timer: setTimeout(() => undefined, 10_000),
+      resolve: () => { throw new Error('should not resolve') },
+      reject: (error: Error) => {
+        assert.ok(error instanceof RejectedError, 'a refusal has its own type')
+        assert.equal((error as RejectedError).status, 403)
+        assert.match(error.message, /not available from the phone/)
+      },
+    })
+    const body = new TextEncoder().encode(JSON.stringify({ error: { code: 'forbidden', message: 'layout.apply is not available from the phone' } }))
+    ;(call as any).handle({ t: 'hres', id: pendingId, status: 403, headers: {} })
+    ;(call as any).handle({ t: 'hchunk', id: pendingId, b: b64(body) })
+    ;(call as any).handle({ t: 'hend', id: pendingId })
+  } finally { call.close() }
+})
+
+test('a 500 on a mutation stays uncertain: it may have run', async () => {
+  let socket!: FakeSocket
+  const tunnel = new EncryptedTunnel(host, () => {}, () => socket = new FakeSocket(), 1000)
+  try {
+    await tunnel.connect()
+    const call = tunnel.request('/api/herdr/rpc', { method: 'agent.prompt', params: {} })
+    const check = assert.rejects(call, (error: unknown) => error instanceof OperationUncertainError)
+    for (let i = 0; i < 50 && !socket.hasRequest(); i++) await new Promise((r) => setTimeout(r, 5))
+    socket.reply(500, { error: { code: 'internal', message: 'boom' } })
+    await check
   } finally { tunnel.close() }
 })

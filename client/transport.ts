@@ -25,6 +25,13 @@ export class TunnelError extends Error {
 
 /** The status callback reports the code so callers never parse a message. */
 export type StatusSink = (state: 'connecting' | 'online' | 'offline', error?: string, code?: TunnelError['code']) => void
+/**
+ * The server answered and refused. This is a definite outcome, unlike a
+ * dropped connection: nothing ran, so the caller may retry or explain.
+ */
+export class RejectedError extends Error {
+  constructor(readonly status: number, message: string) { super(message); this.name = 'RejectedError' }
+}
 export class OperationUncertainError extends Error {
   constructor() { super('连接中断或超时，操作可能已执行。请先检查会话，勿直接重复发送。') }
 }
@@ -229,8 +236,21 @@ export class EncryptedTunnel implements Transport {
         const bytes = new Uint8Array(pending.chunks.reduce((n, c) => n + c.length, 0))
         let offset = 0
         for (const chunk of pending.chunks) { bytes.set(chunk, offset); offset += chunk.length }
-        // A sent mutation may already have run even when the response is an error.
-        if (pending.status < 200 || pending.status >= 300) { pending.reject(pending.mutation ? new OperationUncertainError() : new Error(`桌面接口返回 HTTP ${pending.status}`)); return }
+        console.log('DBG handle', pending.status, pending.mutation, frame.t)
+        // A sent mutation may already have run when the *connection* failed —
+        // but a response the server actually sent proves the request reached
+        // it and was answered. A 4xx, in particular, was refused before doing
+        // anything, so retrying is safe and calling it uncertain is a lie that
+        // stops the user from trying again.
+        if (pending.status < 200 || pending.status >= 300) {
+          const definite = pending.status >= 400 && pending.status < 500 && pending.status !== 408 && pending.status !== 429
+          if (pending.mutation && !definite) { pending.reject(new OperationUncertainError()); return }
+          const detail = (() => {
+            try { return String(JSON.parse(new TextDecoder().decode(bytes))?.error?.message ?? '') } catch { return '' }
+          })()
+          pending.reject(new RejectedError(pending.status, detail || `桌面接口返回 HTTP ${pending.status}`))
+          return
+        }
         try { pending.resolve(bytes.length ? JSON.parse(new TextDecoder().decode(bytes)) : null) } catch { pending.reject(pending.mutation ? new OperationUncertainError() : new Error(t('桌面接口返回格式无效'))) }
       }
       return

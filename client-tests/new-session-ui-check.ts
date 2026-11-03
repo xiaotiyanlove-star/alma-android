@@ -18,8 +18,8 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
   let counter = 0n
   let chain = Promise.resolve()
   const send = async (frame: Record<string, unknown>) => socket.send(Buffer.from(await sealFrame(keys.s2c, counter++, frame)))
-  const reply = async (id: string, body: unknown) => {
-    await send({ t: 'hres', id, status: 200, headers: {} })
+  const reply = async (id: string, body: unknown, status = 200) => {
+    await send({ t: 'hres', id, status, headers: {} })
     await send({ t: 'hchunk', id, b: base64url(new TextEncoder().encode(JSON.stringify(body))) })
     await send({ t: 'hend', id })
   }
@@ -44,6 +44,24 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
         const rpc = JSON.parse(new TextDecoder().decode(fromBase64url(frame.b)))
         calls.push({ method: rpc.method, params: rpc.params, headers: frame.headers })
         if (rpc.method === 'layout.apply') {
+          // Exactly what Alma's phone bridge answers: a method outside its
+          // allowlist is refused with 403 before anything runs.
+          await reply(frame.id, { error: { code: 'forbidden', message: 'layout.apply is not available from the phone' } }, 403)
+          return
+        }
+        if (rpc.method === 'tab.create') {
+          await reply(frame.id, { result: { tab: { tab_id: 'w1:t9', workspace_id: 'w1' }, root_pane: { pane_id: 'w1:p9', workspace_id: 'w1' } } })
+          await send({ t: 'wmsg', id: 'hub', s: JSON.stringify({ type: 'snapshot', snapshot: {
+            workspaces: [{ workspace_id: 'w1', label: 'tmp' }],
+            tabs: [{ tab_id: 'w1:t1', workspace_id: 'w1', label: 'old' }, { tab_id: 'w1:t9', workspace_id: 'w1', label: '新会话' }],
+            panes: [
+              { pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'claude', agent_status: 'idle', terminal_title_stripped: 'Claude Code', cwd: '/private/tmp' },
+              { pane_id: 'w1:p9', workspace_id: 'w1', tab_id: 'w1:t9', agent: 'claude', agent_status: 'working', terminal_title_stripped: 'Claude Code', cwd: '/private/tmp' },
+            ],
+          } }) })
+          return
+        }
+        if (false) {
           // The real reply shape: the pane is inside `layout`.
           await reply(frame.id, { result: { type: 'layout_apply', layout: { workspace_id: 'w1', tab_id: 'w1:t9', zoomed: false, focused_pane_id: 'w1:p9', root: { type: 'pane' } } } })
           // The snapshot then lists the new pane, as a real desktop would.
@@ -92,11 +110,15 @@ try {
   await page.screenshot({ path: 'test-artifacts/new-session.png' })
 
   const apply = calls.find((call) => call.method === 'layout.apply')
+  const create = calls.find((call) => call.method === 'tab.create')
+  const start = calls.find((call) => call.method === 'agent.start')
   console.log(JSON.stringify({
     defaultCwd,
-    rootCommand: apply?.params?.root?.command,
-    rootCwd: apply?.params?.root?.cwd,
-    tabLabel: apply?.params?.tab_label,
+    triedLayoutApply: Boolean(apply),
+    usedTabCreate: Boolean(create),
+    createCwd: create?.params?.cwd,
+    createLabel: create?.params?.label,
+    startedAgent: start?.params?.kind,
     focus: apply?.params?.focus,
     inSession,
     headerTitle,

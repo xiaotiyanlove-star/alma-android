@@ -91,6 +91,7 @@ const en: Dict = {
   '不会上传任何内容。': 'Nothing is uploaded.',
   '后台保持连接': 'Keep connection in background',
   '退出应用后仍能收到提醒。通知栏会常驻一条状态提示。': 'Alerts keep arriving after you leave the app. A status notification stays in the shade.',
+  '退出应用后仍能收到提醒。系统要求这项功能在通知栏留一条常驻提示，关掉它就只在应用内收提醒。': 'Alerts keep arriving after you leave the app. Android requires a persistent notification for this, so turning it off means alerts only appear while the app is open.',
   '发送测试通知': 'Send a test notification',
   '配对内容已遮挡，点「显示」可核对地址。': 'Masked — tap Show to check the address.',
   '内容已显示，注意遮挡屏幕。': 'Revealed — mind who can see the screen.',
