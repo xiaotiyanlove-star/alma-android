@@ -113,13 +113,20 @@ export function timeline(items: ChatItem[]): TimelineEntry[] {
 /**
  * Image paths written in a message body.
  *
- * The desktop's own rule, copied so the two clients show the same pictures: an
- * absolute path (or `~/…`) ending in a known image extension, not part of a
+ * An absolute path (or `~/…`) ending in a known image extension, not part of a
  * longer word, and not inside backticks. A transcript that pastes
  * `/Users/me/shot.png` shows the picture instead of only the path, which is how
  * a screenshot an agent took mid-task actually reaches the user.
+ *
+ * Spaces are allowed inside the path. The desktop's own client stops at the
+ * first space, and that is exactly why the pictures in this app's transcripts
+ * never appeared: every one of them lives under
+ * `/Users/<name>/Library/Application Support/alma/gallery_cache/`. A path is
+ * ended by a quote, bracket, backtick or the end of the line, not by a space —
+ * and the trailing `(?![A-Za-z0-9_-]|\.[A-Za-z0-9])` keeps prose from being
+ * swallowed into the extension.
  */
-const IMAGE_PATH = /(?:^|[^A-Za-z0-9_./~\\`-])(~?\/(?!\/)[^\s`)\]"'<>，。；、！？）」》]+\.(?:png|jpe?g|gif|webp|heic))(?![A-Za-z0-9_-]|\.[A-Za-z0-9])/gi
+const IMAGE_PATH = /(?:^|[^A-Za-z0-9_./~\\`-])(~?\/(?!\/)[^`)\]"'<>，。；、！？）」》\n]*?\.(?:png|jpe?g|gif|webp|heic))(?![A-Za-z0-9_-]|\.[A-Za-z0-9])/gi
 
 export function imagePaths(text: string | undefined): string[] {
   if (!text) return []

@@ -102,3 +102,18 @@ test('the path is removed from the body once the picture is shown', () => {
   // Nothing to remove leaves the text untouched.
   assert.equal(withoutImagePaths('no pictures here', []), 'no pictures here')
 })
+
+test('a path with spaces in it is still a picture', () => {
+  // Every attachment the desktop writes lives under "Application Support", so
+  // stopping at the first space meant no transcript picture ever appeared.
+  assert.deepEqual(imagePaths('/Users/me/Library/Application Support/alma/gallery_cache/upload-1.jpg'),
+    ['/Users/me/Library/Application Support/alma/gallery_cache/upload-1.jpg'])
+  assert.deepEqual(imagePaths('saved to /Users/me/My Folder/a.png'), ['/Users/me/My Folder/a.png'])
+})
+
+test('two paths on one line stay two', () => {
+  // The lazy match stops at the first extension; without that, the whole line
+  // would be taken as one path and neither picture would be shown.
+  assert.deepEqual(imagePaths('/tmp/a.png and /tmp/b.jpg'), ['/tmp/a.png', '/tmp/b.jpg'])
+  assert.deepEqual(imagePaths('/tmp/a.png\n/tmp/b.png'), ['/tmp/a.png', '/tmp/b.png'])
+})

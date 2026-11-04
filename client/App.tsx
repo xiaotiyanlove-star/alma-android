@@ -68,7 +68,7 @@ function canUseHost(host?: HostState): boolean {
 /** Which way a connection currently reaches the desktop. */
 function routeLabel(host: HostState): string | undefined {
   if (!canUseHost(host) || !host.route) return undefined;
-  return host.route === 'direct' ? t('局域网直连') : t('经中继');
+  return host.route === 'direct' ? t('直连') : t('relay');
 }
 
 function Status({ host, compact = false }: { host: HostState; compact?: boolean }) {
@@ -997,7 +997,10 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   );
   const commandOpen = query !== null && availableCommands.length > 0 && !terminal;
   const disabled = !ready || busy || session.sending || session.loading || Boolean(session.uncertain);
+  // The agent itself is busy: that is the only moment "stop" means anything.
+  const working = pane?.agent_status === 'working';
   const [restarting, setRestarting] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const muted = pane ? controller.isMuted(session.hostId, pane) : false;
 
   useLayoutEffect(() => {
@@ -1157,6 +1160,25 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     finally { setBusy(false); actionLock.current = false; }
   }
 
+  /**
+   * Interrupts the running agent with Ctrl+C.
+   *
+   * The same key a person would press in the terminal: the agent decides what
+   * "stop" means for whatever it is doing (abort the turn, cancel the tool),
+   * which is exactly right — a phone should not invent a stronger signal than
+   * the keyboard has. Deliberately not routed through `disabled`: that flag is
+   * true while the agent is working, and this button exists for only that case.
+   */
+  async function stopAgent() {
+    if (!ready || session.sending || actionLock.current) return;
+    actionLock.current = true;
+    setStopping(true);
+    setLocalError('');
+    try { await controller.sendKeys(['C-c']); }
+    catch { setLocalError(t('中断请求未确认，请刷新终端后确认。')); }
+    finally { setStopping(false); actionLock.current = false; }
+  }
+
   async function openSubagent(toolId: string, title: string) {
     setSubagent({ id: toolId, title, finished: false, loading: true, items: [] })
     try {
@@ -1209,16 +1231,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
           {sessionRoute && <span className="session-chip is-route" title={t('当前连接方式')}>{sessionRoute}</span>}
         </p>
       </div>{host && <Status host={host} compact />}</header>
-    {/* Model, effort, context and running agents get their own row. Beside the
-        title they widened the header until the pane name was clipped on the
-        left; here they can wrap or scroll without touching it. */}
-    {(info.model || info.contextLabel || agents.length > 0 || info.effort) && <div className="session-facts">
-      {info.model && <span className="session-fact" title={t('当前模型')}><strong>{info.model}</strong>{info.effort ? <span className="session-fact-effort">{info.effort}</span> : null}</span>}
-      {info.contextLabel && <span className="session-fact" title={info.contextRatio === undefined ? t('上下文用量') : `${t('上下文已用')} ${Math.round((info.contextRatio ?? 0) * 100)}%`}><span className="sr-only">{t('上下文')}</span>{info.contextLabel}</span>}
-      {agents.length > 0 && <button type="button" className="session-fact is-agents" onClick={() => setAgentsOpen(true)} title={t('查看运行中的 agent')}>
-        <span className="agents-dot" aria-hidden="true" />{agents.length} {t('个 agent 运行中')}
-      </button>}
-    </div>}
+
     {/* Three views, one segmented control. Separate tab, wrap and markdown
         buttons in a single row made it read as four unrelated actions; the
         view is one choice, and what each view offers sits beside it. */}
@@ -1356,9 +1369,28 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
       </>}
       <label className="sr-only" htmlFor="message-input">{t(terminal ? '终端输入' : '消息')}</label>
       <textarea ref={composer} id="message-input" rows={1} value={draft} onChange={event => setDraft(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={composerKey} placeholder={t(!ready ? '节点连接后可发送' : terminal ? '输入终端内容…' : '发送消息…')} disabled={!ready} />
-      <button type="submit" className="send-button" title={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} aria-label={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} disabled={disabled || (!draft.trim() && attachments.length === 0)}>{busy || session.sending ? <Loader2 size={20} className="spin" /> : <Send size={20} />}</button>
+      {/* One button slot, two jobs: while the agent is working the send arrow
+          becomes a stop, which is the action a user actually wants then. A
+          separate stop button beside a permanently-visible send button reads as
+          two ways to do the same thing. */}
+      {working && !terminal
+        ? <button type="button" className="send-button is-stop" title={t('停止')} aria-label={t('停止')} disabled={!ready || stopping} onClick={() => void stopAgent()}>{stopping ? <Loader2 size={20} className="spin" /> : <Square size={18} />}</button>
+        : <button type="submit" className="send-button" title={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} aria-label={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} disabled={disabled || (!draft.trim() && attachments.length === 0)}>{busy || session.sending ? <Loader2 size={20} className="spin" /> : <Send size={20} />}</button>}
     </form>
-    <div className="composer-status" role="status">{busy || session.sending ? <><Loader2 size={12} className="spin" />{t('正在发送')}</> : session.queued.length ? tWith('{count} 条待发送', { count: session.queued.length }) : session.uncertain ? t('操作结果未确认，发送已暂停') : ready ? <><Check size={12} />{host?.host.name}</> : t('发送不可用')}</div>
+    <div className="composer-foot">
+      {/* The model, the effort and the context figure belong with the box you
+          type into, not over the conversation: they describe the agent you are
+          about to talk to, and putting them here gave the header its whole
+          height back to the title. */}
+      <div className="composer-facts">
+        {info.model && <span className="composer-fact is-model" title={t('当前模型')}>{info.model}{info.effort ? <span className="composer-fact-effort">{info.effort}</span> : null}</span>}
+        {info.contextLabel && <span className="composer-fact" title={info.contextRatio === undefined ? t('上下文用量') : `${t('上下文已用')} ${Math.round((info.contextRatio ?? 0) * 100)}%`}>{info.contextLabel}</span>}
+        {agents.length > 0 && <button type="button" className="composer-fact is-agents" onClick={() => setAgentsOpen(true)} title={t('查看运行中的 agent')} aria-label={tWith('{count} 个 agent 运行中', { count: String(agents.length) })}>
+          <span className="agents-dot" aria-hidden="true" />{agents.length} {t('个 agent')}
+        </button>}
+      </div>
+      <div className="composer-status" role="status">{busy || session.sending ? <><Loader2 size={12} className="spin" />{t('正在发送')}</> : session.queued.length ? tWith('{count} 条待发送', { count: session.queued.length }) : session.uncertain ? t('操作结果未确认，发送已暂停') : ready ? <><Check size={12} />{host?.host.name}</> : t('发送不可用')}</div>
+    </div>
   </section>;
 }
 
@@ -1562,7 +1594,7 @@ export function App() {
           />;
 
   return <main className="app-shell" key={localeRevision}>
-    {directToast && <div className="direct-toast" role="status">{tWith('已切换到局域网直连 · {name}', { name: directToast })}</div>}
+    {directToast && <div className="direct-toast" role="status">{tWith('已切换到直连 · {name}', { name: directToast })}</div>}
     {(state.storageWarning || state.error) && <div className="app-notices">{state.storageWarning && <Notice error>{state.storageWarning}</Notice>}{state.error && <Notice error>{state.error}</Notice>}</div>}
     {screen}
   </main>;

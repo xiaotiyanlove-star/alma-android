@@ -64,7 +64,7 @@ try {
 
   // Session info comes from the terminal status line. The model and context
   // live on their own row under the title; the pane's state stays beside it.
-  const chips = await page.locator('.session-facts, .session-chip').allTextContents()
+  const chips = await page.locator('.composer-facts, .session-chip').allTextContents()
 
   // Draft survives leaving the session and coming back.
   const composer = page.getByRole('textbox', { name: '消息' })

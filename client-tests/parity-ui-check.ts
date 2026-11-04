@@ -141,8 +141,8 @@ try {
   await page.locator('.session-row').filter({ hasText: '合成会话' }).click()
 
   // ── the model chip comes from the desktop, not the screen ──────────────
-  // Model and effort share a fact on their own row under the title.
-  await expect(page.locator('.session-facts').getByText('claude-opus-5-5')).toBeVisible()
+  // Model and effort sit under the composer, next to the box you type into.
+  await expect(page.locator('.composer-facts').getByText('claude-opus-5-5')).toBeVisible()
 
   // ── transcript images are fetched through the tunnel ───────────────────
   // A user attachment is reported as a local absolute path, which the client

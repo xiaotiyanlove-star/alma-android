@@ -168,8 +168,8 @@ pre { max-width: 100%; }
 .connection-status.is-error { color: var(--red); }
 .connection-status.is-disabled { color: var(--muted); }
 .connection-status.is-disabled .status-dot { background: transparent; box-shadow: inset 0 0 0 1.5px currentColor; }
-.status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: 0 0 6px; }
-.status-dot.is-pending { background: transparent; width: 10px; height: 10px; flex-basis: 10px; border: 1.5px solid currentColor; border-top-color: transparent; animation: rotate 1s linear infinite; }
+.status-dot { width: 6px; height: 6px; aspect-ratio: 1; border-radius: 50%; background: currentColor; flex: 0 0 auto; align-self: center; }
+.status-dot.is-pending { background: transparent; width: 10px; height: 10px; aspect-ratio: 1; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: rotate 1s linear infinite; }
 .notice { display: flex; align-items: flex-start; gap: 9px; padding: 10px 12px; border-left: 2px solid var(--line-strong); background: var(--surface-3); font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
 .notice > svg { margin-top: 1px; flex: 0 0 auto; }
 .notice > div { flex: 1; min-width: 0; white-space: pre-wrap; }
@@ -341,7 +341,7 @@ pre { max-width: 100%; }
 .conversation-header { padding-left: 10px; gap: 8px; }
 .conversation-header .connection-status { font-size: 11px; }
 .conversation-header .connection-status.is-compact { gap: 0; padding: 0 2px; }
-.conversation-header .connection-status.is-compact .status-dot { width: 8px; height: 8px; }
+.conversation-header .connection-status.is-compact .status-dot { width: 8px; height: 8px; aspect-ratio: 1; border-radius: 50%; }
 /* The title is the widest thing here; the badge and status may stay put. */
 .conversation-header .agent-badge { margin-top: 2px; }
 /* Desktop name stays put; the chips scroll beside it, so the header keeps one
@@ -349,18 +349,6 @@ pre { max-width: 100%; }
 .header-copy .session-host-name { display: flex; gap: 6px; align-items: center; min-width: 0; white-space: nowrap; }
 .session-host-id { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .session-host-id > svg { flex-shrink: 0; }
-/* Model, effort, context and running agents: their own row under the title.
-   Inline beside it they squeezed the pane name until it clipped on the left. */
-/* Aligned with the title above it: header padding (16) + back button (40) +
-   gap (10) + agent badge (34) + gap (10). Under the title, not under the
-   back arrow, so the two rows read as one block. */
-.session-facts { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; width: 100%; min-width: 0; max-width: 100%; padding: 0 16px 8px 110px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
-.session-facts::-webkit-scrollbar { display: none; }
-.session-facts:empty { display: none; }
-.session-fact { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2); color: var(--text-2); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.session-fact strong { font-weight: 600; color: var(--text); }
-.session-fact-effort { padding-left: 5px; border-left: 1px solid var(--line); color: var(--muted); }
-.session-fact.is-agents { color: var(--green); border-color: var(--green-line); background: var(--tint); }
 .conversation-header .session-host-name { gap: 8px; }
 
 /* One segmented control for the three views, and the icons for the view that
@@ -392,7 +380,10 @@ pre { max-width: 100%; }
 .transcript-scroll { width: 100%; min-height: 0; min-width: 0; overflow: auto; padding: 0 20px 24px; overscroll-behavior: contain; overflow-anchor: none; scrollbar-gutter: stable; }
 .older-messages { display: flex; justify-content: center; padding: 8px 0 0; }
 .older-messages .text-button { font-size: 12px; }
-.message { min-width: 0; padding: 20px 0; border-bottom: 1px solid var(--line); }
+/* Answers are what the transcript is for; the padding around them is what
+   makes more of them fit on screen. 20px top and bottom, doubled by the fold's
+   own margins, was leaving a thumb's width between every pair of messages. */
+.message { min-width: 0; padding: 14px 0; border-bottom: 1px solid var(--line); }
 .message-user { background: var(--surface-3); padding: 16px 14px; margin: 16px 0; border-left: 2px solid var(--line-strong); border-bottom: 0; }
 .message-meta-right { display: inline-flex; align-items: center; gap: 4px; }
 /* The per-message copy sits quietly in the metadata row; it is a convenience,
@@ -418,7 +409,10 @@ pre { max-width: 100%; }
    small muted text, and the counts sit on one line beside the spinner so the
    answer above and below it stays what the eye lands on. Opening it lists the
    steps; opening a step shows its input, output and any picture it produced. */
-.work-group { margin: 10px 0; overflow: hidden; }
+/* A folded run is a footnote between two answers, so it takes as little
+   vertical room as it can: tight above and below, and the message after it does
+   not start a new paragraph-sized gap. */
+.work-group { margin: 2px 0 6px; overflow: hidden; }
 .work-group > summary { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 4px 2px; cursor: pointer; list-style: none; }
 .work-group > summary::-webkit-details-marker { display: none; }
 .work-group > summary > svg { flex-shrink: 0; color: var(--muted); opacity: .7; transition: transform .15s ease; }
@@ -497,7 +491,20 @@ pre { max-width: 100%; }
 .composer textarea::placeholder { color: var(--muted); font-size: 14px; }
 .composer textarea:disabled { background: var(--surface-3); }
 .send-button { width: 44px; height: 44px; display: grid; place-items: center; color: #fff; background: var(--green-solid); border-radius: 6px; flex: 0 0 44px; }
-.composer-status { display: flex; align-items: center; gap: 5px; min-height: 25px; padding: 3px 16px calc(6px + env(safe-area-inset-bottom, 0px)); color: var(--muted); font-size: 10px; flex-shrink: 0; overflow-wrap: anywhere; }
+/* Under the box: what the agent is, and what the connection is doing. One row,
+   quiet, and allowed to scroll sideways rather than wrap — the composer must
+   not grow taller because a model name is long. */
+.composer-foot { display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-height: 26px; padding: 2px 16px calc(6px + env(safe-area-inset-bottom, 0px)); }
+.composer-facts { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.composer-facts::-webkit-scrollbar { display: none; }
+.composer-facts:empty { display: none; }
+.composer-fact { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; color: var(--muted); font-size: 10.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.composer-fact.is-model { color: var(--text-2); }
+.composer-fact-effort { padding-left: 5px; border-left: 1px solid var(--line); color: var(--muted); }
+.composer-fact.is-agents { background: none; border: 0; padding: 0; color: var(--green); cursor: pointer; }
+.composer-status { display: flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0; margin-left: auto; color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.send-button.is-stop { background: var(--red-solid); color: #fff; }
+@media (hover: hover) { .send-button.is-stop:hover:not(:disabled) { background: var(--red-solid-2); } }
 .composer-status > svg { flex-shrink: 0; }
 
 @media (hover: hover) {
@@ -538,7 +545,7 @@ pre { max-width: 100%; }
   .session-row { gap: 9px; }
   /* The facts row scrolls here; a hard cut at the edge reads as a broken
      layout, so it fades out instead and looks scrollable. */
-  .session-facts { padding-left: 92px; mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent); -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent); }
+  .composer-facts { mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent); -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent); }
 }
 
 /*
