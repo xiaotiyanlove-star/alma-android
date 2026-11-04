@@ -146,6 +146,30 @@ const CREATE_TIMEOUT_MS = 75_000
  */
 const TRANSCRIPT_PAGE = 150
 
+/**
+ * A transcript kept warm between pane switches.
+ *
+ * Only the fields a paint needs: rows, the cursor they cover, and whatever the
+ * desktop said about the session. The live socket still owns the truth; this
+ * is a head start, not a second source.
+ */
+interface StoredTranscript {
+  sessionId?: string
+  items: ChatItem[]
+  start: number
+  end: number
+  queued: SessionState['queued']
+  screen: string
+  settings?: SessionState['settings']
+  /** When it was captured, so an old copy is refreshed rather than trusted. */
+  at: number
+}
+
+/** Old enough that painting it first would be misleading. */
+const TRANSCRIPT_TTL = 5 * 60_000
+/** Panes kept warm; the tab's neighbours are what a swipe needs. */
+const TRANSCRIPT_CACHE = 6
+
 function merge(current: ChatItem[], incoming: ChatItem[], prepend = false): ChatItem[] {
   const all = new Map(current.map((item) => [item.id, item]))
   for (const item of incoming) all.set(item.id, item)
@@ -180,6 +204,14 @@ export class Controller {
   private sessionRefresh?: Promise<void>
   /** Consecutive failed session loads, which pace the refresh retries. */
   private sessionFailures = 0
+  /**
+   * Transcripts seen recently, keyed by host and pane.
+   *
+   * Swapping panes inside a tab used to blank the screen and wait for a round
+   * trip every time. Keeping the last few transcripts means a swipe paints the
+   * pane it already knows, and the fetch that follows only refreshes it.
+   */
+  private transcripts = new Map<string, StoredTranscript>()
   constructor(private storage: HostStorage = hostStorage, private createTransport = (host: Host, status: (state: 'connecting' | 'online' | 'offline', error?: string, code?: TunnelError['code']) => void): Transport => new EncryptedTunnel(host, status)) {}
   getState = () => this.state
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
@@ -1317,12 +1349,119 @@ export class Controller {
     const hostId = this.state.selectedHostId
     // Report the failure rather than returning silently: a caller that opens a
     // session (a notification tap, a new session) would otherwise believe it
-    // succeeded and act on whatever session was open before — which is how a
+    // succeeded and act on whatever session was opened before — which is how a
     // notification reply ended up in a different conversation.
     if (!hostId || !this.runtimes.has(hostId)) throw new Error(t('节点未连接，无法打开会话'))
+    // Remember what is on screen before tearing the session down, so coming
+    // back to this pane (a swipe, then another) paints instead of blanking.
+    if (this.state.session) this.storeTranscript(this.state.session)
     this.stopSession()
-    this.publish({ selectedPaneId: paneId, session: { hostId, paneId, items: [], start: -1, end: 0, queued: [], loading: true, loadingOlder: false, screen: '', unsupported: false, sentMessage: false, sending: false } })
+    const warm = this.takeTranscript(hostId, paneId)
+    // A warm pane shows its rows immediately and refreshes behind them: the
+    // screen never empties, and `loading` is only true when there is nothing
+    // to paint at all.
+    this.publish({
+      selectedPaneId: paneId,
+      session: {
+        hostId, paneId,
+        items: warm?.items ?? [],
+        start: warm?.start ?? -1,
+        end: warm?.end ?? 0,
+        queued: warm?.queued ?? [],
+        loading: !warm,
+        loadingOlder: false,
+        screen: warm?.screen ?? '',
+        unsupported: false,
+        sentMessage: false,
+        sending: false,
+        ...(warm?.sessionId ? { sessionId: warm.sessionId } : {}),
+        ...(warm?.settings ? { settings: warm.settings } : {}),
+      },
+    })
     await this.refreshSession()
+    this.prefetchNeighbours(paneId)
+  }
+
+  /** Captures the transcript on screen, so a later return can paint from it. */
+  private storeTranscript(session: SessionState) {
+    if (!session.items.length) return
+    const key = `${session.hostId}\u0000${session.paneId}`
+    this.transcripts.delete(key)
+    this.transcripts.set(key, {
+      sessionId: session.sessionId,
+      items: session.items,
+      start: session.start,
+      end: session.end,
+      queued: session.queued,
+      screen: session.screen,
+      settings: session.settings,
+      at: Date.now(),
+    })
+    // Oldest first: Map keeps insertion order, and a re-insert above moves a
+    // refreshed entry to the end.
+    while (this.transcripts.size > TRANSCRIPT_CACHE) {
+      const oldest = this.transcripts.keys().next().value
+      if (oldest === undefined) break
+      this.transcripts.delete(oldest)
+    }
+  }
+
+  private takeTranscript(hostId: string, paneId: string): StoredTranscript | undefined {
+    const key = `${hostId}\u0000${paneId}`
+    const stored = this.transcripts.get(key)
+    if (!stored) return undefined
+    if (Date.now() - stored.at > TRANSCRIPT_TTL) { this.transcripts.delete(key); return undefined }
+    return stored
+  }
+
+  /**
+   * Fetches the panes either side of this one in the same tab.
+   *
+   * A swipe is a burst of taps in one direction; having the next pane's rows
+   * already in hand turns the second and third swipes into pure paints. Errors
+   * are dropped: a prefetch that fails is just a page that arrives later.
+   */
+  private prefetchNeighbours(paneId: string) {
+    const session = this.state.session
+    if (!session) return
+    const runtime = this.runtimes.get(session.hostId)
+    const panes = this.state.hosts.find((item) => item.host.id === session.hostId)?.snapshot?.panes ?? []
+    const pane = panes.find((item) => item.pane_id === paneId)
+    if (!runtime || !pane?.tab_id) return
+    const siblings = panes.filter((item) => item.tab_id === pane.tab_id)
+    const index = siblings.findIndex((item) => item.pane_id === paneId)
+    for (const neighbour of [siblings[index + 1], siblings[index - 1]]) {
+      if (!neighbour) continue
+      const key = `${session.hostId}\u0000${neighbour.pane_id}`
+      if (this.transcripts.has(key)) continue
+      void runtime.transport.request<Page>(`/api/herdr/chat?pane=${encodeURIComponent(neighbour.pane_id)}&limit=${TRANSCRIPT_PAGE}`)
+        .then((page) => {
+          if (page.error || !page.page?.items?.length) return
+          this.transcripts.set(key, {
+            sessionId: page.session_id,
+            items: page.page.items,
+            start: page.page.start ?? 0,
+            end: page.page.end ?? 0,
+            queued: page.queued ?? [],
+            screen: '',
+            settings: readSettings(page.settings),
+            at: Date.now(),
+          })
+          while (this.transcripts.size > TRANSCRIPT_CACHE) {
+            const oldest = this.transcripts.keys().next().value
+            if (oldest === undefined) break
+            // Never drop the pane the user is looking at.
+            if (oldest === `${this.state.session?.hostId}\u0000${this.state.session?.paneId}`) {
+              const entry = this.transcripts.get(oldest)!
+              this.transcripts.delete(oldest)
+              this.transcripts.set(oldest, entry)
+              continue
+            }
+            this.transcripts.delete(oldest)
+          }
+        })
+        .catch(() => undefined)
+    }
   }
   /** Manual retry: drop any scheduled attempt and reload now. */
   reloadSession = async () => {

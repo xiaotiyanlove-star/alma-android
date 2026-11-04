@@ -64,6 +64,8 @@ const en: Dict = {
   '停止失败，请稍后重试。': 'Could not stop the agent; try again.',
   '其他': 'Other',
   '查看大图': 'View image',
+  '正在切换面板': 'Switching pane',
+  '这个 tab 有 {count} 个面板，进会话后左右滑动切换': 'This tab has {count} panes; swipe inside the session',
   '查看图片': 'View image',
   '双指缩放，双击放大': 'Pinch to zoom, double-tap to enlarge',
   '这个 tab 有多个面板，左右滑动切换': 'This tab has several panes; swipe to switch',

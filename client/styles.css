@@ -527,8 +527,17 @@ pre { max-width: 100%; }
 .composer-fact-effort { padding-left: 5px; border-left: 1px solid var(--line); color: var(--muted); }
 .composer-fact.is-agents { background: none; border: 0; padding: 0; color: var(--green); cursor: pointer; }
 .composer-status { display: flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0; margin-left: auto; color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.send-button.is-stop { background: var(--red-solid); color: #fff; }
-@media (hover: hover) { .send-button.is-stop:hover:not(:disabled) { background: var(--red-solid-2); } }
+/* Stop, in the send button's slot.
+   A solid red square read as "delete this conversation" next to a green send
+   key. The quiet version is a ring around a small square — the shape people
+   already know from every media control — with the destructive colour only on
+   the glyph, so the key looks like the same control in a different state. */
+.send-button.is-stop { background: var(--surface-3); border: 1px solid var(--line-strong); color: var(--red); }
+.send-button.is-stop > svg { width: 13px; height: 13px; }
+.send-button.is-stop::before { content: none; }
+.send-button.is-stop .stop-glyph { display: block; width: 14px; height: 14px; border-radius: 3px; background: currentColor; }
+.send-button.is-stop .stop-ring { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 999px; border: 1.5px solid var(--line-strong); }
+@media (hover: hover) { .send-button.is-stop:hover:not(:disabled) { background: var(--surface-2); } }
 .composer-status > svg { flex-shrink: 0; }
 
 @media (hover: hover) {
@@ -843,3 +852,29 @@ button.transcript-image:focus-visible { outline: 2px solid var(--green); outline
 
 /* Auto-loaded history has no button, just a quiet line while it fetches. */
 .older-status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; }
+
+/* ── pictures hoisted out of a folded run ─────────────────────────────────
+   A run's pictures sit under its line, visible without opening it: a
+   screenshot the agent took is a result, not process. Small thumbnails on one
+   row that scrolls sideways, so twenty screenshots cost one row of height. */
+.transcript-images.is-run { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; margin: 0 0 10px; padding-bottom: 2px; scrollbar-width: none; }
+.transcript-images.is-run::-webkit-scrollbar { display: none; }
+.transcript-image.is-thumb { flex: 0 0 auto; }
+.transcript-image.is-thumb img { max-height: 132px; max-width: 220px; object-fit: cover; }
+
+/* ── switching panes inside a tab ─────────────────────────────────────────
+   The route moves on the same frame as the swipe; the transcript follows.
+   A thin indeterminate line over the old rows says "this is arriving", which
+   is cheaper and calmer than emptying the screen. */
+.transcript-shell { position: relative; }
+.pane-switching { position: absolute; top: 0; left: 0; right: 0; z-index: 3; height: 2px; overflow: hidden; background: var(--line); }
+.pane-switching > span { display: block; width: 34%; height: 100%; background: var(--green); animation: pane-progress 1s ease-in-out infinite; }
+@keyframes pane-progress { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+.transcript-scroll.is-switching { opacity: .55; transition: opacity .12s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .pane-switching > span { animation: none; width: 100%; opacity: .5; }
+  .transcript-scroll.is-switching { opacity: .75; }
+}
+
+/* How many panes this tab holds, beside its name in the list. */
+.session-pane-count { margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: 10.5px; font-weight: 500; }

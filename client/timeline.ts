@@ -11,7 +11,7 @@
  *
  * Answers and pictures are never folded. They are what the user reads.
  */
-import type { ChatItem } from './model'
+import type { ChatItem, ImageRef } from './model'
 
 /** What a step was, in the terms the summary line counts. */
 export type WorkKind = 'command' | 'edit' | 'read' | 'search' | 'fetch' | 'subagent' | 'other'
@@ -23,7 +23,7 @@ export interface WorkCount {
 
 export type TimelineEntry =
   | { kind: 'item'; key: string; item: ChatItem }
-  | { kind: 'work'; key: string; items: ChatItem[]; running: boolean; counts: WorkCount[] }
+  | { kind: 'work'; key: string; items: ChatItem[]; running: boolean; counts: WorkCount[]; images: ImageRef[] }
 
 /**
  * The desktop's own classification, so the phone's summary and the desktop's
@@ -40,6 +40,32 @@ const TOOL_KIND: Record<string, WorkKind> = {
   grep: 'search', glob: 'search', find: 'search', ls: 'search', search: 'search',
   webfetch: 'fetch', websearch: 'fetch', web_search: 'fetch',
   task: 'subagent', agent: 'subagent',
+}
+
+/**
+ * Pictures produced anywhere inside a run.
+ *
+ * A tool's own result images are the obvious source; the other half comes from
+ * paths a step printed. Both are hoisted out of the fold: a picture the agent
+ * took is a result, not process, so it has to be visible without opening the
+ * work line. Duplicates are dropped because the same screenshot often appears
+ * in both a tool result and the narration around it.
+ */
+export function workImages(items: ChatItem[]): ImageRef[] {
+  const seen = new Set<string>()
+  const out: ImageRef[] = []
+  const add = (image: ImageRef) => {
+    if (!image?.url || seen.has(image.url)) return
+    seen.add(image.url)
+    out.push(image)
+  }
+  for (const item of items) {
+    for (const image of item.tool?.result_images ?? []) add(image)
+    for (const image of item.tool?.images ?? []) add(image)
+    for (const image of item.images ?? []) add(image)
+    for (const url of imagePaths(item.text || item.summary)) add({ url })
+  }
+  return out
 }
 
 export function workKind(toolName: string | undefined): WorkKind {
@@ -97,6 +123,7 @@ export function timeline(items: ChatItem[]): TimelineEntry[] {
       // Any unfinished step means the burst is still going.
       running: run.some((item) => item.tool && item.tool.done !== true),
       counts: countWork(run),
+      images: workImages(run),
     })
     run = []
   }

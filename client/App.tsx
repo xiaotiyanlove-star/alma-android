@@ -29,7 +29,7 @@ import { stopMessage } from './backoff';
 import { headerInfo } from './session-info';
 import { agentLook, statusTone, statusWord } from './agents';
 import { paneTitle, tabLabelOf } from './session-title';
-import { imagePaths, isThinking, timeline, withoutImagePaths, type WorkCount } from './timeline';
+import { imagePaths, isThinking, timeline, withoutImagePaths, workImages, type WorkCount } from './timeline';
 import { backgroundAgents, runningAgents } from './subagents';
 import { agentMark } from './agent-marks';
 import { acknowledge, pruneUnread, subscribeUnread, unreadPanes } from './unread';
@@ -61,9 +61,28 @@ function initialize() {
  * paired. Order is fixed rather than by recency, because a list that reorders
  * under the thumb is how the wrong session gets opened.
  */
-export function sessionGroups(snapshot: Snapshot | undefined): { id: string; title: string; path: string; panes: Pane[] }[] {
+export interface SessionGroup {
+  id: string
+  title: string
+  path: string
+  /** One row per tab: the tab's first pane. The rest are reached by swiping. */
+  panes: Pane[]
+  /** Every pane behind the rows above, so unread and counts cover the tab. */
+  members: Pane[]
+}
+
+/**
+ * Sessions, grouped by workspace, one row per tab.
+ *
+ * A split tab is one session to the user — the same work, shown in two panes —
+ * so listing every pane would repeat the title and the path while offering no
+ * way to tell the rows apart. The row stands for the tab; the panes themselves
+ * are pages inside it.
+ */
+export function sessionGroups(snapshot: Snapshot | undefined): SessionGroup[] {
   if (!snapshot) return []
-  const groups = new Map<string, { id: string; title: string; path: string; panes: Pane[] }>()
+  const groups = new Map<string, SessionGroup>()
+  const seenTab = new Set<string>()
   for (const pane of snapshot.panes) {
     const workspace = snapshot.workspaces.find(item => item.workspace_id === pane.workspace_id)
     const id = workspace?.workspace_id ?? pane.workspace_id ?? 'other'
@@ -74,9 +93,16 @@ export function sessionGroups(snapshot: Snapshot | undefined): { id: string; tit
         title: workspace?.label || workspace?.name || path.split('/').filter(Boolean).pop() || t('其他'),
         path,
         panes: [],
+        members: [],
       })
     }
-    groups.get(id)!.panes.push(pane)
+    const group = groups.get(id)!
+    group.members.push(pane)
+    // A tab is represented once, by its first pane in the desktop's order.
+    const tab = pane.tab_id || pane.pane_id
+    if (seenTab.has(tab)) continue
+    seenTab.add(tab)
+    group.panes.push(pane)
   }
   return [...groups.values()]
 }
@@ -246,7 +272,12 @@ function stepDetail(item: ChatItem): string | undefined {
  */
 function WorkGroup({ items, running, counts, hostId, onOpenImage }: { items: ChatItem[]; running: boolean; counts: WorkCount[]; hostId: string; onOpenImage(src: string): void }) {
   const active = running ? [...items].reverse().find((item) => item.tool && item.tool.done !== true) : undefined;
-  return <details className={`work-group${running ? ' is-running' : ''}`}>
+  // Pictures are results, not process: they sit below the folded line, visible
+  // without opening it. A run that produced a screenshot is exactly the case
+  // where the user must not have to guess that something is hidden inside.
+  const images = useMemo(() => workImages(items), [items]);
+  return <>
+  <details className={`work-group${running ? ' is-running' : ''}`}>
     <summary>
       <span className={`work-spinner${running ? ' is-running' : ''}`} aria-hidden="true" />
       <span className="work-copy">
@@ -257,13 +288,16 @@ function WorkGroup({ items, running, counts, hostId, onOpenImage }: { items: Cha
       </span>
       <ChevronDown size={15} aria-hidden="true" />
     </summary>
-    <div className="work-body">{items.map((item) => <WorkStep item={item} hostId={hostId} onOpenImage={onOpenImage} key={item.id} />)}</div>
-  </details>;
+    <div className="work-body">{items.map((item) => <WorkStep item={item} hostId={hostId} key={item.id} />)}</div>
+  </details>
+  {images.length > 0 && <div className="transcript-images is-run">
+    {images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} thumbnail />)}
+  </div>}
+  </>;
 }
 
 /** One step inside a folded run; opens to its input, output and pictures. */
-function WorkStep({ item, hostId, onOpenImage }: { item: ChatItem; hostId: string; onOpenImage(src: string): void }) {
-  const images = toolImages(item);
+function WorkStep({ item, hostId }: { item: ChatItem; hostId: string }) {
   if (isThinking(item)) {
     // Thinking has no input or output, only prose: shown in place, dimmed, so
     // the reasoning is readable without pretending it is an answer.
@@ -280,7 +314,6 @@ function WorkStep({ item, hostId, onOpenImage }: { item: ChatItem; hostId: strin
       <ChevronDown size={13} aria-hidden="true" />
     </summary>
     {item.tool?.input !== undefined && <div className="tool-section"><span className="field-label">{t('输入')}</span><pre tabIndex={0}>{printable(item.tool.input)}</pre></div>}
-    {images.length > 0 && <div className="transcript-images is-tool">{images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} />)}</div>}
     {item.tool?.output !== undefined && <div className="tool-section"><span className="field-label">{t('输出')}</span><pre tabIndex={0}>{printable(item.tool.output)}</pre></div>}
   </details>;
 }
@@ -294,7 +327,7 @@ function WorkStep({ item, hostId, onOpenImage }: { item: ChatItem; hostId: strin
  * URL is owned by this component and revoked when it unmounts or the source
  * changes, so opening a long conversation cannot leak every picture it showed.
  */
-function TranscriptImage({ hostId, url, mediaType, onOpen }: { hostId: string; url: string; mediaType?: string; onOpen(src: string): void }) {
+function TranscriptImage({ hostId, url, mediaType, onOpen, thumbnail = false }: { hostId: string; url: string; mediaType?: string; onOpen(src: string): void; thumbnail?: boolean }) {
   const [src, setSrc] = useState<string>();
   const [error, setError] = useState(false);
   useEffect(() => {
@@ -323,16 +356,9 @@ function TranscriptImage({ hostId, url, mediaType, onOpen }: { hostId: string; u
   // A button, not an anchor: the tap target used to navigate the WebView to the
   // blob, which is a same-origin document rather than a picture. It now opens
   // the in-app viewer, where the image can be zoomed.
-  return <button type="button" className="transcript-image" onClick={() => onOpen(src)} title={t('查看大图')} aria-label={t('查看大图')}>
+  return <button type="button" className={`transcript-image${thumbnail ? ' is-thumb' : ''}`} onClick={() => onOpen(src)} title={t('查看大图')} aria-label={t('查看大图')}>
     <img src={src} alt={t('对话中的图片')} loading="lazy" />
   </button>;
-}
-
-/** The pictures a tool produced, under either spelling the desktop uses. */
-function toolImages(item: ChatItem): ImageRef[] {
-  const tool = item.tool;
-  if (!tool) return [];
-  return [...(tool.result_images ?? []), ...(tool.images ?? [])];
 }
 
 function Message({ item, markdown, hostId, onOpenImage }: { item: ChatItem; markdown: boolean; hostId: string; onOpenImage(src: string): void }) {
@@ -943,13 +969,17 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
             <span className="session-group-count">{group.panes.length}</span>
           </header>
           <ul className="session-list">{group.panes.map(pane => {
-            const unread = news.some(item => item.hostId === host.host.id && item.paneId === pane.pane_id)
+            // A row stands for its tab, so it is unread when *any* pane in
+            // that tab is: otherwise a second pane's finished turn would never
+            // show anywhere on this screen.
+            const tabPanes = group.members.filter(item => (item.tab_id || item.pane_id) === (pane.tab_id || pane.pane_id))
+            const unread = tabPanes.some(item => news.some(entry => entry.hostId === host.host.id && entry.paneId === item.pane_id))
             return <li key={pane.pane_id} className="session-item">
               <button className="session-row" disabled={!ready || Boolean(opening)} onClick={() => void openPane(pane.pane_id)}>
                 {/* The agent's own mark replaces the generic terminal glyph, so a
                     list of several sessions can be scanned without reading. */}
                 <AgentBadge agent={pane.agent ?? pane.agent_session?.agent} />
-                <span className="session-row-copy"><strong>{paneTitle(pane, tabLabelOf(host.snapshot, pane))}</strong>{pane.cwd && <span className="session-path" title={pane.cwd}>{pane.cwd}</span>}
+                <span className="session-row-copy"><strong>{paneTitle(pane, tabLabelOf(host.snapshot, pane))}{tabPanes.length > 1 && <span className="session-pane-count" title={tWith('这个 tab 有 {count} 个面板，进会话后左右滑动切换', { count: String(tabPanes.length) })}>+{tabPanes.length - 1}</span>}</strong>{pane.cwd && <span className="session-path" title={pane.cwd}>{pane.cwd}</span>}
                   <span className="session-row-meta">
                     <span className={`agent-status-dot is-${statusTone(pane.agent_status)}`} aria-hidden="true" />
                     {agentLook(pane.agent ?? pane.agent_session?.agent).label || t('终端')}
@@ -985,7 +1015,7 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
   </section>;
 }
 
-function Session({ session, host }: { session: SessionState; host?: HostState }) {
+function Session({ session, routePaneId, host }: { session: SessionState; routePaneId: string; host?: HostState }) {
   // Set only while there is no transcript; says which kind of "no transcript" it is.
   const gap = session.gap ?? 'terminal';
   // An agent is still a chat the user can write to even when its transcript
@@ -1007,6 +1037,21 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   const [draft, setDraft] = useState(() => loadDraft(session.hostId, session.paneId));
   // Persist on every change so leaving the session or losing the process keeps it.
   useEffect(() => { saveDraft(session.hostId, session.paneId, draft) }, [draft, session.hostId, session.paneId]);
+  // The screen is no longer rebuilt per pane, so what belongs to one pane has
+  // to be reset by hand when the pane changes: its draft, its "still waiting"
+  // hint, any queued attachments and the previous pane's error.
+  const settledPane = useRef(session.paneId);
+  useEffect(() => {
+    if (settledPane.current === session.paneId) return;
+    settledPane.current = session.paneId;
+    setDraft(loadDraft(session.hostId, session.paneId));
+    setAwaitingReply(false);
+    setAttachments([]);
+    setLocalError('');
+    sentAtCount.current = -1;
+    followBottom.current = true;
+    setNewContent(false);
+  }, [session.paneId, session.hostId]);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [localError, setLocalError] = useState('');
@@ -1016,9 +1061,12 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   const [awaitingReply, setAwaitingReply] = useState(false);
   const [attachments, setAttachments] = useState<{ id: string; file: File; state: 'pending' | 'uploading' | 'done' | 'failed'; path?: string; error?: string }[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
-  const [agentsOpen, setAgentsOpen] = useState(false);
+  // Both of these are overlays in the router rather than local state, so the
+  // hardware Back button closes them instead of leaving the app.
+  const overlay = useOverlay();
+  const agentsOpen = overlay?.kind === 'agents';
+  const viewingImage = overlay?.kind === 'image' ? overlay.src : undefined;
   /** The picture shown full-screen, if any. */
-  const [viewingImage, setViewingImage] = useState<string>();
   const [subagent, setSubagent] = useState<{ id: string; title: string; kind?: string; finished: boolean; loading: boolean; error?: string; items: ChatItem[] }>();
   const sentAtCount = useRef(-1);
   const composing = useRef(false);
@@ -1052,7 +1100,11 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     if (awaitingReply && sentAtCount.current >= 0 && itemCount > sentAtCount.current) setAwaitingReply(false)
   }, [itemCount, awaitingReply]);
   const prompt = useMemo(() => terminal ? null : parsePrompt(stripAnsi(session.screen ?? '')), [terminal, session.screen]);
-  const pane = host?.snapshot?.panes.find(item => item.pane_id === session.paneId);
+  // While a swipe is in flight the route names the pane the user asked for and
+  // `session` still holds the previous one. The header follows the route so the
+  // screen answers the gesture immediately; the transcript catches up below.
+  const switching = routePaneId !== session.paneId;
+  const pane = host?.snapshot?.panes.find(item => item.pane_id === routePaneId);
   // The session's own directory, not the workspace root: a split tab often has
   // one pane in a subdirectory, and that is the one worth naming.
   const workspacePath = pane?.cwd || host?.snapshot?.workspaces.find(item => item.workspace_id === pane?.workspace_id)?.cwd || '';
@@ -1089,17 +1141,29 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     if (session.loading || session.sending) return;
     const dx = touch.clientX - start.x;
     const dy = touch.clientY - start.y;
-    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.6) return;
+    if (Math.abs(dx) < 72 || Math.abs(dx) < Math.abs(dy) * 2) return;
     const next = paneIndex + (dx < 0 ? 1 : -1);
     const target = tabPanes[next];
     if (!target) return;
     void switchPane(target.pane_id);
   }
-  async function switchPane(paneId: string) {
-    try {
-      await controller.selectPane(paneId);
-      replace({ name: 'session', hostId: session.hostId, paneId });
-    } catch { setLocalError(t('未能切换到相邻面板，请检查节点连接后重试。')); }
+  /**
+   * Moves to another pane of this tab.
+   *
+   * The route changes first, synchronously: the header, the page counter and
+   * the skeleton answer the gesture on the next frame, and the transcript
+   * catches up underneath. Waiting for the network before moving the route is
+   * what made a swipe feel like a page reload.
+   */
+  function switchPane(paneId: string) {
+    replace({ name: 'session', hostId: session.hostId, paneId });
+    void controller.selectPane(paneId)
+      .catch(() => {
+        // Put the route back where the transcript still is, rather than leave
+        // the header naming a pane that was never loaded.
+        replace({ name: 'session', hostId: session.hostId, paneId: session.paneId });
+        setLocalError(t('未能切换到相邻面板，请检查节点连接后重试。'));
+      });
   }
   const paneStatus = pane?.agent_status;
   useEffect(() => {
@@ -1112,7 +1176,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     [pane?.agent, pane?.agent_session?.agent, query],
   );
   const commandOpen = query !== null && availableCommands.length > 0 && !terminal;
-  const disabled = !ready || busy || session.sending || session.loading || Boolean(session.uncertain);
+  const disabled = !ready || busy || session.sending || session.loading || switching || Boolean(session.uncertain);
   // The agent itself is busy: that is the only moment "stop" means anything.
   const working = pane?.agent_status === 'working';
   const [restarting, setRestarting] = useState(false);
@@ -1415,8 +1479,8 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
       </div>
       <p className="prompt-hint">{t('点击后会重新核对终端内容，若问题已变化将取消。也可以在终端里直接操作。')}</p>
     </div>}
-    {viewingImage && <ImageViewer src={viewingImage} onClose={() => setViewingImage(undefined)} />}
-    {agentsOpen && <div className="sheet-backdrop" role="presentation" onClick={() => setAgentsOpen(false)}>
+    {viewingImage && <ImageViewer src={viewingImage} onClose={closeOverlay} />}
+    {agentsOpen && <div className="sheet-backdrop" role="presentation" onClick={closeOverlay}>
       <div className="host-sheet" role="dialog" aria-modal="true" aria-label={t('运行中的 agent')} onClick={(event) => event.stopPropagation()}>
         <h2>{agents.length} {t('个 agent 运行中')}</h2>
         <ul className="agents-list">{allAgents.map((agent) => <li key={agent.id} className="agents-row">
@@ -1424,9 +1488,9 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
           <span className="agents-copy"><strong>{agent.title}</strong>{agent.kind && <small>{agent.kind}</small>}</span>
           {/* The desktop keeps each dispatched agent's own transcript, and this
               is the only place the phone can read what it actually did. */}
-          <button type="button" className="text-button" onClick={() => { setAgentsOpen(false); void openSubagent(agent.id, agent.title) }}>{t('查看')}</button>
+          <button type="button" className="text-button" onClick={() => { closeOverlay(); void openSubagent(agent.id, agent.title) }}>{t('查看')}</button>
         </li>)}</ul>
-        <button type="button" className="secondary-button sheet-cancel" onClick={() => setAgentsOpen(false)}>{t('关闭')}</button>
+        <button type="button" className="secondary-button sheet-cancel" onClick={closeOverlay}>{t('关闭')}</button>
       </div>
     </div>}
     {subagent && <div className="sheet-backdrop" role="presentation" onClick={() => setSubagent(undefined)}>
@@ -1440,13 +1504,17 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
             : subagent.items.length === 0
               ? <p className="muted">{t('这个子 agent 还没有可读的记录')}</p>
               : <div className="subagent-transcript">{timeline(subagent.items).map(entry => entry.kind === 'work'
-                  ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} onOpenImage={setViewingImage} key={entry.key} />
-                  : <Message item={entry.item} markdown={markdown} hostId={session.hostId} onOpenImage={setViewingImage} key={entry.key} />)}</div>}
+                  ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} key={entry.key} />
+                  : <Message item={entry.item} markdown={markdown} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} key={entry.key} />)}</div>}
         <button type="button" className="secondary-button sheet-cancel" onClick={() => setSubagent(undefined)}>{t('关闭')}</button>
       </div>
     </div>}
     <div className="transcript-shell">
-      <div ref={scroll} id="session-content" className={`transcript-scroll ${terminal ? 'terminal-scroll' : ''}`} role="tabpanel" aria-labelledby={terminal ? 'terminal-tab' : 'messages-tab'} aria-busy={session.loading} onScroll={trackScroll} tabIndex={0}>
+      {/* While a swipe is in flight the previous pane's transcript is still in
+          the store; a thin progress line says so, and the body fades rather
+          than pretending the old rows belong to the new header. */}
+      {switching && <div className="pane-switching" role="status" aria-label={t('正在切换面板')}><span /></div>}
+      <div ref={scroll} id="session-content" className={`transcript-scroll ${terminal ? 'terminal-scroll' : ''}${switching ? ' is-switching' : ''}`} role="tabpanel" aria-labelledby={terminal ? 'terminal-tab' : 'messages-tab'} aria-busy={session.loading || switching} onScroll={trackScroll} tabIndex={0}>
         {terminal ? <>{session.loading && !session.screen && <Loading label={t('正在读取终端…')} />}{session.screen ? <pre className={`terminal-screen${wrap ? '' : ' is-raw'}`} tabIndex={0} aria-label={t('终端画面')}>{stripAnsi(session.screen)}</pre> : !session.loading && <EmptyState icon={<Terminal size={28} />} title={session.error ? t('终端画面暂不可用') : t('尚无终端画面')}><button className="secondary-button" disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={16} />{t('读取终端')}</button></EmptyState>}</> : <>
           {/* Status, not a control: history arrives on scroll. It stays
               retryable only when a fetch failed, which is the one case the
@@ -1459,8 +1527,8 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
                 : <span className="older-status">{t('继续上滑加载更早的记录')}</span>}
           </div>}
           {session.loading && !session.items.length ? <Loading label={t('正在读取消息…')} /> : !session.items.length ? <EmptyState icon={<MessageSquare size={28} />} title={session.error ? t('消息暂不可用') : t('暂无消息记录')} /> : <div className="messages">{timeline(session.items).map(entry => entry.kind === 'work'
-                ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} onOpenImage={setViewingImage} key={entry.key} />
-                : <Message item={entry.item} markdown={markdown} hostId={session.hostId} onOpenImage={setViewingImage} key={entry.key} />)}
+                ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} key={entry.key} />
+                : <Message item={entry.item} markdown={markdown} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} key={entry.key} />)}
               {awaitingReply && !session.uncertain && <div className="thinking" role="status" aria-live="polite">
                 <span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span>
                 <span className="thinking-label">{t('正在等待回复…')}</span>
@@ -1512,7 +1580,9 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
           separate stop button beside a permanently-visible send button reads as
           two ways to do the same thing. */}
       {working && !terminal
-        ? <button type="button" className="send-button is-stop" title={t('停止')} aria-label={t('停止')} disabled={!ready || stopping} onClick={() => void stopAgent()}>{stopping ? <Loader2 size={20} className="spin" /> : <Square size={18} />}</button>
+        ? <button type="button" className="send-button is-stop" title={t('停止')} aria-label={t('停止')} disabled={!ready || stopping || switching} onClick={() => void stopAgent()}>
+            {stopping ? <Loader2 size={18} className="spin" /> : <span className="stop-ring" aria-hidden="true"><span className="stop-glyph" /></span>}
+          </button>
         : <button type="submit" className="send-button" title={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} aria-label={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} disabled={disabled || (!draft.trim() && attachments.length === 0)}>{busy || session.sending ? <Loader2 size={20} className="spin" /> : <Send size={20} />}</button>}
     </form>
     <div className="composer-foot">
@@ -1523,7 +1593,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
       <div className="composer-facts">
         {info.model && <span className="composer-fact is-model" title={t('当前模型')}>{info.model}{info.effort ? <span className="composer-fact-effort">{info.effort}</span> : null}</span>}
         {info.contextLabel && <span className="composer-fact" title={info.contextRatio === undefined ? t('上下文用量') : `${t('上下文已用')} ${Math.round((info.contextRatio ?? 0) * 100)}%`}>{info.contextLabel}</span>}
-        {agents.length > 0 && <button type="button" className="composer-fact is-agents" onClick={() => setAgentsOpen(true)} title={t('查看运行中的 agent')} aria-label={tWith('{count} 个 agent 运行中', { count: String(agents.length) })}>
+        {agents.length > 0 && <button type="button" className="composer-fact is-agents" onClick={() => openOverlay({ kind: 'agents' })} title={t('查看运行中的 agent')} aria-label={tWith('{count} 个 agent 运行中', { count: String(agents.length) })}>
           <span className="agents-dot" aria-hidden="true" />{agents.length} {t('个 agent')}
         </button>}
       </div>
@@ -1717,14 +1787,16 @@ export function App() {
           onLocaleChange={() => setLocaleRevision(value => value + 1)}
         />
       : route.name === 'session' && state.session
-        // The key is the pane, and so is the check: the header takes its title
-        // from the route while everything under it comes from `state.session`,
-        // so if the two ever name different panes the screen would show one
-        // session's title over another's transcript. They cannot now — every
-        // path that changes one changes the other — but the guard makes that a
-        // stated invariant instead of an assumption.
-        && state.session.hostId === route.hostId && state.session.paneId === route.paneId
-        ? <Session key={`${route.hostId}:${route.paneId}`} session={state.session} host={sessionHost} />
+        // Only a host mismatch sends the user back to the list. A pane mismatch
+        // is the normal state while a swipe is in flight — the route moves the
+        // moment the finger lifts, the transcript arrives after — and falling
+        // back to the list there is what made switching panes flash the list
+        // screen. The session screen handles the gap with its own loading state.
+        && state.session.hostId === route.hostId
+        // Keyed by host, not by pane: remounting on every swipe threw away the
+        // composer, the scroll position and every fetched image, which is most
+        // of why switching panes felt slow.
+        ? <Session key={route.hostId} session={state.session} routePaneId={route.paneId} host={sessionHost} />
         : <Sessions
             state={state}
             onSettings={() => push({ name: 'settings' })}

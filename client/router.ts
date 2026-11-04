@@ -17,7 +17,16 @@ export type Route =
   | { name: 'pickHost' }
   | { name: 'addHost' }
 
-type Overlay = { kind: 'scan' } | { kind: 'rename' } | { kind: 'forget' } | { kind: 'hostPicker' } | { kind: 'share' }
+type Overlay =
+  | { kind: 'scan' }
+  | { kind: 'rename' }
+  | { kind: 'forget' }
+  | { kind: 'hostPicker' }
+  | { kind: 'share' }
+  /** A picture opened full-screen from the transcript. */
+  | { kind: 'image'; src: string }
+  /** The sheet listing agents still running in this session. */
+  | { kind: 'agents' }
 
 let route: Route = { name: 'sessions' }
 /** Screens the user came from, so Back retraces their path. */

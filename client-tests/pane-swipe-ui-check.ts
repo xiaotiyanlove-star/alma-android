@@ -51,7 +51,10 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
         else if (frame.path.startsWith('/api/herdr/chat')) {
           const pane = new URL('https://x' + frame.path).searchParams.get('pane')
           await reply(frame.id, { session_id: `s-${pane}`, page: { start: 0, end: 1, items: [
-            { id: `m-${pane}`, kind: 'assistant', text: `来自 ${pane} 的回复\n\n/Users/dev/shot.png`, time: '2026-11-02T10:00:00Z' },
+            // A tool result picture: this is the case that used to hide the
+            // thumbnail inside the folded run.
+            { id: `t-${pane}`, kind: 'tool', time: '2026-11-02T09:59:00Z', tool: { id: `t-${pane}`, name: 'Read', done: true, result_images: [{ url: '/api/herdr/image/shot.png', mediaType: 'image/png' }] } },
+            { id: `m-${pane}`, kind: 'assistant', text: `来自 ${pane} 的回复`, time: '2026-11-02T10:00:00Z' },
           ] } })
         } else if (frame.path.startsWith('/api/herdr/file') || frame.path.startsWith('/api/herdr/image')) {
           await send({ t: 'hres', id: frame.id, status: 200, headers: { 'content-type': 'image/png' } })
@@ -81,7 +84,9 @@ try {
   await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await addDesktop(page, '测试节点', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
   await page.locator('.session-row').first().waitFor({ timeout: 20000 })
-  result.paneCountInList = await page.locator('.session-row').count()
+  // One row per tab, even though the tab holds two panes.
+  result.rowsInList = await page.locator('.session-row').count()
+  result.paneBadge = await page.locator('.session-pane-count').first().innerText()
 
   await page.locator('.session-row').first().click()
   await page.locator('.conversation-view').waitFor({ timeout: 20000 })
@@ -103,6 +108,10 @@ try {
     element.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, touches: [touch(x1)], changedTouches: [touch(x1)] }))
     element.dispatchEvent(new TouchEvent('touchend', { bubbles: true, touches: [], changedTouches: [touch(x2)] }))
   })()`)
+  // The route answers the gesture immediately; the list must never flash.
+  await page.waitForTimeout(60)
+  result.listVisibleDuringSwipe = await page.locator('.session-row').count() > 0
+  result.pagerRightAfterSwipe = await page.locator('.session-chip.is-panes').first().innerText().catch(() => '')
   await page.waitForTimeout(1200)
   result.pagerAfterSwipe = await page.locator('.session-chip.is-panes').first().innerText().catch(() => '')
   result.headerAfterSwipe = await page.locator('.conversation-header h1').first().innerText()
@@ -113,8 +122,13 @@ try {
     return { overflowX: st.overflowX, whiteSpace: st.whiteSpace, maxWidth: st.maxWidth, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }
   }).catch(() => null)
 
-  // A transcript picture: bounded by the column, and tappable.
+  // A transcript picture: bounded by the column, visible without expanding the
+  // folded run, and tappable.
   await page.locator('button.transcript-image').first().waitFor({ timeout: 15000 }).catch(() => undefined)
+  result.runImageCount = await page.locator('.transcript-images.is-run button.transcript-image').count()
+  result.anyImageCount = await page.locator('button.transcript-image').count()
+  result.thumbnailVisibleWithoutOpening = await page.locator('.transcript-images.is-run button.transcript-image').first().isVisible().catch(() => false)
+  result.workGroupClosed = await page.locator('.work-group').first().evaluate((el) => !(el as HTMLDetailsElement).open).catch(() => false)
   const hasImage = await page.locator('button.transcript-image').count() > 0
   result.hasTappableImage = hasImage
   if (hasImage) {
@@ -125,7 +139,10 @@ try {
     await page.locator('.image-viewer').waitFor({ timeout: 5000 })
     result.viewerOpened = true
     await page.screenshot({ path: 'test-artifacts/image-viewer.png' })
-    await page.locator('.image-viewer-close').click()
+    // The hardware Back must close the viewer, not leave the app. The shell
+    // calls this bridge; in the browser the same function is called directly.
+    const backHandled = await page.evaluate(`(() => window.__almaAndroidBack ? window.__almaAndroidBack() : 'missing')()`)
+    result.backClosedViewer = backHandled === true && await page.locator('.image-viewer').count() === 0
     result.viewerClosed = await page.locator('.image-viewer').count() === 0
   }
 
@@ -133,13 +150,20 @@ try {
   const must = (key: string, wanted: unknown) => {
     if (result[key] !== wanted) failures.push(`${key}: want ${JSON.stringify(wanted)}, got ${JSON.stringify(result[key])}`)
   }
-  must('paneCountInList', 2)
+  must('rowsInList', 1)
+  must('paneBadge', '+1')
   must('pagerLabel', '1/2')
+  // The gesture is answered on the next frame, and the list never appears.
+  must('pagerRightAfterSwipe', '2/2')
+  must('listVisibleDuringSwipe', false)
   must('pagerAfterSwipe', '2/2')
   // The pane's own directory, not the workspace root.
   must('workspaceAfterSwipe', `${CWD}/packages/app/src/features/session-view/components`)
   must('headerOverflows', true)
   must('hasTappableImage', true)
+  must('thumbnailVisibleWithoutOpening', true)
+  must('workGroupClosed', true)
+  must('backClosedViewer', true)
   must('imageWithinColumn', true)
   must('viewerOpened', true)
   must('viewerClosed', true)
@@ -147,6 +171,7 @@ try {
   if (style?.overflowX !== 'auto' || style?.whiteSpace !== 'nowrap') failures.push(`headerStyle: ${JSON.stringify(style)}`)
   failures.push(...errors.map((error) => `pageError: ${error}`))
   if (failures.length) {
+    console.error('RESULT', JSON.stringify(result))
     console.error(failures.join('\n'))
     process.exitCode = 1
   } else {
