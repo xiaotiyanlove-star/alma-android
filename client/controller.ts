@@ -27,6 +27,15 @@ const DISCOVERY_INTERVAL_MS = 10 * 60_000
  * until the phone or the desktop moves.
  */
 const DISCOVERY_MISS_MS = 30 * 60_000
+/**
+ * How often a connected desktop is asked where it is.
+ *
+ * Cheap enough (one round trip on a tunnel that is already open) to repeat,
+ * and repeating is what makes this reliable: the listener can be switched on
+ * after the app connected, and a desktop that moved networks is still the same
+ * connected desktop.
+ */
+const ASK_INTERVAL_MS = 60_000
 /** Deadline for the foreground liveness read; a healthy desktop answers at once. */
 const VERIFY_TIMEOUT_MS = 5_000
 import { hostStorage, type HostStorage } from './storage'
@@ -283,6 +292,7 @@ export class Controller {
     this.discoveryEpoch++
     this.abortScans()
     this.lastDiscover.clear()
+    this.lastAsk.clear()
     this.lastMiss.clear()
     if (!enabled) this.clearDiscoveredLan()
     // Snapshot first: `rebuild` deletes and re-inserts the same key, and a Map
@@ -309,6 +319,7 @@ export class Controller {
     this.discoveryEpoch++
     this.abortScans()
     this.lastDiscover.clear()
+    this.lastAsk.clear()
     this.lastMiss.clear()
     this.clearDiscoveredLan()
     forgetAllRoutes(this.state.hosts.map((item) => item.host.id))
@@ -345,9 +356,11 @@ export class Controller {
     const runtime = this.makeRuntime(host)
     this.runtimes.set(host.id, runtime)
     void this.connectHost(host.id, runtime)
-    // Discovery does not depend on the relay. If the public path is the broken
-    // one and the phone is at home, this is what lets the app find the desktop
-    // without waiting for a relay connection that will never complete.
+    // A search that does not wait for the relay: if the public path is the
+    // broken one and the phone is at home, scanning is the only way to find the
+    // desktop at all. It is scan-only by construction (an offline desktop
+    // cannot be asked), and it charges the scan clock rather than the ask one,
+    // so the question that becomes possible once the tunnel is up still happens.
     this.maybeDiscover(host.id)
   }
   /**
@@ -427,6 +440,8 @@ export class Controller {
   private scans = new Set<{ aborted: boolean }>()
   private discoveryEpoch = 0
   private lastDiscover = new Map<string, number>()
+  /** When each desktop was last asked for its addresses, per the tunnel life. */
+  private lastAsk = new Map<string, number>()
   /** Why the last search for this desktop failed, which sets the next wait. */
   private lastMiss = new Map<string, 'unreachable' | 'none'>()
   /**
@@ -523,9 +538,19 @@ export class Controller {
     // retrying a minute later only spends radio on the same answer. A desktop
     // that reported nothing gets the ordinary interval: it may simply have been
     // started with its listener off and be switched on shortly.
+    // Asking and scanning are throttled separately, because they cost
+    // completely different things and become possible at different moments.
+    // `attach` searches before the tunnel is up, when a desktop cannot be asked
+    // and only a scan is possible; charging that scan's clock would put the
+    // useful question ten minutes away, which is why a connected desktop stayed
+    // on the relay for the rest of the session.
+    const live = hostState?.status === 'online' && hostState.herdrOnline === true
     const wait = this.lastMiss.get(id) === 'unreachable' ? DISCOVERY_MISS_MS : DISCOVERY_INTERVAL_MS
-    if (now - at < wait) return
-    this.lastDiscover.set(id, now)
+    if (live) {
+      if (now - (this.lastAsk.get(id) ?? 0) < ASK_INTERVAL_MS) return
+    } else if (now - at < wait) return
+    if (live) this.lastAsk.set(id, now)
+    else this.lastDiscover.set(id, now)
     this.discovering.add(id)
     const startedAt = this.discoveryEpoch
     // Signalled when the network changes, so a scan of the old subnet stops
@@ -557,6 +582,11 @@ export class Controller {
       finally {
         this.scans.delete(scan)
         this.discovering.delete(id)
+        // A connect that finished while this search was running had its own
+        // call dropped by the `discovering` guard above. That call is the one
+        // that can ask the desktop, so it must not be lost — run it now that
+        // the slot is free.
+        if (this.runtimes.has(id) && this.state.foreground) this.maybeDiscover(id)
       }
     })()
   }

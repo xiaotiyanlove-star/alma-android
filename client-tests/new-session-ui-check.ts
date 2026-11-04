@@ -42,6 +42,9 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
           return
         }
         if (frame.path === '/api/herdr/mutes') { await reply(frame.id, { workspaces: [], tabs: [] }); return }
+        // Alma's LAN hint route: this fake has none, which is the normal
+        // answer from a desktop that does not serve it.
+        if (frame.path === '/__alma_lan__') { await reply(frame.id, null); return }
         // A bodyless GET is not an RPC; decoding it unconditionally throws.
         const rpc = JSON.parse(new TextDecoder().decode(fromBase64url(frame.b)))
         calls.push({ method: rpc.method, params: rpc.params, headers: frame.headers })

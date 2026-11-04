@@ -34,6 +34,7 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
         if (frame.path === '/api/herdr/info') await jsonResponse(frame.id, { online: true })
         else if (frame.path.startsWith('/api/herdr/chat')) await jsonResponse(frame.id, { session_id: `s${host}`, page: { start: 0, end: 10, items: [{ id: 'm1', kind: 'assistant', text: messages[host] }] } })
         else if (frame.path === '/api/herdr/mutes') await jsonResponse(frame.id, { workspaces: [], tabs: [] })
+        else if (frame.path === '/__alma_lan__') await jsonResponse(frame.id, null)
         else {
           // The mute list is a bodyless GET, so a request with no body is not
           // an RPC; decoding `frame.b` unconditionally used to throw here.

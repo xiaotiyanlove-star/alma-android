@@ -91,6 +91,9 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
           imageServed = true
           return bytes(frame.id, PNG, 'image/png')
         }
+        // Alma's LAN hint route. This fake desktop has no LAN listener, which is
+        // what a desktop without one answers.
+        if (path === '/__alma_lan__') return json(frame.id, null)
         if (path === '/api/herdr/mutes') {
           if (frame.method === 'GET') return json(frame.id, mutes)
           const body = JSON.parse(new TextDecoder().decode(fromBase64url(frame.b)))

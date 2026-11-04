@@ -147,3 +147,34 @@ test('an unreachable desktop is left alone longer than one that said nothing', a
     assert.equal(typeof before, 'number', 'a search was attempted')
   } finally { controller.dispose() }
 })
+
+test('a desktop that connects is asked even though a scan already ran', async () => {
+  // The bug behind "on the LAN but still on the relay": a search runs at attach
+  // time, before the tunnel is up, so it can only scan — and that failed scan
+  // used to consume the throttle, so the question that would have worked was
+  // ten minutes away. Asking and scanning now have separate clocks.
+  const { controller, transports } = setup([host('A', 'A'.repeat(43))], { A: { port: 23019, hosts: ['192.168.50.20'] } })
+  try {
+    await controller.initialize()
+    await new Promise((r) => setTimeout(r, 60))
+    const asked = transports.get('A')!.asked.filter((path) => path === '/__alma_lan__')
+    assert.ok(asked.length >= 1, 'the connected desktop was asked at least once')
+  } finally { controller.dispose() }
+})
+
+test('asking is throttled per desktop, not per scan', async () => {
+  const { controller, transports } = setup([host('A', 'A'.repeat(43))], { A: { port: 23019, hosts: ['192.168.50.20'] } })
+  try {
+    await controller.initialize()
+    await new Promise((r) => setTimeout(r, 40))
+    const state = controller as any
+    // Pretend the clock is fresh: a second search within the ask interval must
+    // not hit the network again.
+    const before = transports.get('A')!.asked.filter((p) => p === '/__alma_lan__').length
+    state.lastAsk.set('A', Date.now())
+    state.maybeDiscover('A')
+    await new Promise((r) => setTimeout(r, 40))
+    const after = transports.get('A')!.asked.filter((p) => p === '/__alma_lan__').length
+    assert.equal(after, before, 'no second question inside the interval')
+  } finally { controller.dispose() }
+})
