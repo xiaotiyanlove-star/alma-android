@@ -412,3 +412,32 @@ test('a direct peer that accepts TCP but never answers hi falls back on the hand
     assert.equal(tunnel.currentRoute(), 'relay')
   } finally { tunnel.close() }
 })
+
+test('a drop after the direct tunnel was up is not counted against the address', async () => {
+  // A connection that established and later dropped is a connection problem —
+  // the phone slept, the socket was reset. The address is still good, so it must
+  // not feed the breaker, which would suspend the direct route for half an hour
+  // after two ordinary disconnects.
+  let directSocket: FakeSocket | undefined
+  let directFailures = 0
+  const tunnel = new EncryptedTunnel(host, () => {}, (url) => {
+    if (url.startsWith('ws://')) {
+      directSocket = new FakeSocket()
+      directSocket.handler = (frame) => { if (frame.t === 'hreq') void directSocket!.response(frame.id, { online: true }) }
+      return directSocket
+    }
+    const relay = new FakeSocket()
+    relay.handler = (frame) => { if (frame.t === 'hreq') void relay.response(frame.id, { online: true }) }
+    return relay
+  }, 1_000)
+  try {
+    tunnel.useDirect(lanAddress, async () => true)
+    tunnel.onDirectFailed = () => { directFailures++ }
+    assert.deepEqual(await tunnel.request('/api/herdr/info'), { online: true })
+    assert.equal(tunnel.currentRoute(), 'direct', 'it really did connect directly')
+    // Now the link drops, as it does when the phone goes to sleep.
+    directSocket!.drop()
+    await new Promise((r) => setTimeout(r, 50))
+    assert.equal(directFailures, 0, 'a proven address is not blamed for a dropped link')
+  } finally { tunnel.close() }
+})

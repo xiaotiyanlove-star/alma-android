@@ -178,3 +178,51 @@ test('asking is throttled per desktop, not per scan', async () => {
     assert.equal(after, before, 'no second question inside the interval')
   } finally { controller.dispose() }
 })
+
+test('one failed dial keeps the address, so the next connect can retry it', async () => {
+  const { controller } = setup([host('A', 'A'.repeat(43))], {})
+  try {
+    await controller.initialize()
+    await new Promise((r) => setTimeout(r, 20))
+    const state = controller as any
+    const address = { host: '192.168.50.20', port: 23019 }
+    state.patchHost('A', { discoveredLan: address })
+    const runtime = [...state.runtimes.values()][0] as any
+    // Simulate the transport reporting that the direct attempt failed once.
+    const scored = runtime.transport as any
+    scored.onDirectFailed?.()
+    // First failure: still remembered, still eligible.
+    assert.deepEqual(controller.getState().hosts[0].discoveredLan, address)
+  } finally { controller.dispose() }
+})
+
+test('the direct address is offered again on every dial, not only at build time', async () => {
+  // A transport that fell back to the relay would otherwise keep that route for
+  // its whole life, even after the reason it failed had gone away.
+  const offers: (string | undefined)[] = []
+  const hostOne = host('A', 'A'.repeat(43))
+  const storage: HostStorage = { persistent: true, async load() { return [hostOne] }, async save() {} }
+  const controller = new Controller(storage, () => ({
+    async connect() {},
+    async request<T>(path: string): Promise<T> {
+      if (path === '/__alma_lan__') return null as T
+      if (path === '/api/herdr/info') return { online: true } as T
+      if (path === '/api/herdr/mutes') return { tabs: [], workspaces: [] } as T
+      return { result: { read: { text: '' } } } as T
+    },
+    subscribe() { return { close() {} } },
+    lastInboundAt() { return Date.now() },
+    close() {},
+    useDirect(address: { host: string } | undefined) { offers.push(address?.host) },
+  } as unknown as Transport))
+  try {
+    await controller.initialize()
+    await new Promise((r) => setTimeout(r, 20))
+    ;(controller as any).patchHost('A', { discoveredLan: { host: '192.168.50.20', port: 23019 } })
+    const runtime = [...(controller as any).runtimes.values()][0]
+    const before = offers.length
+    await (controller as any).connectHost('A', runtime)
+    assert.ok(offers.length > before, 'the address was offered to the transport again')
+    assert.equal(offers[offers.length - 1], '192.168.50.20')
+  } finally { controller.dispose() }
+})

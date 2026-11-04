@@ -232,15 +232,17 @@ export class Controller {
     scored.onDirectFailed = () => {
       if (this.runtimes.get(host.id) !== runtime) return
       recordDirect(host.id, false)
-      // A discovered address that has stopped answering is not worth keeping:
-      // left in place it is skipped by `maybeDiscover` forever, so the app
-      // would keep dialling a dead address (and paying the breaker cooldown)
-      // until the phone changes networks. A user-entered address is a setting
-      // and is kept; only observation is discarded.
-      if (this.discoveredLanFor(host.id)) this.patchHost(host.id, { discoveredLan: undefined })
-      // The remembered address is the one that just failed, so it must not be
-      // tried again on the next launch either.
-      forgetRoute(host.id)
+      // Only a path that never answered is discarded, and only one failure at a
+      // time: the first attempt at a stale address should fall back to the relay
+      // and try again next time, because the address may simply have been busy.
+      // Forgetting it immediately, plus suspending the path, is what turned one
+      // unlucky dial into "no LAN for the rest of the session".
+      if (this.discoveredLanFor(host.id) && !directAllowed(host.id)) {
+        this.patchHost(host.id, { discoveredLan: undefined })
+        // The remembered address is the one that keeps failing, so it is not
+        // offered again on the next launch either.
+        forgetRoute(host.id)
+      }
     }
     // The local address is an observation, never a setting: it is found by
     // asking the desktop or by scanning, and never written into the stored
@@ -648,6 +650,12 @@ export class Controller {
   private async connectHost(id: string, runtime: Runtime) {
     const epoch = ++runtime.epoch
     runtime.hub?.close()
+    // The address is offered before every dial, not only when the runtime is
+    // built. A transport that fell back to the relay keeps that route for its
+    // whole life otherwise, and the direct path is never tried again even after
+    // the reason it failed has gone away — which is how a session that was on
+    // `lan` stayed on `relay` until the app restarted.
+    this.applyLan(runtime, id, this.discoveredLanFor(id) ?? lastRoute(id))
     try {
       await runtime.transport.connect()
       const info = await runtime.transport.request<{ online: boolean; offline_reason?: string; herdr_error?: string }>('/api/herdr/info')

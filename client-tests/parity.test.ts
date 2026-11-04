@@ -473,10 +473,16 @@ test('a stale direct address is forgotten after it stops answering', async () =>
   } as unknown as Transport))
   try {
     await controller.initialize(); await wait()
-    ;(controller as any).patchHost('A', { discoveredLan: { host: '192.168.1.50', port: 23019 } })
+    const address = { host: '192.168.1.50', port: 23019 }
+    ;(controller as any).patchHost('A', { discoveredLan: address })
     directFailed?.()
-    // Left in place, `maybeDiscover` skips this host forever and the app keeps
-    // dialling an address the desktop no longer has.
+    // One failure falls back to the relay and keeps the address: the desktop
+    // may simply have been busy, and discarding it here is what turned a single
+    // unlucky dial into "no direct connection for the rest of the session".
+    assert.deepEqual(controller.getState().hosts[0].discoveredLan, address)
+    // The second consecutive failure suspends the path, and only then is the
+    // address dropped — a suspended path with no address is nothing to dial.
+    directFailed?.()
     assert.equal(controller.getState().hosts[0].discoveredLan, undefined)
   } finally { controller.dispose() }
 })

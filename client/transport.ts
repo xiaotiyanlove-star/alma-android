@@ -313,7 +313,13 @@ export class EncryptedTunnel implements Transport {
       // Silence the abandoned attempt: its events must never reach `fail`.
       socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null
       try { socket.close() } catch { /* already gone */ }
-      this.onDirectFailed?.()
+      // A failure is only counted against the address when the address itself
+      // failed to answer. Once the tunnel was up, a drop is a connection
+      // problem — the phone slept, the socket was reset — and the address is
+      // still perfectly good. Counting those suspended the direct route for
+      // half an hour after two ordinary disconnects, which is why a session
+      // that started on `lan` stayed on `relay` for the rest of the day.
+      if (!this.ready) this.onDirectFailed?.()
       this.attach(this.socketFactory(relayUrl), epoch, pair, 'relay')
     }
     timer = setTimeout(fallback, DIRECT_DIAL_MS)
