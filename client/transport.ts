@@ -36,7 +36,8 @@ export class OperationUncertainError extends Error {
   constructor() { super('连接中断或超时，操作可能已执行。请先检查会话，勿直接重复发送。') }
 }
 interface Pending {
-  mutation: boolean; sent: boolean; status: number; chunks: Uint8Array[]
+  mutation: boolean; sent: boolean; status: number; headers: Record<string, string>; chunks: Uint8Array[]
+  responseType: 'json' | 'bytes'; maxResponseBytes: number
   timer: ReturnType<typeof setTimeout>; resolve(value: unknown): void; reject(error: Error): void
 }
 interface Subscription { path: string; receive(frame: Frame): void; onClose(): void }
@@ -60,6 +61,10 @@ export interface RequestInit2 {
    * tuned for reads.
    */
   timeoutMs?: number
+  /** Return the decrypted response body as bytes instead of parsing JSON. */
+  responseType?: 'json' | 'bytes'
+  /** Maximum accepted response body; defaults to 32 MiB for JSON and metadata. */
+  maxResponseBytes?: number
 }
 export interface Transport {
   connect(): Promise<void>
@@ -193,7 +198,7 @@ export class EncryptedTunnel implements Transport {
         reject(pending.mutation && pending.sent ? new OperationUncertainError() : new Error(t('桌面接口超时')))
         void this.send({ t: 'hcancel', id }).catch(() => undefined)
       }, init?.timeoutMs ?? this.timeoutMs)
-      const pending: Pending = { mutation, sent: false, status: 0, chunks: [], timer, resolve: resolve as (value: unknown) => void, reject }
+      const pending: Pending = { mutation, sent: false, status: 0, headers: {}, chunks: [], responseType: init?.responseType ?? 'json', maxResponseBytes: init?.maxResponseBytes ?? 32 * 1024 * 1024, timer, resolve: resolve as (value: unknown) => void, reject }
       this.pending.set(id, pending)
       // Mark conservatively before send: a transport exception cannot prove non-delivery.
       pending.sent = true
@@ -223,12 +228,12 @@ export class EncryptedTunnel implements Transport {
     const id = String(frame.id || '')
     const pending = this.pending.get(id)
     if (pending) {
-      if (frame.t === 'hres') pending.status = Number(frame.status)
+      if (frame.t === 'hres') { pending.status = Number(frame.status); pending.headers = frame.headers ?? {} }
       if (frame.t === 'hchunk') {
         const chunk = typeof frame.b === 'string' ? fromBase64url(frame.b) : frame.b
         if (!(chunk instanceof Uint8Array)) { this.fail(new Error(t('接口响应格式无效'))); return }
         pending.chunks.push(chunk)
-        if (pending.chunks.reduce((n, part) => n + part.length, 0) > 32 * 1024 * 1024) { this.fail(new Error(t('接口响应过大'))); return }
+        if (pending.chunks.reduce((n, part) => n + part.length, 0) > pending.maxResponseBytes) { this.fail(new Error(t('接口响应过大'))); return }
       }
       if (frame.t === 'hend' || frame.t === 'herr') {
         this.pending.delete(id); clearTimeout(pending.timer)
@@ -236,7 +241,7 @@ export class EncryptedTunnel implements Transport {
         const bytes = new Uint8Array(pending.chunks.reduce((n, c) => n + c.length, 0))
         let offset = 0
         for (const chunk of pending.chunks) { bytes.set(chunk, offset); offset += chunk.length }
-        console.log('DBG handle', pending.status, pending.mutation, frame.t)
+
         // A sent mutation may already have run when the *connection* failed —
         // but a response the server actually sent proves the request reached
         // it and was answered. A 4xx, in particular, was refused before doing
@@ -251,7 +256,12 @@ export class EncryptedTunnel implements Transport {
           pending.reject(new RejectedError(pending.status, detail || `桌面接口返回 HTTP ${pending.status}`))
           return
         }
-        try { pending.resolve(bytes.length ? JSON.parse(new TextDecoder().decode(bytes)) : null) } catch { pending.reject(pending.mutation ? new OperationUncertainError() : new Error(t('桌面接口返回格式无效'))) }
+        if (pending.responseType === 'bytes') {
+          const contentType = Object.entries(pending.headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1] ?? 'application/octet-stream'
+          pending.resolve({ bytes, contentType })
+        } else {
+          try { pending.resolve(bytes.length ? JSON.parse(new TextDecoder().decode(bytes)) : null) } catch { pending.reject(pending.mutation ? new OperationUncertainError() : new Error(t('桌面接口返回格式无效'))) }
+        }
       }
       return
     }

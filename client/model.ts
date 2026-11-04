@@ -16,7 +16,38 @@ export interface Pane { pane_id: string; workspace_id: string; tab_id: string; l
 export interface Workspace { workspace_id: string; label?: string; name?: string; cwd?: string }
 export interface Tab { tab_id: string; workspace_id: string; label?: string }
 export interface Snapshot { panes: Pane[]; workspaces: Workspace[]; tabs?: Tab[] }
-export interface ChatItem { id: string; kind: string; text?: string; summary?: string; from?: string; tool?: { id?: string; name?: string; input?: unknown; output?: unknown; done?: boolean; background?: boolean }; time?: string }
+export interface ChatImage { url: string }
+export interface ChatTool {
+  id?: string
+  name?: string
+  input?: unknown
+  output?: unknown
+  result?: string
+  summary?: string
+  result_images?: ChatImage[]
+  is_error?: boolean
+  done?: boolean
+  background?: boolean
+}
+export interface ChatItem {
+  id: string
+  kind: string
+  text?: string
+  summary?: string
+  from?: string
+  /** Images attached to a message, from Herdr image refs. */
+  images?: ChatImage[]
+  queued?: boolean
+  command?: 'input' | 'output' | string
+  thinking?: boolean
+  recap?: string
+  turn_complete?: boolean
+  is_final?: boolean
+  tool?: ChatTool
+  time?: string
+  /** Preserve richer transcript metadata from newer Herdr versions. */
+  [key: string]: unknown
+}
 /**
  * Why a pane has no transcript to read.
  *
