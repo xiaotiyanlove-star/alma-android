@@ -1,10 +1,12 @@
 import type { AgentSettings, AppState, ChatItem, Host, Mutes, Pane, SessionState, Snapshot, TranscriptGap } from './model'
 import { parsePairing } from './pairing'
 import { t, tWith } from './i18n'
-import { isOnLocalNetwork, usableLanAddress, type LanAddress } from './lan'
+import { isOnLocalNetwork, lanUrl, usableLanAddress, type LanAddress } from './lan'
 import { deviceSubnets } from './localnet'
 import { directAllowed, recordDirect } from './breaker'
-import { discoverDesktop } from './discovery'
+import { discoverDesktop, identifiesAs } from './discovery'
+import { LAN_CANDIDATE_PATH, candidateKey, parseLanCandidate, usableCandidateHosts, type LanCandidate } from './candidates'
+import { forgetAllRoutes, forgetRoute, lastRoute, rememberRoute } from './lastroute'
 import { lanDiscoveryEnabled } from './lanprefs'
 import { forgetSubnets } from './localnet'
 import { clearAllBreakers } from './breaker'
@@ -15,6 +17,16 @@ import { moveKeys, needsSpace, optionForIntent, parsePrompt, promptFingerprint, 
 
 /** How often a desktop with no known local address is looked for. */
 const DISCOVERY_INTERVAL_MS = 10 * 60_000
+/**
+ * How long to leave a desktop alone after it reported addresses and then did
+ * not answer on any of them.
+ *
+ * Longer than the ordinary interval: that desktop is reachable over the relay
+ * and will still be there in half an hour, while re-probing it every ten
+ * minutes is a handshake per address for an answer that is not going to change
+ * until the phone or the desktop moves.
+ */
+const DISCOVERY_MISS_MS = 30 * 60_000
 /** Deadline for the foreground liveness read; a healthy desktop answers at once. */
 const VERIFY_TIMEOUT_MS = 5_000
 import { hostStorage, type HostStorage } from './storage'
@@ -199,7 +211,13 @@ export class Controller {
     }
     scored.onRoute = (route) => {
       if (this.runtimes.get(host.id) !== runtime) return
-      if (route === 'direct') recordDirect(host.id, true)
+      if (route === 'direct') {
+        recordDirect(host.id, true)
+        // It answered, so it is worth trying first next time. Only a direct
+        // route is remembered: the relay address is already in the pairing.
+        const used = this.state.hosts.find((item) => item.host.id === host.id)?.discoveredLan
+        if (used) rememberRoute(host.id, used)
+      }
       this.patchHost(host.id, { route })
     }
     scored.onDirectFailed = () => {
@@ -211,11 +229,16 @@ export class Controller {
       // until the phone changes networks. A user-entered address is a setting
       // and is kept; only observation is discarded.
       if (this.discoveredLanFor(host.id)) this.patchHost(host.id, { discoveredLan: undefined })
+      // The remembered address is the one that just failed, so it must not be
+      // tried again on the next launch either.
+      forgetRoute(host.id)
     }
     // The local address is an observation, never a setting: it is found by
-    // scanning and never written into the stored host. The transport still
-    // falls back to the relay whenever it does not answer.
-    this.applyLan(runtime, host.id, this.discoveredLanFor(host.id))
+    // asking the desktop or by scanning, and never written into the stored
+    // host. The transport still falls back to the relay whenever it does not
+    // answer. A launch starts from the address that answered last time, so the
+    // common case does not pay for discovery at all.
+    this.applyLan(runtime, host.id, this.discoveredLanFor(host.id) ?? lastRoute(host.id))
     return runtime
   }
 
@@ -260,6 +283,7 @@ export class Controller {
     this.discoveryEpoch++
     this.abortScans()
     this.lastDiscover.clear()
+    this.lastMiss.clear()
     if (!enabled) this.clearDiscoveredLan()
     // Snapshot first: `rebuild` deletes and re-inserts the same key, and a Map
     // re-visits a key deleted and re-added during iteration — the loop would
@@ -285,7 +309,9 @@ export class Controller {
     this.discoveryEpoch++
     this.abortScans()
     this.lastDiscover.clear()
+    this.lastMiss.clear()
     this.clearDiscoveredLan()
+    forgetAllRoutes(this.state.hosts.map((item) => item.host.id))
     forgetSubnets()
     clearAllBreakers()
     // Snapshot first: `rebuild` deletes and re-inserts the same key while this
@@ -401,6 +427,78 @@ export class Controller {
   private scans = new Set<{ aborted: boolean }>()
   private discoveryEpoch = 0
   private lastDiscover = new Map<string, number>()
+  /** Why the last search for this desktop failed, which sets the next wait. */
+  private lastMiss = new Map<string, 'unreachable' | 'none'>()
+  /**
+   * Asks a desktop where it can be reached, over its own tunnel.
+   *
+   * One round trip instead of a subnet scan, and the answer comes from the
+   * machine itself, so it is right even when the phone's idea of its subnets is
+   * wrong (a VPN, a second interface, a bridged VM). A desktop that does not
+   * serve the route answers 404, which the transport turns into a rejection —
+   * a normal outcome, not an error, and the caller falls back to scanning.
+   */
+  private async candidateAddresses(id: string): Promise<LanAddress[]> {
+    const runtime = this.runtimes.get(id)
+    if (!runtime) return []
+    // Only ask a desktop that is already reachable. `request` dials on demand,
+    // so asking an offline one would spend the full request deadline inside a
+    // search — and the case this search exists for is precisely the one where
+    // the relay is the broken path. An offline desktop is found by scanning.
+    const state = this.state.hosts.find((item) => item.host.id === id)
+    if (state?.status !== 'online' || state.herdrOnline !== true) return []
+    let answer: unknown
+    try {
+      answer = await runtime.transport.request<unknown>(LAN_CANDIDATE_PATH, undefined, { kind: 'read', timeoutMs: 5_000 })
+    } catch { return [] }
+    const candidate: LanCandidate | null = parseLanCandidate(answer)
+    if (!candidate || this.runtimes.get(id) !== runtime) return []
+    return usableCandidateHosts(candidate).map((host) => ({ host, port: candidate.port }))
+  }
+
+  /**
+   * Whether an address already belongs to a different paired desktop.
+   *
+   * Two Alma desktops on one network is the normal case in an office, and the
+   * scan cannot tell them apart by address — it can only ask each one to prove
+   * it holds the pairing code. What it must never do is hand the same address
+   * to two desktops: whichever pairing is checked second would fail, and the
+   * two would keep overwriting each other's route. An address claimed by one
+   * desktop is therefore not offered to any other.
+   */
+  private claimedBy(host: string, port: number, exceptId: string): boolean {
+    const key = candidateKey(host, port)
+    return this.state.hosts.some((item) => item.host.id !== exceptId
+      && Boolean(item.discoveredLan)
+      && candidateKey(item.discoveredLan!.host, item.discoveredLan!.port) === key)
+  }
+
+  /**
+   * Picks the address this desktop actually answers on.
+   *
+   * Every candidate goes through the same check a scanned one does: it must sit
+   * on a subnet this phone is attached to, it must not already belong to
+   * another paired desktop, and it must complete a handshake with *this*
+   * pairing's code. The first that does is the answer; the rest are not worth
+   * the radio time.
+   *
+   * Racing them would be faster but would not be correct here: two desktops can
+   * answer on the same subnet, so "the first to reply" is not necessarily "the
+   * one this pairing belongs to".
+   */
+  private async identifyCandidate(id: string, connectCode: string, addresses: readonly LanAddress[], subnets: Awaited<ReturnType<typeof deviceSubnets>>, scan: { aborted: boolean }, epoch: number): Promise<LanAddress | null> {
+    for (const address of addresses) {
+      if (scan.aborted || this.discoveryEpoch !== epoch) return null
+      if (!usableLanAddress(address)) continue
+      // The phone must be on the same network — the rule that makes plain text
+      // acceptable at all — and no other desktop may already own this address.
+      if (!isOnLocalNetwork(address.host, subnets)) continue
+      if (this.claimedBy(address.host, address.port, id)) continue
+      if (await identifiesAs(lanUrl(address, '/__alma_e2e__'), connectCode)) return address
+    }
+    return null
+  }
+
   private maybeDiscover(id: string) {
     // Discovery does not wait for a relay connection: if the public path is
     // broken, the LAN path is precisely how this phone can still reach home.
@@ -420,9 +518,13 @@ export class Controller {
     if (hostState?.discoveredLan) return
     const at = this.lastDiscover.get(id) ?? 0
     const now = Date.now()
-    // Rediscovering is expensive; ten minutes between attempts is plenty for
-    // an address that only changes when the desktop moves networks.
-    if (now - at < DISCOVERY_INTERVAL_MS) return
+    // A desktop that answered with a candidate list but did not answer on any
+    // address is out of reach for a reason — asleep, on a different VLAN — and
+    // retrying a minute later only spends radio on the same answer. A desktop
+    // that reported nothing gets the ordinary interval: it may simply have been
+    // started with its listener off and be switched on shortly.
+    const wait = this.lastMiss.get(id) === 'unreachable' ? DISCOVERY_MISS_MS : DISCOVERY_INTERVAL_MS
+    if (now - at < wait) return
     this.lastDiscover.set(id, now)
     this.discovering.add(id)
     const startedAt = this.discoveryEpoch
@@ -434,10 +536,21 @@ export class Controller {
     void (async () => {
       try {
         const subnets = await deviceSubnets()
-        const found = await discoverDesktop({ connectCode: host.connectCode, subnets, signal: scan })
-        // A network switch during the scan invalidates both its subnet and any
-        // answer it found there. Do not cache an address from the link we left.
+        // The desktop's own answer first: one round trip, and it is right even
+        // when this phone's idea of its subnets is wrong. Only when it has
+        // nothing to say — an older build, or a listener that is off — is the
+        // subnet scanned, because that costs a /24 of handshakes.
+        const candidates = await this.candidateAddresses(id)
+        const found = candidates.length
+          ? await this.identifyCandidate(id, host.connectCode, candidates, subnets, scan, startedAt)
+          : await discoverDesktop({ connectCode: host.connectCode, subnets, signal: scan })
+        if (!found && !scan.aborted && startedAt === this.discoveryEpoch) {
+          this.lastMiss.set(id, candidates.length ? 'unreachable' : 'none')
+        }
+        // A network switch during the search invalidates both its subnet and
+        // any answer found there. Do not cache an address from the link we left.
         if (found && startedAt === this.discoveryEpoch && this.state.foreground && lanDiscoveryEnabled()) {
+          this.lastMiss.delete(id)
           await this.adoptLan(id, found)
         }
       } catch { /* discovery is best effort; the relay still works */ }
@@ -462,6 +575,15 @@ export class Controller {
     // reads and nothing clears.
     const host = this.state.hosts.find((item) => item.host.id === id)
     if (!host || host.host.enabled === false) return
+    // Two desktops on one network search at the same time, and both finish by
+    // writing an address. The check here is the last word: whichever adopts
+    // second sees the first one's claim and gives the address up rather than
+    // routing two pairings at one listener. It is re-read from the state, not
+    // remembered, so it cannot go stale between the search and this call.
+    if (this.claimedBy(address.host, address.port, id)) {
+      this.lastMiss.set(id, 'unreachable')
+      return
+    }
     // Cached, but not persisted as a user setting: it was found, not chosen.
     // Store it before rebuilding so the new runtime receives it immediately;
     // this switches an existing relay connection to LAN as soon as discovery

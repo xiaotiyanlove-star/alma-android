@@ -68,7 +68,7 @@ function canUseHost(host?: HostState): boolean {
 /** Which way a connection currently reaches the desktop. */
 function routeLabel(host: HostState): string | undefined {
   if (!canUseHost(host) || !host.route) return undefined;
-  return host.route === 'direct' ? t('直连') : t('relay');
+  return host.route === 'direct' ? t('lan') : t('relay');
 }
 
 function Status({ host, compact = false }: { host: HostState; compact?: boolean }) {
@@ -1594,7 +1594,7 @@ export function App() {
           />;
 
   return <main className="app-shell" key={localeRevision}>
-    {directToast && <div className="direct-toast" role="status">{tWith('已切换到直连 · {name}', { name: directToast })}</div>}
+    {directToast && <div className="direct-toast" role="status">{tWith('已切换到 lan · {name}', { name: directToast })}</div>}
     {(state.storageWarning || state.error) && <div className="app-notices">{state.storageWarning && <Notice error>{state.storageWarning}</Notice>}{state.error && <Notice error>{state.error}</Notice>}</div>}
     {screen}
   </main>;
