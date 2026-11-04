@@ -1,30 +1,29 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { timeline } from '../client/timeline.ts'
+import { countWork, imagePaths, isThinking, timeline, withoutImagePaths, workKind } from '../client/timeline.ts'
 
-const tool = (id: string, name: string, done = true, text?: string) => ({ id, kind: 'tool', time: '2026-11-02T00:00:00Z', text, tool: { id, name, done } })
+const tool = (id: string, name: string, done = true, text?: string, input?: Record<string, unknown>) =>
+  ({ id, kind: 'tool', time: '2026-11-02T00:00:00Z', text, tool: { id, name, done, input } })
+const think = (id: string, text: string) => ({ id, kind: 'thinking', text })
+const say = (id: string, text: string) => ({ id, kind: 'assistant', text })
 
-test('a turn folds its steps and keeps the final answer visible', () => {
-  const entries = timeline([
-    { id: 'm1', kind: 'assistant', text: 'looking' },
-    tool('t1', 'Read'), tool('t2', 'Grep'), tool('t3', 'Edit'),
-    { id: 'm2', kind: 'assistant', text: 'done' },
-  ])
-  assert.deepEqual(entries.map((entry) => entry.kind), ['work', 'item'])
-  const group = entries[0]
+test('a run of work becomes one folded entry', () => {
+  const entries = timeline([say('m1', 'looking'), tool('t1', 'Read'), tool('t2', 'Grep'), tool('t3', 'Edit'), say('m2', 'done')])
+  assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'work', 'item'])
+  const group = entries[1]
   assert.equal(group.kind, 'work')
   if (group.kind === 'work') {
-    // The narration and the three calls form one step; the answer does not.
-    assert.equal(group.items.length, 4)
-    assert.equal(group.tools.length, 3)
+    assert.equal(group.items.length, 3)
     assert.equal(group.running, false)
+    assert.deepEqual(group.counts, [{ kind: 'edit', count: 1 }, { kind: 'read', count: 1 }, { kind: 'search', count: 1 }])
   }
-  assert.equal(entries[1].kind === 'item' ? entries[1].item.id : '', 'm2')
 })
 
-test('a single tool call is folded too, not left in the transcript', () => {
-  const entries = timeline([{ id: 'm1', kind: 'assistant', text: 'x' }, tool('t1', 'Read'), { id: 'm2', kind: 'assistant', text: 'y' }])
-  assert.deepEqual(entries.map((entry) => entry.kind), ['work', 'item'])
+test('a single tool call is folded too', () => {
+  // Showing one call inline reintroduces the noise the fold exists to remove,
+  // and the run is where the counts come from.
+  const entries = timeline([say('m1', 'x'), tool('t1', 'Read'), say('m2', 'y')])
+  assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'work', 'item'])
 })
 
 test('a burst with an unfinished call is running', () => {
@@ -34,41 +33,87 @@ test('a burst with an unfinished call is running', () => {
   if (entries[0].kind === 'work') assert.equal(entries[0].running, true)
 })
 
-test('a tool row that carries text is still part of the work, not lost', () => {
-  // The agent's narration rides on the same row as the call. It belongs to the
-  // step rather than to the conversation, so it is folded with it.
+test('a tool row that carries text stays a message', () => {
+  // The agent's narration rides on the same row as the call; folding it would
+  // hide an answer, not scaffolding.
   const entries = timeline([tool('t1', 'Read', true, 'the file says…'), tool('t2', 'Read')])
-  assert.deepEqual(entries.map((entry) => entry.kind), ['work'])
-  if (entries[0].kind === 'work') {
-    assert.equal(entries[0].items.length, 2)
-    assert.equal(entries[0].tools.length, 2)
+  assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'work'])
+})
+
+test('the agent thinking is process, not an answer', () => {
+  const entries = timeline([say('m1', 'ok'), think('k1', 'let me check'), think('k2', 'and again'), say('m2', 'done')])
+  assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'work', 'item'])
+  const group = entries[1]
+  if (group.kind === 'work') {
+    assert.equal(group.items.length, 2)
+    // Thinking has no tool name, so it contributes no counts: the summary is
+    // about what the agent *did*, not what it thought.
+    assert.deepEqual(group.counts, [])
+    assert.equal(isThinking(group.items[0]), true)
   }
 })
 
-test('an explicitly final event closes the group', () => {
-  const entries = timeline([tool('t1', 'Read'), { id: 'm1', kind: 'assistant', text: 'ok', is_final: true }])
-  assert.deepEqual(entries.map((entry) => entry.kind), ['work', 'item'])
+test('a run that is only thinking still gets a line, and does not claim to be running', () => {
+  const entries = timeline([think('k1', 'hmm')])
+  assert.equal(entries[0].kind, 'work')
+  if (entries[0].kind === 'work') assert.equal(entries[0].running, false, 'no unfinished tool call')
 })
 
-test('a turn with no tool calls is shown, never folded', () => {
-  // Folding a plain answer behind a tap would make the transcript look empty —
-  // which is exactly what a code-heavy reply without tools did once.
-  const entries = timeline([
-    { id: 'u1', kind: 'user', text: 'do it' },
-    { id: 'm1', kind: 'assistant', text: 'looking' },
-    { id: 'm2', kind: 'assistant', text: 'done' },
-    { id: 'u2', kind: 'user', text: 'again' },
-  ])
-  assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'item', 'item', 'item'])
-  assert.deepEqual(entries.map((entry) => entry.kind === 'item' ? entry.item.id : ''), ['u1', 'm1', 'm2', 'u2'])
+test('tools are classified the way the desktop classifies them', () => {
+  assert.equal(workKind('Bash'), 'command')
+  assert.equal(workKind('shell'), 'command')
+  assert.equal(workKind('Edit'), 'edit')
+  assert.equal(workKind('apply_patch'), 'edit')
+  assert.equal(workKind('Read'), 'read')
+  assert.equal(workKind('Grep'), 'search')
+  assert.equal(workKind('glob'), 'search')
+  assert.equal(workKind('WebFetch'), 'fetch')
+  assert.equal(workKind('Task'), 'subagent')
+  // An unknown tool is "other", never guessed into a category that would make
+  // the summary claim something that did not happen.
+  assert.equal(workKind('mcp__thing__do'), 'other')
+  assert.equal(workKind(undefined), 'other')
 })
 
-test('work before a user message is folded, the answer after it is not', () => {
-  const entries = timeline([
-    { id: 'u1', kind: 'user', text: 'go' },
-    tool('t1', 'Read'),
-    { id: 'm1', kind: 'assistant', text: 'result' },
-    { id: 'u2', kind: 'user', text: 'again' },
-  ])
-  assert.deepEqual(entries.map((entry) => entry.kind), ['item', 'work', 'item', 'item'])
+test('the counts keep a fixed order, so the summary reads the same every time', () => {
+  const counts = countWork([tool('a', 'Grep'), tool('b', 'Read'), tool('c', 'Bash'), tool('d', 'Edit')])
+  assert.deepEqual(counts.map((entry) => entry.kind), ['command', 'edit', 'read', 'search'])
+  assert.deepEqual(counts.map((entry) => entry.count), [1, 1, 1, 1])
+  assert.deepEqual(countWork([tool('a', 'Bash'), tool('b', 'Bash')]), [{ kind: 'command', count: 2 }])
+})
+
+test('pictures written as paths in a message are found', () => {
+  // The shape the desktop's own client accepts: an absolute path or `~`, a
+  // known image extension, not part of a longer word.
+  assert.deepEqual(imagePaths('see /Users/me/shot.png for the result'), ['/Users/me/shot.png'])
+  assert.deepEqual(imagePaths('~/Desktop/a.jpg and /tmp/b.webp'), ['~/Desktop/a.jpg', '/tmp/b.webp'])
+  assert.deepEqual(imagePaths('`/tmp/c.png`'), [], 'a path inside backticks is code, not a picture')
+  assert.deepEqual(imagePaths('/tmp/notes.txt'), [])
+  assert.deepEqual(imagePaths('https://example.com/x.png'), [])
+  // A path inside a URL-ish run is part of a word, not a picture reference.
+  assert.deepEqual(imagePaths('repo/x.png'), [])
+})
+
+test('the path is removed from the body once the picture is shown', () => {
+  const text = 'Look:\n\n/Users/me/shot.png\n\nThat is the bug.'
+  // The path leaves a blank run behind; collapsing it keeps the paragraph
+  // spacing from growing a gap where the picture sits.
+  assert.equal(withoutImagePaths(text, ['/Users/me/shot.png']), 'Look:\n\nThat is the bug.')
+  // Nothing to remove leaves the text untouched.
+  assert.equal(withoutImagePaths('no pictures here', []), 'no pictures here')
+})
+
+test('a path with spaces in it is still a picture', () => {
+  // Every attachment the desktop writes lives under "Application Support", so
+  // stopping at the first space meant no transcript picture ever appeared.
+  assert.deepEqual(imagePaths('/Users/me/Library/Application Support/alma/gallery_cache/upload-1.jpg'),
+    ['/Users/me/Library/Application Support/alma/gallery_cache/upload-1.jpg'])
+  assert.deepEqual(imagePaths('saved to /Users/me/My Folder/a.png'), ['/Users/me/My Folder/a.png'])
+})
+
+test('two paths on one line stay two', () => {
+  // The lazy match stops at the first extension; without that, the whole line
+  // would be taken as one path and neither picture would be shown.
+  assert.deepEqual(imagePaths('/tmp/a.png and /tmp/b.jpg'), ['/tmp/a.png', '/tmp/b.jpg'])
+  assert.deepEqual(imagePaths('/tmp/a.png\n/tmp/b.png'), ['/tmp/a.png', '/tmp/b.png'])
 })

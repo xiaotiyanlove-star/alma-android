@@ -23,7 +23,6 @@ let route: Route = { name: 'sessions' }
 /** Screens the user came from, so Back retraces their path. */
 let history: Route[] = []
 let overlay: Overlay | null = null
-let exitHandler: (() => void) | null = null
 const listeners = new Set<() => void>()
 
 function emit() { for (const listener of listeners) listener() }
@@ -93,10 +92,6 @@ export function back(): boolean {
 
 export function openOverlay(next: Overlay) { overlay = next; emit() }
 export function closeOverlay() { if (overlay) { overlay = null; emit() } }
-
-/** The shell registers a way to leave the app when Back has exhausted the stack. */
-export function setExitHandler(handler: () => void) { exitHandler = handler }
-export function exitApp() { exitHandler?.() }
 
 export function sameRoute(a: Route, b: Route): boolean {
   if (a.name !== b.name) return false

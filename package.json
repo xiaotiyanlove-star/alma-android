@@ -12,7 +12,6 @@
     "android:sync": "npm run build:web && cap sync android",
     "android:build": "npm run android:sync && cd android && ./gradlew assembleDebug",
     "test:ui": "tsx client-tests/all.ts --skip-build",
-    "test:live": "tsx client-tests/live-readonly.ts",
     "test:all": "tsx client-tests/all.ts"
   },
   "dependencies": {
@@ -23,6 +22,7 @@
     "@capacitor/core": "^7.0.0",
     "@capacitor/haptics": "^7.0.0",
     "@capacitor/local-notifications": "^7.0.7",
+    "@capacitor/network": "^7.0.4",
     "@capacitor/preferences": "^7.0.0",
     "@capacitor/share": "^7.0.0",
     "jsqr": "^1.4.0",

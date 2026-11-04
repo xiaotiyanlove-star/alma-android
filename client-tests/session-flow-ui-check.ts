@@ -100,15 +100,19 @@ try {
   result.groupTitle = await page.locator('.session-group-name').first().innerText()
   result.groupPath = await page.locator('.session-group-path').first().innerText()
   result.rowPath = await page.locator('.session-row .session-path').first().innerText()
-  result.agentIcon = await page.locator('.session-row .agent-mark img').first().getAttribute('src')
+  result.agentIcon = await page.locator('.session-row .agent-badge img').first().getAttribute('src')
   await page.screenshot({ path: 'test-artifacts/session-groups.png' })
 
   // A working agent offers stop instead of send.
   await page.locator('.session-row').first().click()
-  await page.locator('.stop-button').waitFor({ timeout: 20000 })
+  await page.locator('.send-button.is-stop').waitFor({ timeout: 20000 })
   result.stopButtonWhileWorking = true
+  // The header names the workspace this session belongs to.
+  result.workspaceShown = (await page.locator('.session-workspace').first().innerText()).includes('/projects/alma-android')
+  // The route chip says which way the desktop is reached.
+  result.routeChip = await page.locator('.session-chip.is-route').count() > 0
   await page.screenshot({ path: 'test-artifacts/session-stop-button.png' })
-  await page.locator('.stop-button').click()
+  await page.locator('.send-button.is-stop').click()
   await page.waitForTimeout(600)
   result.stopSentCtrlC = sentKeys.some((keys) => keys.includes('ctrl+c'))
 
@@ -153,6 +157,8 @@ try {
   must('groupPath', CWD)
   must('rowPath', CWD)
   if (!String(result.agentIcon ?? '').includes('claude')) failures.push(`agentIcon: ${result.agentIcon}`)
+  must('workspaceShown', true)
+  must('routeChip', true)
   must('stopButtonWhileWorking', true)
   must('stopSentCtrlC', true)
   must('autoLoadedHistory', true)

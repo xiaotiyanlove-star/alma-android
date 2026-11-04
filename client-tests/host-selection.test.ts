@@ -13,6 +13,7 @@ class Fake implements Transport {
   async connect() {}
   async request<T>(): Promise<T> { return { online: true, result: {} } as T }
   subscribe() { return { close() {} } }
+  lastInboundAt() { return 0 }
   close() {}
 }
 const wait = () => new Promise((resolve) => setTimeout(resolve, 2))
@@ -124,6 +125,7 @@ class Counting implements Transport {
   async connect() { if (this.stop) throw new Error('closed'); this.connects++ }
   async request<T>(path: string): Promise<T> { return (path === '/api/herdr/info' ? { online: true } : { result: {} }) as T }
   subscribe() { return { close() {} } }
+  lastInboundAt() { return 0 }
   close() { this.stop = true; this.closed = true }
 }
 

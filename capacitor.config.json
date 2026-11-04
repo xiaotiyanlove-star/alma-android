@@ -3,9 +3,11 @@
   "appName": "Alma Android",
   "webDir": "client-dist",
   "android": {
-    "allowMixedContent": false,
+    "allowMixedContent": true,
     "adjustMarginsForEdgeToEdge": "force",
     "webContentsDebuggingEnabled": false
   },
-  "server": { "androidScheme": "https" }
+  "server": {
+    "androidScheme": "https"
+  }
 }

@@ -27,6 +27,7 @@ class FakeTransport implements Transport {
     const sub = { path, receive, onClose, closed: false }; this.subscriptions.push(sub)
     return { close: () => { sub.closed = true } }
   }
+  lastInboundAt() { return 0 }
   close() {}
 }
 const wait = () => new Promise((resolve) => setTimeout(resolve, 5))
@@ -109,6 +110,7 @@ test('stale older-page response cannot splice into a changed session', async () 
       return { result: { read: { text: '' } } } as any
     },
     subscribe() { return { close() {} } },
+    lastInboundAt() { return 0 },
     close() {},
   }
   const controller = new Controller({ persistent: true, async load() { return hosts }, async save() {} }, () => fake)
@@ -135,28 +137,61 @@ test('session change resets old chat identity before requesting fresh history', 
   } finally { controller.dispose() }
 })
 
-test('a new session starts the agent directly instead of typing into a shell', async () => {
+test('a new session uses the phone bridge allowlist first, not layout.apply', async () => {
+  // The bridge's allowlist names tab.create and agent.start and refuses
+  // everything else, so the allowlisted path is the one that succeeds on a
+  // stock desktop; layout.apply is only the fallback.
   const { controller, transports } = setup()
   try {
     await controller.initialize(); await wait()
     const transport = transports.get('A')!
     transport.request = async (path: string, body?: unknown): Promise<any> => {
       transport.calls.push({ path, body })
+      const method = (body as any)?.method
       if (path === '/api/herdr/info') return { online: true } as any
-      if ((body as any)?.method === 'layout.apply') return { result: { tab_id: 'w1:t9', workspace_id: 'w1', focused_pane_id: 'w1:p9' } } as any
+      if (method === 'tab.create') return { result: { tab: { tab_id: 'w1:t9', workspace_id: 'w1' }, root_pane: { pane_id: 'w1:p9', workspace_id: 'w1' } } } as any
+      if (method === 'agent.start') return { result: {} } as any
       return { result: { read: { text: '' } } } as any
     }
     const { paneId } = await controller.newSession('A', { kind: 'claude', cwd: '/tmp', label: 'named' })
     assert.equal(paneId, 'w1:p9')
     const methods = transport.calls.map((call) => (call.body as any)?.method).filter(Boolean)
-    // agent.start types the command into a shell whose rc files may still be
-    // reading; it is the source of the swallowed first letter.
-    assert.equal(methods.includes('agent.start'), false, 'must not type the agent command into a shell')
-    assert.equal(methods.includes('tab.create'), false, 'the pane must come from the same request')
+    assert.deepEqual(methods.slice(0, 2), ['tab.create', 'agent.start'])
+    assert.equal(methods.includes('layout.apply'), false, 'a permitted path is not preceded by a refused one')
+    const create = transport.calls.find((call) => (call.body as any)?.method === 'tab.create')!.body as any
+    assert.equal(create.params.cwd, '/tmp')
+    assert.equal(create.params.label, 'named')
+    assert.equal(create.params.focus, false)
+    const start = transport.calls.find((call) => (call.body as any)?.method === 'agent.start')!.body as any
+    assert.equal(start.params.kind, 'claude')
+    assert.equal(start.params.pane_id, 'w1:p9')
+    // The directory belongs to `tab.create`: the shell starts there and
+    // `agent.start` types into that shell. It does not read a `cwd` of its
+    // own, so sending one would be a parameter that looks meaningful and is not.
+    assert.equal('cwd' in start.params, false)
+  } finally { controller.dispose() }
+})
+
+test('a bridge that refuses agent.start still creates the session with layout.apply', async () => {
+  const { controller, transports } = setup()
+  try {
+    await controller.initialize(); await wait()
+    const transport = transports.get('A')!
+    transport.request = async (path: string, body?: unknown): Promise<any> => {
+      transport.calls.push({ path, body })
+      const method = (body as any)?.method
+      if (path === '/api/herdr/info') return { online: true } as any
+      if (method === 'tab.create') return { result: { tab: { tab_id: 'w1:t2', workspace_id: 'w1' }, root_pane: { pane_id: 'w1:p2', workspace_id: 'w1' } } } as any
+      if (method === 'agent.start') throw new RejectedError(403, 'agent.start is not available from the phone')
+      if (method === 'layout.apply') return { result: { layout: { focused_pane_id: 'w1:p2', workspace_id: 'w1' } } } as any
+      return { result: {} } as any
+    }
+    const { paneId } = await controller.newSession('A', { kind: 'claude', cwd: '/tmp' })
+    assert.equal(paneId, 'w1:p2')
     const apply = transport.calls.find((call) => (call.body as any)?.method === 'layout.apply')!.body as any
+    // Nothing is typed into a shell on this path, so the command is an argv.
     assert.deepEqual(apply.params.root.command, ['/bin/sh', '-lc', 'claude; exec "${SHELL:-/bin/sh}" -il'])
-    assert.equal(apply.params.tab_label, 'named')
-    assert.equal(apply.params.root.cwd, '/tmp')
+    assert.equal(apply.params.tab_id, 'w1:t2', 'the fallback replaces the half-created tab instead of leaking a duplicate')
   } finally { controller.dispose() }
 })
 
@@ -215,7 +250,7 @@ test('a desktop without the layout API still creates a session', async () => {
     const { paneId } = await controller.newSession('A', { kind: 'codex', cwd: '/tmp' })
     assert.equal(paneId, 'w1:p5')
     const methods = transport.calls.map((call) => (call.body as any)?.method).filter(Boolean)
-    assert.deepEqual(methods.slice(-2), ['tab.create', 'agent.start'])
+    assert.deepEqual(methods.slice(-3), ['tab.create', 'agent.start', 'pane.read'])
   } finally { controller.dispose() }
 })
 
@@ -367,10 +402,7 @@ test('creating a session is allowed to take longer than a read', async () => {
 })
 
 // ── the phone bridge's allowlist ────────────────────────────────────────
-test('a method the phone may not call falls back to the allowlisted path', async () => {
-  // Alma's phone bridge answers 403 for anything outside its allowlist, and
-  // `layout.apply` is not in it. Reporting that as "may have run" is wrong on
-  // both counts: nothing ran, and tab.create + agent.start would have worked.
+test('layout.apply is never spent while the allowlisted path works', async () => {
   const { controller, transports } = setup()
   try {
     await controller.initialize(); await wait()
@@ -379,21 +411,13 @@ test('a method the phone may not call falls back to the allowlisted path', async
       transport.calls.push({ path, body })
       const method = (body as any)?.method
       if (path === '/api/herdr/info') return { online: true }
-      if (method === 'layout.apply') throw new RejectedError(403, 'layout.apply is not available from the phone')
-      if (method === 'tab.create') return { result: { tab: { tab_id: 'w1:t4', workspace_id: 'w1' }, root_pane: { pane_id: 'w1:p4', workspace_id: 'w1' } } }
-      return { result: {} }
+      if (method === 'tab.create') return { result: { root_pane: { pane_id: 'w1:p4', workspace_id: 'w1' } } }
+      if (method === 'agent.start') return { result: {} }
+      throw new Error(`unexpected ${method}`)
     }
-    const created = await controller.newSession('A', { kind: 'claude', cwd: '/tmp', label: 'named' })
-    assert.equal(created.paneId, 'w1:p4')
+    await controller.newSession('A', { kind: 'claude', cwd: '/tmp', label: 'named' })
     const methods = transport.calls.map((call) => (call.body as any)?.method).filter(Boolean)
-    assert.deepEqual(methods.slice(-3), ['layout.apply', 'tab.create', 'agent.start'])
-
-    // The next create goes straight to the working path.
-    transport.calls.length = 0
-    await controller.newSession('A', { kind: 'codex' })
-    const second = transport.calls.map((call) => (call.body as any)?.method).filter(Boolean)
-    assert.equal(second.includes('layout.apply'), false, 'a refused method is not retried on every create')
-    assert.deepEqual(second.slice(0, 2), ['tab.create', 'agent.start'])
+    assert.deepEqual(methods, ['tab.create', 'agent.start', 'pane.read'], 'one allowlisted start, then verify it was not eaten')
   } finally { controller.dispose() }
 })
 
@@ -408,6 +432,7 @@ test('the allowlisted path still names and cwds the new session', async () => {
       if (path === '/api/herdr/info') return { online: true }
       if (method === 'layout.apply') throw new RejectedError(403, 'not available from the phone')
       if (method === 'tab.create') return { result: { tab: { tab_id: 'w1:t4', workspace_id: 'w1' }, root_pane: { pane_id: 'w1:p4' } } }
+      if (method === 'pane.read') return { result: { read: { text: '❯' } } }
       return { result: {} }
     }
     await controller.newSession('A', { kind: 'claude', cwd: '/Users/me/project', label: '发布流程' })
@@ -415,5 +440,47 @@ test('the allowlisted path still names and cwds the new session', async () => {
     assert.equal(create.params.cwd, '/Users/me/project')
     assert.equal(create.params.label, '发布流程')
     assert.equal(create.params.focus, false)
+  } finally { controller.dispose() }
+})
+
+test('agent.start that returned 200 but typed laude retries once after the shell prompt', async () => {
+  const { controller, transports } = setup()
+  try {
+    await controller.initialize(); await wait()
+    const transport = transports.get('A')!
+    let starts = 0
+    transport.request = async (path: string, body?: unknown): Promise<any> => {
+      transport.calls.push({ path, body })
+      const method = (body as any)?.method
+      if (path === '/api/herdr/info') return { online: true }
+      if (method === 'tab.create') return { result: { root_pane: { pane_id: 'w1:p4', workspace_id: 'w1' } } }
+      if (method === 'agent.start') { starts++; return { result: {} } }
+      if (method === 'pane.read') return { result: { read: { text: starts === 1 ? 'zsh: command not found: laude\n❯' : 'Claude Code\n❯' } } }
+      throw new Error(`unexpected ${method}`)
+    }
+    const created = await controller.newSession('A', { kind: 'claude', cwd: '/tmp' })
+    assert.equal(created.paneId, 'w1:p4')
+    assert.equal(starts, 2, 'one dropped first character gets exactly one clean retry')
+    assert.equal(transport.calls.filter((call) => (call.body as any)?.method === 'layout.apply').length, 0)
+  } finally { controller.dispose() }
+})
+
+test('an agent.start 200 with no command-not-found is not sent twice', async () => {
+  const { controller, transports } = setup()
+  try {
+    await controller.initialize(); await wait()
+    const transport = transports.get('A')!
+    let starts = 0
+    transport.request = async (path: string, body?: unknown): Promise<any> => {
+      transport.calls.push({ path, body })
+      const method = (body as any)?.method
+      if (path === '/api/herdr/info') return { online: true }
+      if (method === 'tab.create') return { result: { root_pane: { pane_id: 'w1:p4', workspace_id: 'w1' } } }
+      if (method === 'agent.start') { starts++; return { result: {} } }
+      if (method === 'pane.read') return { result: { read: { text: 'Claude Code\n❯' } } }
+      throw new Error(`unexpected ${method}`)
+    }
+    await controller.newSession('A', { kind: 'claude', cwd: '/tmp' })
+    assert.equal(starts, 1)
   } finally { controller.dispose() }
 })

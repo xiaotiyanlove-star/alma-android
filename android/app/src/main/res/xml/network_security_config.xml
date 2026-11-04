@@ -1,4 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    Cleartext is permitted, and the restriction lives one layer up.
+
+    Alma's direct listener speaks plain ws:// and has no TLS port, so reaching a
+    desktop over the LAN means unencrypted transport. This file is the system
+    gate that decides whether the WebView may open such a socket at all.
+
+    It cannot express the rule this app actually wants. <domain> matches a host
+    name or a literal IP, never a subnet, so "only addresses on the phone's own
+    network" is not writable here. What does express it is the app: a native
+    plugin reads the phone's real subnets from ConnectivityManager and a direct
+    address is only dialled when it shares one of them (see client/lan.ts,
+    LocalNetworkPlugin.java and the allowDirect gate in client/transport.ts).
+
+    So the split is deliberate:
+      - this file decides that plain text is possible at all;
+      - the app decides which addresses may use it.
+
+    Everything past that — the payload — is sealed end to end regardless, and
+    the desktop must still prove it holds the pairing code before a single
+    request is trusted.
+-->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

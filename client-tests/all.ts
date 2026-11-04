@@ -32,10 +32,15 @@ const UI_CHECKS = [
   'transcript-gap-ui-check',
   'agents-commands-ui-check',
   'session-flow-ui-check',
+  'pane-swipe-ui-check',
   'fixes-ui-check',
   'nodes-ux-check',
   'settings-nodes-check',
   'settings-groups-check',
+  // Weak-network behaviour: detection time and background retry silence.
+  'weaknet-check',
+  // Features taken from the official client: settings, mutes, restart, subagents, images.
+  'parity-ui-check',
 ]
 
 /**

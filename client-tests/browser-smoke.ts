@@ -33,8 +33,12 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
       if (frame.t === 'hreq') {
         if (frame.path === '/api/herdr/info') await jsonResponse(frame.id, { online: true })
         else if (frame.path.startsWith('/api/herdr/chat')) await jsonResponse(frame.id, { session_id: `s${host}`, page: { start: 0, end: 10, items: [{ id: 'm1', kind: 'assistant', text: messages[host] }] } })
+        else if (frame.path === '/api/herdr/mutes') await jsonResponse(frame.id, { workspaces: [], tabs: [] })
+        else if (frame.path === '/__alma_lan__') await jsonResponse(frame.id, null)
         else {
-          const rpc = JSON.parse(new TextDecoder().decode(fromBase64url(frame.b)))
+          // The mute list is a bodyless GET, so a request with no body is not
+          // an RPC; decoding `frame.b` unconditionally used to throw here.
+          const rpc = frame.b ? JSON.parse(new TextDecoder().decode(fromBase64url(frame.b))) : {}
           calls.push({ host, ...rpc })
           await jsonResponse(frame.id, { result: rpc.method === 'pane.read' ? { read: { text: 'Run synthetic command?\n  1. Yes, once\n  2. No, cancel' } } : { ok: true } })
           if (rpc.method === 'agent.prompt' && chatId) await send({ t: 'wmsg', id: chatId, s: JSON.stringify({ type: 'items', items: [{ id: 'reply', kind: 'assistant', text: '已收到合成测试消息' }], end: 20 }) })

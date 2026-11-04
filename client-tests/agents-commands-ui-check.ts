@@ -49,7 +49,10 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
       if (f.t === 'hreq') {
         if (f.path === '/api/herdr/info') await reply(f.id, { online: true })
         else if (f.path.startsWith('/api/herdr/chat')) await reply(f.id, { session_id: 's1', page: { start: 0, end: ITEMS.length, items: ITEMS } })
+        else if (f.path === '/api/herdr/mutes') await reply(f.id, { workspaces: [], tabs: [] })
+        else if (f.path === '/__alma_lan__') await reply(f.id, null)
         else {
+          // A bodyless GET is not an RPC; decoding it unconditionally throws.
           const rpc = JSON.parse(new TextDecoder().decode(fromBase64url(f.b)))
           if (rpc.method === 'pane.send_text') sentText.push(rpc.params.text)
           await reply(f.id, { result: rpc.method === 'pane.read' ? { read: { text: '' } } : {} })
@@ -73,7 +76,7 @@ try {
   await page.waitForTimeout(900)
 
   // 1. The header reports the two still-running background agents.
-  const badge = page.locator('.session-chip.is-agents')
+  const badge = page.locator('.composer-fact.is-agents')
   const badgeText = (await badge.textContent())?.trim()
   await badge.click()
   await page.waitForTimeout(300)

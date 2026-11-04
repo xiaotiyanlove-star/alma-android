@@ -31,6 +31,7 @@ export function validHosts(value: unknown): Host[] {
     if (!x || typeof x.id !== 'string' || typeof x.name !== 'string' || typeof x.relayUrl !== 'string' || typeof x.connectCode !== 'string' || typeof x.addedAt !== 'number') throw new Error('节点存储损坏，未自动覆盖')
     // Only a real `false` disables; anything else means "on", so a host saved
     // before this field existed keeps connecting.
-    return { ...x, enabled: (x as Host).enabled !== false } as Host
+    const host = { ...x, enabled: (x as Host).enabled !== false } as Host
+    return host
   })
 }

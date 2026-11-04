@@ -67,6 +67,9 @@ public class MainActivity extends BridgeActivity {
      */
     private String themeMode = "system";
 
+    /** A consumed `alma://connect` link, waiting for a page that can take it. */
+    private String pendingPairingLink;
+
     /** Set while the page is waiting for the user to pick files. */
     private android.webkit.ValueCallback<Uri[]> pendingFileChooser;
     private static final int FILE_CHOOSER_REQUEST = 4711;
@@ -134,6 +137,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(HerdrVaultPlugin.class);
         registerPlugin(KeepAlivePlugin.class);
+        registerPlugin(LocalNetworkPlugin.class);
         super.onCreate(savedInstanceState);
 
         webView = getBridge() != null ? getBridge().getWebView() : null;
@@ -169,17 +173,107 @@ public class MainActivity extends BridgeActivity {
         try {
             webView.addJavascriptInterface(new LocaleBridge(), "__almaAndroidLocale");
             webView.addJavascriptInterface(new UiBridge(), "__almaAndroidUi");
-            webView.addJavascriptInterface(new BackBridge(), "__herdrExitApp");
             // No upstream updater bridge: this fork has its own application identity.
         } catch (Throwable t) {
             // 同上
         }
+
+        // A pairing link that launched the app. It is handed to the page once
+        // the page is ready to receive it — a document-start script would run
+        // before the controller exists — and never stored here.
+        deliverPairingLink(getIntent());
 
         // 应用内自更新：下载完成后通过 FileProvider 拉起系统安装器。
         // v0.4.213-11 起弃用系统 DownloadManager：透明代理/部分 ROM 的
         // DownloadManager 会把 200 的 HTML 错误页当 APK 落盘（实机
         // 「安装包已损坏」，SUCCESSFUL ≠ 文件有效）。改为应用内
         // HttpURLConnection 直下：写盘前校验状态码/Content-Type/zip 魔数。
+    }
+
+    /**
+     * A pairing link that arrived while the activity was already running.
+     *
+     * `singleTask` means a second `alma://connect` tap lands here rather than
+     * starting a new activity; without this the link would be dropped.
+     */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        deliverPairingLink(intent);
+    }
+
+    /**
+     * Hands an `alma://connect?…` link to the page.
+     *
+     * The shell does not parse or validate the link: the page owns the pairing
+     * rules (HTTPS relay, e2e flag, key shape), and duplicating them here would
+     * create a second place for them to drift. Anything that is not a connect
+     * link is ignored, so a stray `alma:` intent cannot pre-fill the form.
+     *
+     * The page may not have loaded yet when this runs from `onCreate`, so the
+     * value is retried once the WebView finishes loading rather than being
+     * written into a document that will be replaced.
+     */
+    private void deliverPairingLink(Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return;
+        Uri data = intent.getData();
+        if (data == null || !"alma".equals(data.getScheme())) return;
+        if (!"connect".equals(data.getHost())) return;
+        final String link = data.toString();
+        // Consumed once: a rotation or a resume must not re-fill the form.
+        intent.setData(null);
+        pendingPairingLink = link;
+        postPairingLink();
+    }
+
+    /**
+     * Tries the live bridge first and leaves the value for boot otherwise.
+     *
+     * The page is not necessarily loaded yet — from `onCreate` it usually is
+     * not — so a failed call is the normal case, not an error: `main.tsx`
+     * takes the pending value through the native bridge once the page exists.
+     * The credential is kept in Java until that one-shot read, not copied onto
+     * `window`, where unrelated scripts could inspect it.
+     */
+    private void postPairingLink() {
+        final String link = pendingPairingLink;
+        if (link == null || webView == null) return;
+        final String script = "(function(){var b=window.__almaAndroidPairing;"
+                + "if(typeof b==='function'){b(" + jsString(link) + ");return true}"
+                + "return false})()";
+        runOnUiThread(() -> {
+            try {
+                // `evaluateJavascript` answers with the JSON form of the value:
+                // the literal `true`, not a Java boolean. The pending copy is
+                // cleared only on that exact answer. Anything else — a page
+                // that is not ready, a refused call — leaves it for the
+                // one-shot boot read, which is the only other consumer.
+                webView.evaluateJavascript(script, accepted -> {
+                    if ("true".equals(accepted)) pendingPairingLink = null;
+                });
+            } catch (Throwable ignored) {
+                // Still loading; the page picks the value up at boot.
+            }
+        });
+    }
+
+    String takePendingPairingLink() {
+        String value = pendingPairingLink;
+        pendingPairingLink = null;
+        return value;
+    }
+
+    /**
+     * A JSON string literal, safe to splice into a script.
+     *
+     * Delegates to the platform encoder rather than escaping by hand: a hand
+     * written encoder has to remember every character JavaScript treats as a
+     * line break (U+2028/U+2029 as well as \n and \r), and the value here is
+     * a credential. `JSONObject.quote` handles the whole class at once.
+     */
+    private static String jsString(String value) {
+        return org.json.JSONObject.quote(value);
     }
 
     /**
@@ -398,6 +492,19 @@ public class MainActivity extends BridgeActivity {
         public void setTheme(final String mode) {
             runOnUiThread(() -> applyTheme(mode));
         }
+
+        /**
+         * Hands the page a pairing link it may not have been able to receive
+         * yet, then forgets it. Called once from `main.tsx` at boot.
+         *
+         * Empty string means "nothing waiting", so the page can skip the parse
+         * without having to know about null.
+         */
+        @JavascriptInterface
+        public String takePairingLink() {
+            String value = takePendingPairingLink();
+            return value == null ? "" : value;
+        }
     }
 
     /**
@@ -409,14 +516,6 @@ public class MainActivity extends BridgeActivity {
      * ② WebView 自身历史（renderer 模态等 pushState）；
      * ③ 默认行为（退出）。
      */
-    /** Exposed to the page so it can close the app once its own stack is empty. */
-    public class BackBridge {
-        @JavascriptInterface
-        public void exit() {
-            runOnUiThread(() -> MainActivity.this.finish());
-        }
-    }
-
     @Override
     public void onBackPressed() {
         WebView wv = webView != null ? webView
