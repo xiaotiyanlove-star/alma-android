@@ -200,25 +200,41 @@ pre { max-width: 100%; }
 .connection-action { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 16px 0; color: var(--muted); font-size: 13px; border-bottom: 1px solid var(--line); }
 .list-heading { display: flex; align-items: center; gap: 8px; padding: 21px 0 10px; }
 .list-heading span { color: var(--muted); font-size: 12px; }
+/* ── session groups ──────────────────────────────────────────────────────
+   The header has to fit a path and a count on a 360 px phone without wrapping
+   the count away, so the path is the only part allowed to truncate. */
+.session-group { padding-top: 6px; }
+.session-group-head { display: flex; align-items: baseline; gap: 8px; padding: 10px 0 4px; border-bottom: 1px solid var(--line); }
+.session-group-name { font-size: 12px; font-weight: 650; color: var(--text-2); flex: 0 0 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-group-path { flex: 1; min-width: 0; color: var(--muted); font-family: 'SFMono-Regular', Consolas, monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-group-count { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
 .session-list > li { border-bottom: 1px solid var(--line); }
+.session-group .session-list > li:last-child { border-bottom: 0; }
 .session-item { display: flex; align-items: center; gap: 4px; }
 .session-row { display: flex; width: 100%; min-width: 0; align-items: center; gap: 12px; background: transparent; text-align: left; padding: 16px 0; }
 /* Its own tap target, so renaming never opens the session by accident. */
 .session-rename { flex: 0 0 auto; color: var(--muted); }
-.session-row .agent-badge { margin-right: -2px; }
+.session-row .agent-mark { margin-right: 2px; }
 /* ── agents ──────────────────────────────────────────────────────────────
    One mark per agent, on a tinted square. The point is discrimination at a
    glance in a list and in the header, not decoration: each agent keeps the
    same colour and glyph everywhere it appears. */
-.agent-badge { display: grid; place-items: center; width: 34px; height: 34px; flex: 0 0 34px; border-radius: 10px; border: 1px solid transparent; font-size: 16px; font-weight: 600; line-height: 1; font-variant-ligatures: none; }
-.agent-badge.is-md { width: 34px; height: 34px; flex-basis: 34px; }
-.agent-badge.is-sm { width: 22px; height: 22px; flex-basis: 22px; border-radius: 7px; font-size: 12px; }
-.agent-badge.is-clay { color: var(--clay); border-color: var(--clay-line); background: var(--tint-warm); }
-.agent-badge.is-slate { color: var(--slate); border-color: var(--slate-line); background: var(--tint-cool); }
-.agent-badge.is-green { color: var(--green); border-color: var(--green-line); background: var(--tint); }
-.agent-badge.is-plain { color: var(--text-2); border-color: var(--line); background: var(--surface-3); }
-.agent-badge.is-terminal { color: var(--text-2); border-color: var(--line); background: var(--surface-3); }
-.agent-status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--dot-idle); flex: 0 0 6px; }
+/* ── agent marks ─────────────────────────────────────────────────────────
+   The product's own shape, with no tile behind it. Grey is the resting
+   state; the product's colour appears when it is the subject of the row. */
+.agent-mark { display: inline-grid; place-items: center; flex: 0 0 auto; color: var(--text-2); }
+.agent-mark svg, .agent-mark img { display: block; object-fit: contain; }
+.agent-mark.is-lg { width: 22px; height: 22px; }
+.agent-mark.is-md { width: 16px; height: 16px; }
+.agent-mark.is-sm { width: 13px; height: 13px; }
+.agent-mark.is-muted { color: var(--muted); opacity: .55; }
+.agent-mark.is-terminal { color: var(--muted); }
+.agent-mark.is-generic { font-size: 12px; font-weight: 650; color: var(--muted); }
+.agent-status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--agent-tone, var(--dot-idle)); flex: 0 0 6px; }
+/* One mark for "needs you" and "finished" alike: a session is new or it is not.
+   Green matches the working pulse, so the list never has two alert colours. */
+.news-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex: 0 0 8px; }
+.host-open .news-dot { margin-left: 2px; }
 .agent-status-dot.is-busy { background: var(--green); animation: status-pulse 1.6s ease-in-out infinite; }
 .agent-status-dot.is-waiting { background: var(--amber); }
 .agent-status-dot.is-done { background: var(--blue); }
@@ -226,7 +242,10 @@ pre { max-width: 100%; }
 @media (prefers-reduced-motion: reduce) { .agent-status-dot.is-busy { animation: none; } }
 .session-row-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
 .session-row-copy strong { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
-.session-path { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+/* Full paths truncate with an ellipsis at the end. `direction: rtl` was the
+   obvious way to keep the tail, but it moves the leading slash to the right
+   (`Users/dev/…/`), which reads as a different path. */
+.session-path { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-row-meta { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
 
 .host-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 16px 0; border-bottom: 1px solid var(--line); }
@@ -332,7 +351,7 @@ pre { max-width: 100%; }
 .conversation-header .connection-status.is-compact { gap: 0; padding: 0 2px; }
 .conversation-header .connection-status.is-compact .status-dot { width: 8px; height: 8px; }
 /* The title is the widest thing here; the badge and status may stay put. */
-.conversation-header .agent-badge { margin-top: 2px; }
+.conversation-header .agent-mark { margin-top: 2px; }
 /* Desktop name stays put; the chips scroll beside it, so the header keeps one
    height whether or not a model name or context figure is present. */
 .header-copy .session-host-name { display: flex; gap: 6px; align-items: center; min-width: 0; white-space: nowrap; }
@@ -355,6 +374,7 @@ pre { max-width: 100%; }
 .transcript-scroll { width: 100%; min-height: 0; min-width: 0; overflow: auto; padding: 0 20px 24px; overscroll-behavior: contain; overflow-anchor: none; scrollbar-gutter: stable; }
 .older-messages { display: flex; justify-content: center; padding: 8px 0 0; }
 .older-messages .text-button { font-size: 12px; }
+.older-status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; }
 .message { min-width: 0; padding: 20px 0; border-bottom: 1px solid var(--line); }
 .message-user { background: var(--surface-3); padding: 16px 14px; margin: 16px 0; border-left: 2px solid var(--line-strong); border-bottom: 0; }
 .message-meta-right { display: inline-flex; align-items: center; gap: 4px; }
@@ -367,6 +387,9 @@ pre { max-width: 100%; }
 .message-meta time { max-width: 70%; overflow-wrap: anywhere; text-align: right; }
 .message-content { min-width: 0; font-size: 14px; line-height: 1.8; }
 .prose-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Source mode is the agent's bytes: the only decoration is a tint that says
+   "this is not the question", and a quieter mono rhythm for code-heavy text. */
+.source-text { margin-top: 2px; padding: 10px 12px; border-left: 2px solid var(--line-strong); background: var(--surface-2); border-radius: 0 4px 4px 0; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12.5px; line-height: 1.65; color: var(--text-2); }
 .message-error { color: var(--red); }
 .message-error .message-meta { color: var(--red); }
 .code-block { max-width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-3); margin: 12px 0; overflow: hidden; }
@@ -429,6 +452,10 @@ pre { max-width: 100%; }
 .composer textarea::placeholder { color: var(--muted); font-size: 14px; }
 .composer textarea:disabled { background: var(--surface-3); }
 .send-button { width: 44px; height: 44px; display: grid; place-items: center; color: #fff; background: var(--green-solid); border-radius: 6px; flex: 0 0 44px; }
+/* Same slot as send, same weight. Muted red rather than a bright one: stopping
+   is a normal thing to do mid-turn, not a destructive action to be scared of. */
+.stop-button { width: 44px; height: 44px; display: grid; place-items: center; color: var(--red); background: var(--surface-3); border: 1px solid var(--line-strong); border-radius: 6px; flex: 0 0 44px; }
+.stop-button:disabled { opacity: .55; }
 .composer-status { display: flex; align-items: center; gap: 5px; min-height: 25px; padding: 3px 16px calc(6px + env(safe-area-inset-bottom, 0px)); color: var(--muted); font-size: 10px; flex-shrink: 0; overflow-wrap: anywhere; }
 .composer-status > svg { flex-shrink: 0; }
 
@@ -466,7 +493,7 @@ pre { max-width: 100%; }
   .host-row { flex-wrap: wrap; }
   .host-actions { margin-left: auto; }
   .host-actions .icon-button { width: 34px; flex-basis: 34px; }
-  .agent-badge.is-md { width: 30px; height: 30px; flex-basis: 30px; font-size: 14px; }
+  .agent-mark.is-lg { width: 20px; height: 20px; }
   .session-row { gap: 9px; }
   /* The chip row scrolls here; a hard cut at the edge reads as a broken
      layout, so it fades out instead and looks scrollable. */
@@ -482,14 +509,17 @@ pre { max-width: 100%; }
   .app-shell { max-width: none; }
   .page-header { min-height: 48px; padding-top: 4px; padding-bottom: 4px; }
   .page-header .header-copy p { display: none; }
-  .conversation-header .agent-badge { margin-top: 0; }
+  .conversation-header .agent-mark { margin-top: 0; }
   .view-toolbar { min-height: 38px; }
   .composer textarea { max-height: 64px; }
   .session-notices { max-height: 26%; }
   .session-notices .notice { padding: 6px 10px; }
   .host-selector-bar { padding-top: 6px; padding-bottom: 6px; }
+  /* Two columns inside each group. The grid belongs to the list, not the page,
+     or one group's rows would straddle another group's header. */
   .session-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 18px; }
   .session-list > li:nth-last-child(2) { border-bottom: 0; }
+  .session-group { display: block; }
   .tool-group-body .tool-section pre { max-height: 150px; }
 }
 
@@ -498,7 +528,7 @@ pre { max-width: 100%; }
 @media (min-width: 640px) {
   .add-host-form { max-width: 520px; }
   .settings-group { max-width: 620px; }
-  .list-heading, .session-list, .connection-action, .host-list { max-width: 620px; }
+  .list-heading, .session-group, .connection-action, .host-list { max-width: 620px; }
   /* A line of prose much past 70 characters is hard to read: on a tablet the
      transcript is centred at a comfortable measure instead of filling it. */
   .messages, .queued-messages, .tool-group, .older-messages { max-width: 720px; margin-left: auto; margin-right: auto; }
@@ -551,8 +581,10 @@ pre { max-width: 100%; }
 .markdown-body img { max-width: 100%; height: auto; border-radius: 6px; }
 .md-image-blocked { color: var(--muted); font-size: 12px; }
 .message-options { display: flex; align-items: center; gap: 6px; }
-.text-toggle { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 9px; border-radius: 5px; background: transparent; color: var(--text-2); font-size: 12px; }
-.text-toggle[aria-pressed='true'] { color: var(--green); }
+.chip-button { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); color: var(--text-2); font-size: 12px; }
+.chip-button > svg { flex: 0 0 auto; }
+.chip-button[aria-pressed='true'] { border-color: var(--line-strong); background: var(--surface-3); color: var(--green); }
+.chip-button:disabled { opacity: .55; }
 .select-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 48px; padding: 8px 0 14px; }
 .select-row > span { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .select-row strong { font-size: 14px; font-weight: 550; }
@@ -595,6 +627,8 @@ pre { max-width: 100%; }
 .session-chip.is-status.is-busy { border-color: var(--green-line); background: var(--tint); color: var(--green); }
 .session-chip.is-status.is-waiting { border-color: var(--amber-line); background: var(--tint-warm); color: var(--amber); }
 .session-chip.is-status.is-done { border-color: var(--blue-line); background: var(--tint-cool); color: var(--blue); }
+/* Idle carries no urgency, so it takes the agent's own colour instead of grey. */
+.session-chip.is-status.is-idle { border-color: color-mix(in srgb, var(--agent-tone, var(--line)) 30%, var(--line)); background: var(--surface-2); color: var(--agent-tone, var(--muted)); }
 .header-copy .session-host-name { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; }
 
 /* "waiting for the first token" indicator */

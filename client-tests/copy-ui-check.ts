@@ -59,7 +59,9 @@ try {
   await addDesktop(page, '测试节点', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
   await page.waitForTimeout(900)
   await page.locator('.session-row').first().click()
-  await page.waitForTimeout(900)
+  // Both sides of the conversation render as markdown, so the wait has to say
+  // which one it means; strict mode rejects an ambiguous locator.
+  await page.locator('.markdown-body').first().waitFor({ timeout: 20000 })
 
   // A code block: copies only the code, not the surrounding prose.
   await page.locator('.md-code .md-code-copy').first().click()

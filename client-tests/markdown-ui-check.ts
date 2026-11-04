@@ -84,10 +84,17 @@ try {
   await page.getByRole('button', { name: '源码' }).click()
   await page.waitForTimeout(300)
   await page.screenshot({ path: 'test-artifacts/md-source.png' })
-  const source = await page.evaluate(() => ({
-    hasRawHeading: (document.querySelector('.prose-text')?.textContent ?? '').includes('## 标题'),
-    markdownBodyGone: !document.querySelector('.markdown-body'),
-  }))
+  const source = await page.evaluate(() => {
+    const text = document.querySelector('.prose-text')?.textContent ?? ''
+    return {
+      hasRawHeading: text.includes('## 标题'),
+      // The point of the source view: the fence is shown, not turned into a
+      // card. Without this the toggle looked like it did nothing.
+      hasRawFence: text.includes('```ts'),
+      markdownBodyGone: !document.querySelector('.markdown-body'),
+      codeCardGone: !document.querySelector('.code-block'),
+    }
+  })
 
   console.log(JSON.stringify({ rendered, source, pageErrors: errors }))
 } finally {

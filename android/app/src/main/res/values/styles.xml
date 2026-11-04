@@ -16,6 +16,13 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:windowBackground">@color/launch_background</item>
+        <!-- 光标/选择手柄的 popup 底色。
+             WebView 用 textSelectHandleWindowStyle 建手柄 PopupWindow，而本 App 的
+             深色是网页里的 data-theme 决定的、Android 主题始终跟随系统，所以
+             「网页深色 + 系统浅色」时手柄底下会露出系统浅色主题的一块白色方块。
+             实测手柄窗口是从本主题取 android:background 当底色的（改 popupBackground
+             无效），置透明后手柄图形自带形状，深浅两套下都只有手柄本身。 -->
+        <item name="android:background">@android:color/transparent</item>
     </style>
 
 

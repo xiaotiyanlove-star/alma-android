@@ -25,8 +25,11 @@ import { initialState, step } from './lifecycle';
 import { stopMessage } from './backoff';
 import { parseSessionInfo } from './session-info';
 import { agentLook, statusTone, statusWord } from './agents';
+import { agentMark } from './agent-marks';
 import { timeline } from './timeline';
+import { RemoteImage } from './RemoteImage';
 import { backgroundAgents } from './subagents';
+import { acknowledge, pruneUnread, subscribeUnread, unreadPanes } from './unread';
 import { commandsFor, filterCommands, slashQuery } from './commands';
 import { formatTime, localeChoice, setLocaleChoice, timeZoneChoice, setTimeZoneChoice, resolvedTimeZone, resolvedLocale, COMMON_ZONES, markdownEnabled, setMarkdownEnabled, themeChoice, setThemeChoice, resolvedTheme, applyTheme, type LocaleChoice, type ThemeChoice } from './prefs';
 import type { AppState, ChatItem, HostState, Pane, SessionState, Snapshot } from './model';
@@ -80,6 +83,37 @@ export function tabLabelOf(snapshot: Snapshot | undefined, pane?: Pane): string 
   return label && !/^\d+$/.test(label) ? label : undefined;
 }
 
+/**
+ * Sessions, grouped by the workspace they belong to.
+ *
+ * The workspace is Herdr's own division of a desktop, so grouping by it keeps
+ * the phone list in the same shape as the desktop's tabs. Its path is what the
+ * group header shows: a workspace name alone ("app") says little on a phone
+ * that is looking at three machines.
+ *
+ * Order is fixed rather than by recency: a list that reorders under the thumb
+ * is how the wrong session gets opened.
+ */
+export function sessionGroups(snapshot: Snapshot | undefined): { id: string; title: string; path: string; panes: Pane[] }[] {
+  if (!snapshot) return []
+  const groups = new Map<string, { id: string; title: string; path: string; panes: Pane[] }>()
+  for (const pane of snapshot.panes) {
+    const workspace = snapshot.workspaces.find(item => item.workspace_id === pane.workspace_id)
+    const id = workspace?.workspace_id ?? pane.workspace_id ?? 'other'
+    const path = workspace?.cwd || pane.cwd || ''
+    if (!groups.has(id)) {
+      groups.set(id, {
+        id,
+        title: workspace?.label || workspace?.name || path.split('/').filter(Boolean).pop() || t('其他'),
+        path,
+        panes: [],
+      })
+    }
+    groups.get(id)!.panes.push(pane)
+  }
+  return [...groups.values()]
+}
+
 function hostStatus(host: HostState): string {
   if (host.status === 'disabled') return t('已关闭');
   if (host.status === 'connecting') return t('连接中');
@@ -105,11 +139,38 @@ function Status({ host, compact = false }: { host: HostState; compact?: boolean 
   </span>;
 }
 
-/** The agent's mark on a tinted square; a plain terminal gets a terminal glyph. */
-function AgentBadge({ agent, size = 'md' }: { agent?: string; size?: 'md' | 'sm' }) {
-  if (!agent) return <span className={`agent-badge is-terminal is-${size}`} aria-hidden="true"><Terminal size={size === 'sm' ? 13 : 17} /></span>
-  const look = agentLook(agent)
-  return <span className={`agent-badge is-${look.tone} is-${size}`} aria-hidden="true" title={look.label}>{look.mark}</span>
+/**
+ * The agent's mark: the supplied artwork, on no plate.
+ *
+ * `active` decides whether the mark is shown in its own colour or dimmed to
+ * context. A row in a session list *is* that agent, so it is always coloured;
+ * the dimmed state is for a mark that only says what kind of session this is.
+ * An agent with no artwork falls back to its initial rather than a blank.
+ */
+function AgentMark({ agent, size = 'md', active = true }: { agent?: string; size?: 'md' | 'sm' | 'lg'; active?: boolean }) {
+  const px = size === 'lg' ? 22 : size === 'sm' ? 13 : 16
+  const spec = agent ? agentMark(agent) : undefined
+  if (!agent) {
+    return <span className={`agent-mark is-terminal is-${size}`} aria-hidden="true"><Terminal size={px - 2} /></span>
+  }
+  if (!spec) {
+    return <span className={`agent-mark is-generic is-${size}`} aria-hidden="true">{(agentLook(agent).label || agent).slice(0, 1).toUpperCase()}</span>
+  }
+  return <span className={`agent-mark is-${size}${active ? '' : ' is-muted'}`} aria-hidden="true" title={spec.label}>
+    <img src={spec.src} width={px} height={px} alt="" draggable={false} />
+  </span>
+}
+
+/** A compact "icon, then word" control, sized to the toolbar row. */
+function ChipButton({ icon, label, title, pressed, disabled, onClick }: {
+  icon: ReactNode;
+  label: string;
+  title: string;
+  pressed?: boolean;
+  disabled?: boolean;
+  onClick(): void;
+}) {
+  return <button type="button" className="chip-button" title={title} aria-label={title} aria-pressed={pressed} disabled={disabled} onClick={onClick}>{icon}<span>{label}</span></button>;
 }
 
 function Notice({ children, error = false }: { children: ReactNode; error?: boolean }) {
@@ -126,22 +187,16 @@ function Loading({ label }: { label: string }) {
   return <div className="loading-state" role="status"><Loader2 className="spin" size={18} aria-hidden="true" />{label}</div>;
 }
 
-/** Plain-text fallback: preserves the model's line breaks verbatim. */
+/**
+ * Source view: the message exactly as the agent wrote it.
+ *
+ * Nothing is interpreted, not even fenced code. That was the reason the toggle
+ * looked broken: the rendered view already showed a fence as a copy-card, and
+ * this view rebuilt the very same card from the fence, so a code-heavy reply
+ * looked identical in both modes. Copy stays on the message's own action.
+ */
 function SourceText({ text }: { text: string }) {
-  const parts = stripAnsi(text).split(/(```[^\n]*\n[\s\S]*?(?:```|$))/g);
-  return <div className="message-content">{parts.map((part, index) => {
-    if (!part) return null;
-    if (!part.startsWith('```')) return <div className="prose-text" key={index}>{part}</div>;
-    const firstLine = part.indexOf('\n');
-    const language = part.slice(3, firstLine).trim();
-    const code = part.slice(firstLine + 1).replace(/```$/, '');
-    return <div className="code-block" key={index}>
-      {/* The source view offers the same copy action as the rendered view;
-          without it, copying meant selecting a scrollable block by hand. */}
-      <div className="code-language">{language || t('代码')}<CopyButton text={code} /></div>
-      <pre tabIndex={0} aria-label={language ? `${language} ${t('代码')}` : t('代码')}><code>{code}</code></pre>
-    </div>;
-  })}</div>;
+  return <div className="message-content"><div className="prose-text source-text">{stripAnsi(text)}</div></div>;
 }
 
 /** Renders markdown or its source, depending on the reader's preference. */
@@ -174,25 +229,54 @@ function ToolRow({ item }: { item: ChatItem }) {
  * current tool and whether work is happening, and opens to every row inside so
  * nothing is lost.
  */
-function ToolGroup({ items, running }: { items: ChatItem[]; running: boolean }) {
-  const last = items[items.length - 1];
-  const lastDone = last?.tool?.done === true;
-  // The newest unfinished call is what the agent is doing right now.
-  const active = running ? [...items].reverse().find((item) => item.tool?.done !== true) : undefined;
-  return <details className="tool-group" open={false}>
-    <summary>
-      <span className={`tool-dot${running ? ' is-running' : ''}`} aria-hidden="true" />
-      <span className="tool-group-copy">
-        <strong>{running ? tWith('{name} 进行中', { name: active?.tool?.name || t('工具调用') }) : tWith('{count} 次工具调用', { count: String(items.length) })}</strong>
-        <small>{running ? `${items.length} ${t('步')}${lastDone ? '' : ` · ${last?.tool?.name ?? ''}`}` : items.map((item) => item.tool?.name).filter(Boolean).slice(0, 6).join(' · ')}</small>
-      </span>
-      <ChevronDown size={15} aria-hidden="true" />
-    </summary>
-    <div className="tool-group-body">{items.map((item) => <ToolRow item={item} key={item.id} />)}</div>
-  </details>;
+function summarizeWork(items: ChatItem[]): { reads: number; edits: number; commands: number; other: number; paths: Set<string>; images: string[] } {
+  const result = { reads: 0, edits: 0, commands: 0, other: 0, paths: new Set<string>(), images: [] as string[] }
+  for (const item of items) {
+    if (item.kind !== 'tool' || !item.tool) continue
+    const name = (item.tool.name ?? '').toLowerCase()
+    if (/^(read|view|read_file)$/.test(name)) result.reads++
+    else if (/^(edit|multiedit|write|notebookedit|apply_patch)$/.test(name)) {
+      const input = item.tool.input && typeof item.tool.input === 'object' ? item.tool.input as Record<string, unknown> : {}
+      const path = typeof input.file_path === 'string' ? input.file_path : typeof input.path === 'string' ? input.path : undefined
+      if (!path || !result.paths.has(path)) { result.edits++; if (path) result.paths.add(path) }
+    } else if (/^(bash|bashoutput|shell|exec_command|local_shell)$/.test(name)) result.commands++
+    else result.other++
+    for (const image of item.tool.result_images ?? []) result.images.push(image.url)
+  }
+  for (const item of items) for (const image of item.images ?? []) result.images.push(image.url)
+  return result
 }
 
-function Message({ item, markdown }: { item: ChatItem; markdown: boolean }) {
+function WorkGroup({ hostId, items, running, markdown }: { hostId: string; items: ChatItem[]; running: boolean; markdown: boolean }) {
+  const summary = useMemo(() => summarizeWork(items), [items])
+  const counts = [
+    summary.commands ? tWith('运行了 {count} 条命令', { count: summary.commands }) : '',
+    summary.edits ? tWith('编辑了 {count} 个文件', { count: summary.edits }) : '',
+    summary.reads ? tWith('读取了 {count} 个文件', { count: summary.reads }) : '',
+    summary.other ? tWith('{count} 个其他步骤', { count: summary.other }) : '',
+  ].filter(Boolean)
+  const runningItem = items.find((item) => item.kind === 'tool' && item.tool?.done !== true)
+  const [open, setOpen] = useState(false)
+  return <section className={`work-group${running ? ' is-running' : ''}`}>
+    <button className="work-summary" type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+      {running
+        ? <Loader2 className="spin" size={15} aria-label={t('进行中')} />
+        : <span className="work-summary-dot" aria-hidden="true" />}
+      <span className="work-summary-copy">
+        <strong>{running ? (runningItem?.tool?.summary || runningItem?.tool?.name || t('处理中')) : counts.join(t('，')) || t('已完成')}</strong>
+        {running && counts.length > 0 && <small>{counts.join(t('，'))}</small>}
+      </span>
+      <ChevronDown className={open ? 'is-open' : ''} size={16} aria-hidden="true" />
+    </button>
+    {/* Alma leaves screenshots visible even while work details are folded. */}
+    {summary.images.length > 0 && <div className="work-images">{summary.images.map((reference, index) => <RemoteImage hostId={hostId} reference={reference} key={`${reference}:${index}`} maxHeight={220} />)}</div>}
+    {open && <div className="work-details">{items.map((item) => item.kind === 'tool'
+      ? <ToolRow item={item} key={item.id} />
+      : <Message item={item} markdown={markdown} hostId={hostId} key={item.id} />)}</div>}
+  </section>
+}
+
+function Message({ item, markdown, hostId }: { item: ChatItem; markdown: boolean; hostId: string }) {
   const isUser = item.kind === 'user' || item.from === 'user' || item.from === 'human';
   const role = isUser ? t('你') : item.kind === 'system' ? t('系统') : item.kind === 'error' ? t('错误') : item.tool ? t('工具') : t('助手');
   const text = item.text || item.summary;
@@ -206,6 +290,7 @@ function Message({ item, markdown }: { item: ChatItem; markdown: boolean }) {
         {copyable && <CopyButton text={stripAnsi(text!)} label={t('复制回复')} compact className="message-copy" />}
       </span>
     </div>
+    {item.images && item.images.length > 0 && <div className="message-images">{item.images.map((image, index) => <RemoteImage hostId={hostId} reference={image.url} key={`${image.url}:${index}`} />)}</div>}
     {text && <RichText text={text} markdown={markdown} />}
     {item.tool && <ToolRow item={item} />}
     {!text && !item.tool && <p className="muted">{t('此条记录没有文本内容')}</p>}
@@ -391,7 +476,7 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
         {hosts.length > 0 ? <ul className={`host-list${collapsed ? ' is-collapsed' : ''}`}>
           {visibleHosts.map(host => <li className="host-row" key={host.host.id}>
             <Server size={21} className="muted" aria-hidden="true" />
-            <button className="host-open" onClick={() => onOpen(host.host.id)}><strong>{host.host.name}</strong><Status host={host} /></button>
+            <button className="host-open" onClick={() => onOpen(host.host.id)}><strong>{host.host.name}</strong><Status host={host} />{host.snapshot && unreadPanes([host]).length > 0 && <span className="news-dot" role="img" aria-label={t('有新消息')} />}</button>
             {/* The three actions stay one unit: split across two lines they
                 stopped looking like a row and one button drifted left. */}
             <div className="host-actions">
@@ -575,6 +660,19 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
   const host = state.hosts.find(item => item.host.id === state.selectedHostId)
     ?? (state.hosts.length === 1 ? state.hosts[0] : undefined);
   const ready = canUseHost(host);
+  // Recomputed whenever a snapshot changes or a pane is acknowledged: the mark
+  // has to clear the moment a session is opened, without waiting for a poll.
+  const [unreadRevision, setUnreadRevision] = useState(0);
+  useEffect(() => subscribeUnread(() => setUnreadRevision(value => value + 1)), []);
+  // `unreadRevision` is in the dependency list on purpose: localStorage is the
+  // store, so acknowledging a pane must force a fresh read, not rely on a
+  // changed snapshot arriving.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const news = useMemo(() => unreadPanes(state.hosts), [state.hosts, unreadRevision]);
+  // Keep the acknowledgement record from outliving the panes it describes.
+  useEffect(() => {
+    pruneUnread(state.hosts.flatMap(host => (host.snapshot?.panes ?? []).map(pane => ({ hostId: host.host.id, paneId: pane.pane_id }))));
+  }, [state.hosts]);
   const [opening, setOpening] = useState<string>();
   const [openError, setOpenError] = useState('');
   const [picking, setPicking] = useState(false);
@@ -725,32 +823,49 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
               <button type="button" className="pick-host-row" disabled={item.host.enabled === false} onClick={() => controller.selectHost(item.host.id)}>
                 <Server size={19} aria-hidden="true" />
                 <span className="pick-host-copy"><strong>{item.host.name}</strong><Status host={item} /></span>
+                {/* A desktop is "new" when any of its sessions is: one mark on
+                    the row is enough to say where to look. */}
+                {news.some(pane => pane.hostId === item.host.id) && <span className="news-dot" role="img" aria-label={t('有新消息')} />}
                 <ArrowRight size={17} className="muted" aria-hidden="true" />
               </button>
             </li>)}</ul>
             <button type="button" className="secondary-button" onClick={onSettings}>{t('管理节点')}</button>
           </div> : host.status === 'connecting' && !host.snapshot ? <Loading label={t('正在连接节点…')} /> : ready && !host.snapshot ? <Loading label={t('正在读取会话…')} /> : host.snapshot?.panes.length ? <>
         <div className="list-heading"><h2>{t('会话')}</h2><span>{host.snapshot.panes.length}</span></div>
-        <ul className="session-list">{host.snapshot.panes.map(pane => {
-          const workspace = host.snapshot?.workspaces.find(item => item.workspace_id === pane.workspace_id);
-          const workspaceName = workspace?.label || workspace?.name || workspace?.cwd || pane.cwd;
-          return <li key={pane.pane_id} className="session-item">
-            <button className="session-row" disabled={!ready || Boolean(opening)} onClick={() => void openPane(pane.pane_id)}>
-              {/* The agent's own mark replaces the generic terminal glyph, so a
-                  list of several sessions can be scanned without reading. */}
-              <AgentBadge agent={pane.agent ?? pane.agent_session?.agent} />
-              <span className="session-row-copy"><strong>{paneTitle(pane, tabLabelOf(host.snapshot, pane))}</strong>{workspaceName && <span className="session-path">{workspaceName}</span>}
-                <span className="session-row-meta">
-                  <span className={`agent-status-dot is-${statusTone(pane.agent_status)}`} aria-hidden="true" />
-                  {agentLook(pane.agent ?? pane.agent_session?.agent).label || t('终端')}
-                  {pane.agent_status && <> · {t(statusWord(pane.agent_status))}</>}
+        {/* Grouped by workspace, the way the desktop arranges them. A pane
+            whose workspace cannot be found still belongs somewhere, so it gets
+            its own group rather than disappearing. */}
+        {sessionGroups(host.snapshot).map(group => <section className="session-group" key={group.id}>
+          <header className="session-group-head">
+            <span className="session-group-name">{group.title}</span>
+            <span className="session-group-path" title={group.path}>{group.path}</span>
+            <span className="session-group-count">{group.panes.length}</span>
+          </header>
+          <ul className="session-list">{group.panes.map(pane => {
+            return <li key={pane.pane_id} className="session-item">
+              <button className="session-row" disabled={!ready || Boolean(opening)} onClick={() => void openPane(pane.pane_id)}>
+                {/* The agent's own mark replaces the generic terminal glyph, so a
+                    list of several sessions can be scanned without reading. */}
+                <AgentMark agent={pane.agent ?? pane.agent_session?.agent} size="lg" />
+                <span className="session-row-copy"><strong>{paneTitle(pane, tabLabelOf(host.snapshot, pane))}</strong>{pane.cwd && <span className="session-path" title={pane.cwd}>{pane.cwd}</span>}
+                  <span className="session-row-meta">
+                    <span className={`agent-status-dot is-${statusTone(pane.agent_status)}`} style={{ ['--agent-tone' as string]: agentLook(pane.agent ?? pane.agent_session?.agent).tone }} aria-hidden="true" />
+                    {agentLook(pane.agent ?? pane.agent_session?.agent).label || t('终端')}
+                    {/* `blocked` and `done` collapse into one mark: both mean the
+                        user was needed and was not looking. `working` keeps its
+                        word, because that one is useful at a glance. */}
+                    {pane.agent_status === 'working' && <> · {t(statusWord(pane.agent_status))}</>}
+                  </span>
                 </span>
-              </span>
-              {opening === pane.pane_id ? <Loader2 size={18} className="spin" aria-label={t('正在打开')} /> : <ArrowRight size={18} className="muted" aria-hidden="true" />}
-            </button>
-            <button type="button" className="icon-button session-rename" disabled={!ready} aria-label={tWith('重命名 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })} title={t('重命名会话')} onClick={() => startRename(pane, tabLabelOf(host.snapshot, pane))}><Pencil size={16} /></button>
-          </li>;
-        })}</ul>
+                {news.some(item => item.hostId === host.host.id && item.paneId === pane.pane_id)
+                  ? <span className="news-dot" role="img" aria-label={t('有新消息')} title={t('有新消息')} />
+                  : null}
+                {opening === pane.pane_id ? <Loader2 size={18} className="spin" aria-label={t('正在打开')} /> : <ArrowRight size={18} className="muted" aria-hidden="true" />}
+              </button>
+              <button type="button" className="icon-button session-rename" disabled={!ready} aria-label={tWith('重命名 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })} title={t('重命名会话')} onClick={() => startRename(pane, tabLabelOf(host.snapshot, pane))}><Pencil size={16} /></button>
+            </li>;
+          })}</ul>
+        </section>)}
       </> : ready && host.snapshot ? <EmptyState icon={<MessageSquare size={30} />} title={t('暂无会话')}><p>{t('此节点还没有打开的终端会话。')}</p></EmptyState> : <EmptyState icon={<Server size={30} />} title={host.error ? t('无法读取会话') : t('等待节点连接')} />}
     </div>
     {renamingPane && <div className="sheet-backdrop" role="presentation" onClick={() => { setRenamingPane(undefined); closeOverlay() }}>
@@ -790,6 +905,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   // Persist on every change so leaving the session or losing the process keeps it.
   useEffect(() => { saveDraft(session.hostId, session.paneId, draft) }, [draft, session.hostId, session.paneId]);
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [localError, setLocalError] = useState('');
   const [newContent, setNewContent] = useState(false);
@@ -805,6 +921,8 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   const scroll = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
   const olderAnchor = useRef<{ top: number; height: number } | null>(null);
+  // Set after a failed history fetch so scrolling cannot retry it in a loop.
+  const [olderFailed, setOlderFailed] = useState(false);
   const composer = useRef<HTMLTextAreaElement>(null);
   const ready = canUseHost(host);
   const terminal = noMessages || mode === 'terminal';
@@ -818,6 +936,13 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   }, [itemCount, awaitingReply]);
   const prompt = useMemo(() => terminal ? null : parsePrompt(stripAnsi(session.screen ?? '')), [terminal, session.screen]);
   const pane = host?.snapshot?.panes.find(item => item.pane_id === session.paneId);
+  // Being on this screen is what "read" means. The state is the acknowledgement
+  // key, so a turn that finishes while the screen is open marks itself new only
+  // after the user leaves — which is exactly when they were not looking.
+  const paneStatus = pane?.agent_status;
+  useEffect(() => {
+    if (paneStatus) acknowledge(session.hostId, session.paneId, paneStatus);
+  }, [paneStatus, session.hostId, session.paneId]);
   // The picker appears only while the composer holds a bare `/word`.
   const query = slashQuery(draft);
   const availableCommands = useMemo(
@@ -826,6 +951,9 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
   );
   const commandOpen = query !== null && availableCommands.length > 0 && !terminal;
   const disabled = !ready || busy || session.sending || session.loading || Boolean(session.uncertain);
+  // `done` is a finished *turn*, not an idle agent: the stop key is offered
+  // while work is actually in progress, which is `working` or a send in flight.
+  const agentWorking = !terminal && (pane?.agent_status === 'working' || Boolean(awaitingReply) || session.sending);
 
   useLayoutEffect(() => {
     const element = scroll.current;
@@ -863,6 +991,10 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     followBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
     if (followBottom.current) setNewContent(false);
     if (olderAnchor.current && session.loadingOlder) olderAnchor.current = { top: element.scrollTop, height: element.scrollHeight };
+    // Reaching the top pulls the previous page in by itself. The button that
+    // used to do this is gone: reading history should not need a target, and a
+    // 150-row page means this fires rarely rather than on every flick.
+    if (!terminal && element.scrollTop < 120 && session.start > 0 && !session.loadingOlder && !olderFailed) void loadOlder();
   }
 
   function toBottom() {
@@ -875,10 +1007,15 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     if (session.loadingOlder || !ready || !scroll.current || olderAnchor.current) return;
     olderAnchor.current = { top: scroll.current.scrollTop, height: scroll.current.scrollHeight };
     setLocalError('');
-    try { await controller.loadOlder(); }
-    catch {
+    try {
+      await controller.loadOlder();
+      setOlderFailed(false);
+    } catch {
       olderAnchor.current = null;
       setLocalError(t('更早的记录加载失败，请重试。'));
+      // Auto-loading must not hammer a desktop that just refused: one failure
+      // parks history until the user asks again from the top of the list.
+      setOlderFailed(true);
     }
   }
 
@@ -942,6 +1079,24 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     } finally { setBusy(false); actionLock.current = false; }
   }
 
+  /**
+   * Asks the agent to stop. It is a write with no replay, so a lost response
+   * leaves the outcome unknown — the controller's own uncertainty handling
+   * covers that, and the button stays disabled until the pane settles.
+   */
+  async function stop() {
+    if (actionLock.current || stopping) return;
+    actionLock.current = true;
+    setStopping(true);
+    setLocalError('');
+    try {
+      await controller.stopAgent();
+      setAwaitingReply(false);
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : t('停止失败，请稍后重试。'));
+    } finally { setStopping(false); actionLock.current = false; }
+  }
+
   async function runCommand(command: string) {
     actionLock.current = true
     setBusy(true)
@@ -1002,12 +1157,12 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
 
   return <section className="conversation-view">
     <header className="page-header conversation-header"><button className="icon-button" title={t('返回会话')} aria-label={t('返回会话')} onClick={() => { controller.backToSessions(); back() }}><ArrowLeft size={21} /></button>
-      <AgentBadge agent={pane?.agent ?? pane?.agent_session?.agent} />
+      <AgentMark agent={pane?.agent ?? pane?.agent_session?.agent} size="lg" />
       <div className="header-copy"><h1>{paneTitle(pane, tabLabelOf(host?.snapshot, pane))}</h1><p className="session-host-name"><span className="session-host-id"><Server size={12} aria-hidden="true" />{host?.host.name || t('未知节点')}</span>
         {/* The chips scroll rather than wrap: the header must not change height
             as a model name or a context figure comes and goes. */}
         <span className="session-chips">
-          {pane?.agent_status && <span className={`session-chip is-status is-${statusTone(pane.agent_status)}`} title={t('当前状态')}><span className={`agent-status-dot is-${statusTone(pane.agent_status)}`} aria-hidden="true" />{t(statusWord(pane.agent_status))}</span>}
+          {pane?.agent_status && <span className={`session-chip is-status is-${statusTone(pane.agent_status)}`} style={{ ['--agent-tone' as string]: agentLook(pane?.agent ?? pane?.agent_session?.agent).tone }} title={t('当前状态')}><span className={`agent-status-dot is-${statusTone(pane.agent_status)}`} style={{ ['--agent-tone' as string]: agentLook(pane?.agent ?? pane?.agent_session?.agent).tone }} aria-hidden="true" />{t(statusWord(pane.agent_status))}</span>}
           {info.model && <span className="session-chip" title={t('当前模型')}>{info.model}</span>}
           {info.contextLabel && <span className="session-chip" title={info.contextRatio === undefined ? t('上下文用量') : `${t('上下文已用')} ${Math.round((info.contextRatio ?? 0) * 100)}%`}><span className="sr-only">{t('上下文')}</span>{info.contextLabel}</span>}
           {agents.length > 0 && <button type="button" className="session-chip is-agents" onClick={() => setAgentsOpen(true)} title={t('查看运行中的 agent')}>
@@ -1016,7 +1171,7 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
         </span>
       </p></div>{host && <Status host={host} compact />}</header>
     <div className="view-toolbar"><div className="view-tabs" role="tablist" aria-label={t('会话视图')}><button role="tab" id="messages-tab" aria-controls="session-content" aria-selected={!terminal} disabled={noMessages} className={!terminal ? 'is-active' : ''} onClick={() => switchMode('messages')}><MessageSquare size={16} />{t('消息')}</button><button role="tab" id="terminal-tab" aria-controls="session-content" aria-selected={terminal} className={terminal ? 'is-active' : ''} onClick={() => switchMode('terminal')}><Terminal size={16} />{t('终端')}</button></div>{terminal ? <div className="terminal-options"><button className={`icon-button ${wrap ? 'is-active' : ''}`} title={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-label={wrap ? '切换为保留原始行' : '切换为自动换行'} aria-pressed={wrap} onClick={() => setWrap(value => !value)}><WrapText size={18} /></button><button className="icon-button" title={t('刷新终端')} aria-label={t('刷新终端')} disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={18} className={refreshing ? 'spin' : ''} /></button></div>
-      : <div className="message-options"><button className="text-toggle" aria-pressed={markdown} title={t(markdown ? '显示 Markdown 源码' : '渲染 Markdown')} onClick={() => { const next = !markdown; setMarkdown(next); setMarkdownEnabled(next) }}>{markdown ? <FileCode size={15} /> : <FileText size={15} />}{t(markdown ? '源码' : '渲染')}</button></div>}</div>
+      : <div className="message-options"><ChipButton icon={markdown ? <FileCode size={14} /> : <FileText size={14} />} label={t(markdown ? '源码' : '渲染')} title={t(markdown ? '显示 Markdown 源码' : '渲染 Markdown')} pressed={!markdown} onClick={() => { const next = !markdown; setMarkdown(next); setMarkdownEnabled(next) }} /></div>}</div>
     <div className="session-notices">
       {!ready && <Notice error>{t(host?.status === 'connecting' ? '连接恢复中，暂时无法发送。' : '节点未连接，暂时无法发送。')}{host && host.status !== 'connecting' && <button className="inline-button" onClick={() => controller.retryHost(host.host.id)}>{t('重新连接')}</button>}</Notice>}
       {session.unsupported && (gap === 'terminal'
@@ -1065,10 +1220,19 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
     <div className="transcript-shell">
       <div ref={scroll} id="session-content" className={`transcript-scroll ${terminal ? 'terminal-scroll' : ''}`} role="tabpanel" aria-labelledby={terminal ? 'terminal-tab' : 'messages-tab'} aria-busy={session.loading} onScroll={trackScroll} tabIndex={0}>
         {terminal ? <>{session.loading && !session.screen && <Loading label={t('正在读取终端…')} />}{session.screen ? <pre className={`terminal-screen ${wrap ? 'is-wrapped' : ''}`} tabIndex={0} aria-label={t('终端画面')}>{stripAnsi(session.screen)}</pre> : !session.loading && <EmptyState icon={<Terminal size={28} />} title={session.error ? t('终端画面暂不可用') : t('尚无终端画面')}><button className="secondary-button" disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={16} />{t('读取终端')}</button></EmptyState>}</> : <>
-          {session.start > 0 && <div className="older-messages"><button className="text-button" disabled={session.loadingOlder || !ready} onClick={() => void loadOlder()}>{session.loadingOlder ? <Loader2 size={15} className="spin" /> : <ArrowUp size={15} />}{session.loadingOlder ? t('正在加载') : t('更早的记录')}</button></div>}
-          {session.loading && !session.items.length ? <Loading label={t('正在读取消息…')} /> : !session.items.length ? <EmptyState icon={<MessageSquare size={28} />} title={session.error ? t('消息暂不可用') : t('暂无消息记录')} /> : <div className="messages">{timeline(session.items).map(entry => entry.kind === 'tools'
-                ? <ToolGroup items={entry.items} running={entry.running} key={entry.key} />
-                : <Message item={entry.item} markdown={markdown} key={entry.key} />)}
+          {/* Status line, not a control: history arrives on scroll. It stays
+              retryable when a fetch failed, because that is the one case the
+              scroll trigger deliberately stops retrying. */}
+          {session.start > 0 && <div className="older-messages" role="status">
+            {session.loadingOlder
+              ? <span className="older-status"><Loader2 size={14} className="spin" />{t('正在加载更早的记录…')}</span>
+              : olderFailed
+                ? <button type="button" className="text-button" disabled={!ready} onClick={() => { setOlderFailed(false); void loadOlder(); }}><RefreshCw size={14} />{t('更早的记录加载失败，点击重试')}</button>
+                : <span className="older-status">{t('继续上滑加载更早的记录')}</span>}
+          </div>}
+          {session.loading && !session.items.length ? <Loading label={t('正在读取消息…')} /> : !session.items.length ? <EmptyState icon={<MessageSquare size={28} />} title={session.error ? t('消息暂不可用') : t('暂无消息记录')} /> : <div className="messages">{timeline(session.items).map(entry => entry.kind === 'work'
+                ? <WorkGroup hostId={session.hostId} items={entry.items} running={entry.running} markdown={markdown} key={entry.key} />
+                : <Message item={entry.item} markdown={markdown} hostId={session.hostId} key={entry.key} />)}
               {awaitingReply && !session.uncertain && <div className="thinking" role="status" aria-live="polite">
                 <span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span>
                 <span className="thinking-label">{t('正在等待回复…')}</span>
@@ -1115,7 +1279,11 @@ function Session({ session, host }: { session: SessionState; host?: HostState })
       </>}
       <label className="sr-only" htmlFor="message-input">{t(terminal ? '终端输入' : '消息')}</label>
       <textarea ref={composer} id="message-input" rows={1} value={draft} onChange={event => setDraft(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={composerKey} placeholder={t(!ready ? '节点连接后可发送' : terminal ? '输入终端内容…' : '发送消息…')} disabled={!ready} />
-      <button type="submit" className="send-button" title={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} aria-label={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} disabled={disabled || (!draft.trim() && attachments.length === 0)}>{busy || session.sending ? <Loader2 size={20} className="spin" /> : <Send size={20} />}</button>
+      {/* While the agent works the send key becomes a stop key: on a phone the
+          only way to interrupt was to switch to the terminal and find Ctrl+C. */}
+      {agentWorking
+        ? <button type="button" className="stop-button" title={t('停止 agent')} aria-label={t('停止 agent')} disabled={stopping || Boolean(session.uncertain) || !ready} onClick={() => void stop()}>{stopping ? <Loader2 size={20} className="spin" /> : <Square size={18} fill="currentColor" />}</button>
+        : <button type="submit" className="send-button" title={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} aria-label={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} disabled={disabled || (!draft.trim() && attachments.length === 0)}>{busy || session.sending ? <Loader2 size={20} className="spin" /> : <Send size={20} />}</button>}
     </form>
     <div className="composer-status" role="status">{busy || session.sending ? <><Loader2 size={12} className="spin" />{t('正在发送')}</> : session.queued.length ? tWith('{count} 条待发送', { count: session.queued.length }) : session.uncertain ? t('操作结果未确认，发送已暂停') : ready ? <><Check size={12} />{host?.host.name}</> : t('发送不可用')}</div>
   </section>;

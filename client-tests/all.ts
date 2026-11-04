@@ -31,6 +31,7 @@ const UI_CHECKS = [
   'share-link-ui-check',
   'transcript-gap-ui-check',
   'agents-commands-ui-check',
+  'session-flow-ui-check',
   'fixes-ui-check',
   'nodes-ux-check',
   'settings-nodes-check',

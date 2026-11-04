@@ -75,6 +75,16 @@ function isUnknownMethod(error: unknown): boolean {
  */
 const CREATE_TIMEOUT_MS = 75_000
 
+/**
+ * Transcript page size.
+ *
+ * 60 rows is roughly two screens of an agent turn, so reading back through a
+ * session meant tapping "earlier" every few swipes. The view loads earlier
+ * pages on scroll now, and a larger page keeps that from turning into one
+ * request per flick; 150 still answers in well under a second on a phone.
+ */
+const TRANSCRIPT_PAGE = 150
+
 function merge(current: ChatItem[], incoming: ChatItem[], prepend = false): ChatItem[] {
   const all = new Map(current.map((item) => [item.id, item]))
   for (const item of incoming) all.set(item.id, item)
@@ -86,6 +96,9 @@ export class Controller {
   private state: AppState = { hosts: [], loading: true }
   private listeners = new Set<() => void>()
   private runtimes = new Map<string, Runtime>()
+  /** In-flight/successful remote image fetches, scoped to this controller. */
+  private media = new Map<string, Promise<string>>()
+  private mediaCache = new Map<string, string>()
   private sessionEpoch = 0
   /** Bumped whenever the transcript identity changes, so stale history pages cannot merge. */
   private sessionIdentity = 0
@@ -608,7 +621,7 @@ export class Controller {
     // transcript is a valid end state, not a permanent load.
     this.patchSession(epoch, { loading: session.items.length === 0, error: undefined })
     try {
-      const page = await runtime.transport.request<Page>(`/api/herdr/chat?pane=${encodeURIComponent(session.paneId)}&limit=60`)
+      const page = await runtime.transport.request<Page>(`/api/herdr/chat?pane=${encodeURIComponent(session.paneId)}&limit=${TRANSCRIPT_PAGE}`)
       if (epoch !== this.sessionEpoch) return
       if (page.error) {
         // Alma reports both `no_session` and `no_agent_session`. Two different situations
@@ -648,7 +661,7 @@ export class Controller {
     if (!session || session.loadingOlder || session.start <= 0) return
     this.patchSession(epoch, { loadingOlder: true })
     try {
-      const page = await this.runtimes.get(session.hostId)!.transport.request<Page>(`/api/herdr/chat?pane=${encodeURIComponent(session.paneId)}&before=${session.start}&limit=60`)
+      const page = await this.runtimes.get(session.hostId)!.transport.request<Page>(`/api/herdr/chat?pane=${encodeURIComponent(session.paneId)}&before=${session.start}&limit=${TRANSCRIPT_PAGE}`)
       if (page.error) throw new Error(page.error.message || t('历史读取失败'))
       // A late page from the previous session must not splice into the current transcript.
       if (epoch !== this.sessionEpoch || identity !== this.sessionIdentity || page.session_id !== this.state.session?.sessionId) return
@@ -744,6 +757,62 @@ export class Controller {
    * machine. The request has already been sent by then, so the user sees the
    * "may have run" message for what is really a slow but successful create.
    */
+  /**
+   * Fetch an image from the paired desktop through the encrypted tunnel.
+   *
+   * The URL/path originates in agent output, so it is never fetched by
+   * `window.fetch` and never allowed to select an arbitrary host. The fixed
+   * `/api/herdr/file` route on this host is the only transport destination.
+   */
+  fetchSessionImage = async (hostId: string, reference: string): Promise<string> => {
+    const host = this.state.hosts.find((item) => item.host.id === hostId)?.host
+    const runtime = this.runtimes.get(hostId)
+    if (!host || !runtime) throw new Error(t('节点不存在'))
+    let path: string
+    if (reference.startsWith('/api/herdr/image/')) {
+      path = reference
+    } else if (reference.startsWith('/api/')) {
+      if (!reference.startsWith('/api/herdr/file?')) throw new Error(t('不支持的图片地址'))
+      path = reference
+    } else if (reference.startsWith('/') || reference.startsWith('~/')) {
+      path = `/api/herdr/file?path=${encodeURIComponent(reference)}`
+    } else {
+      throw new Error(t('不支持的图片地址'))
+    }
+    const key = `${hostId}\u0000${path}`
+    const cached = this.mediaCache.get(key)
+    if (cached) return cached
+    const pending = this.media.get(key)
+    if (pending) return pending
+    const request = runtime.transport.request<{ bytes: Uint8Array; contentType: string }>(path, undefined, { kind: 'read', responseType: 'bytes' })
+      .then(({ bytes, contentType }) => {
+        if (!contentType.startsWith('image/')) throw new Error(t('远端文件不是图片'))
+        if (bytes.byteLength > MAX_ATTACHMENT_BYTES) throw new Error(t('图片超过 50 MB'))
+        let binary = ''
+        for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+        const data = `data:${contentType};base64,${btoa(binary)}`
+        this.mediaCache.set(key, data)
+        return data
+      })
+      .finally(() => this.media.delete(key))
+    this.media.set(key, request)
+    return request
+  }
+
+  /**
+   * Targeted cancellation for the agent in the current pane. It is a write,
+   * so a lost response remains uncertain and is never replayed.
+   */
+  stopAgent = async () => {
+    const session = this.state.session
+    if (!session) throw new Error(t('没有打开的会话'))
+    const pane = this.state.hosts.find((item) => item.host.id === session.hostId)?.snapshot?.panes.find((item) => item.pane_id === session.paneId)
+    const agent = pane?.agent ?? pane?.agent_session?.agent
+    if (!agent) throw new Error(t('此终端没有可停止的 agent'))
+    await this.rpc(session.hostId, 'pane.send_keys', { pane_id: session.paneId, keys: ['ctrl+c'] })
+    if (this.state.session?.hostId === session.hostId && this.state.session?.paneId === session.paneId) await this.readScreen()
+  }
+
   private async rpc<T>(hostId: string, method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
     const runtime = this.runtimes.get(hostId)
     if (!runtime) throw new Error(t('节点不存在'))
