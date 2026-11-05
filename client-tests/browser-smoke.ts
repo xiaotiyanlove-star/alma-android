@@ -69,7 +69,7 @@ try {
     await expect(page.getByRole('button', { name: '当前节点' })).toContainText(names[index])
   }
   await page.getByRole('button', { name: '当前节点' }).click()
-  await page.getByRole('dialog', { name: '选择节点' }).getByRole('button', { name: new RegExp(names[0]) }).click()
+  await page.getByRole('dialog', { name: '选择桌面' }).getByRole('button', { name: new RegExp(names[0]) }).click()
   await page.locator('.session-row-hit').first().click()
   await expect(page.getByText(/测试历史：中文长路径/)).toBeVisible()
   await page.screenshot({ path: `${screenshots}/chat-phone.png` })

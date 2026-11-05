@@ -113,13 +113,28 @@ try {
   const pickerBox = await directoryPicker.boundingBox()
   const pickerPadding = await directoryPicker.evaluate((element) => {
     const style = getComputedStyle(element)
-    return { right: parseFloat(style.paddingRight), backgroundImage: style.backgroundImage }
+    return { right: parseFloat(style.paddingRight), backgroundImage: style.backgroundImage, appearance: style.appearance }
   })
   await page.getByRole('button', { name: '手动输入', exact: true }).click()
   const manualCwd = page.getByLabel('工作目录', { exact: true })
   const manualPath = await manualCwd.inputValue()
   const modeSwitch = page.getByRole('button', { name: '选择已有目录', exact: true })
   const modeSwitchHeight = await modeSwitch.evaluate((element) => element.getBoundingClientRect().height)
+  await page.screenshot({ path: 'test-artifacts/new-session-sheet.png' })
+  const sheetGeometry = await page.getByRole('dialog', { name: '新建会话' }).evaluate((dialog) => {
+    const box = dialog.getBoundingClientRect()
+    const head = dialog.querySelector('.sheet-head')?.getBoundingClientRect()
+    const footer = dialog.querySelector('.sheet-footer')?.getBoundingClientRect()
+    return {
+      top: box.top,
+      bottom: box.bottom,
+      viewport: window.innerHeight,
+      headVisible: head ? head.top >= box.top - 1 : false,
+      footerVisible: footer ? footer.bottom <= window.innerHeight + 1 : false,
+      standard: dialog.classList.contains('sheet-standard'),
+    }
+  })
+  if (!sheetGeometry.standard || !sheetGeometry.headVisible || !sheetGeometry.footerVisible) throw new Error(`new-session sheet geometry: ${JSON.stringify(sheetGeometry)}`)
   await modeSwitch.click()
   await page.getByLabel('会话名称', { exact: true }).fill('发布流程')
   await page.getByRole('button', { name: '创建' }).click()
@@ -141,6 +156,7 @@ try {
     pickerPadding,
     manualPath,
     modeSwitchHeight,
+    sheetGeometry,
     triedLayoutApply: Boolean(apply),
     usedTabCreate: Boolean(create),
     createCwd: create?.params?.cwd,

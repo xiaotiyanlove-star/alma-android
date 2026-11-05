@@ -21,20 +21,32 @@ try {
 
   // The pairing link now lives inside the desktop's own sheet.
   await page.getByRole('button', { name: '设置 家里的 Mac' }).click()
-  await page.getByRole('dialog', { name: '节点设置' }).waitFor()
-  await page.getByRole('button', { name: '连接链接' }).click()
-  await page.getByRole('dialog', { name: '在另一台设备上连接' }).waitFor()
-  const shown = await page.getByRole('textbox', { name: '连接链接' }).inputValue()
+  await page.getByRole('dialog', { name: '桌面设置' }).waitFor()
+  await page.getByRole('button', { name: /中继地址/ }).click()
+  await page.getByRole('dialog', { name: '连接与中继' }).waitFor()
+  const shown = await page.getByRole('textbox', { name: '中继地址' }).inputValue()
   await page.screenshot({ path: 'test-artifacts/share-link.png' })
+  const sheetGeometry = await page.getByRole('dialog', { name: '连接与中继' }).evaluate((dialog) => {
+    const box = dialog.getBoundingClientRect()
+    const footer = dialog.querySelector('.sheet-footer')?.getBoundingClientRect()
+    return {
+      top: box.top,
+      bottom: box.bottom,
+      viewport: window.innerHeight,
+      footerVisible: footer ? footer.bottom <= window.innerHeight + 1 : false,
+      sameStandardClasses: dialog.classList.contains('sheet-standard'),
+    }
+  })
+  if (!sheetGeometry.sameStandardClasses || !sheetGeometry.footerVisible) throw new Error(`relay sheet geometry: ${JSON.stringify(sheetGeometry)}`)
 
-  await page.getByRole('button', { name: '复制链接' }).click()
+  await page.getByRole('dialog', { name: '连接与中继' }).getByRole('button', { name: '复制地址' }).click()
   await page.waitForTimeout(300)
   const copied = await page.evaluate(() => navigator.clipboard.readText()).catch(() => '')
   const copiedButton = await page.getByRole('button', { name: '已复制' }).isVisible().catch(() => false)
 
-  await page.getByRole('button', { name: '关闭' }).click()
+  await page.getByRole('dialog', { name: '连接与中继' }).getByRole('button', { name: '关闭', exact: true }).last().click()
   await page.waitForTimeout(300)
-  const closed = !(await page.getByRole('dialog', { name: '在另一台设备上连接' }).isVisible().catch(() => false))
+  const closed = !(await page.getByRole('dialog', { name: '连接与中继' }).isVisible().catch(() => false))
 
   // The whole point: what was copied must pair to the same desktop.
   const reparsed = await parsePairing('公司电脑', copied || shown).catch(() => null)
@@ -45,6 +57,7 @@ try {
     copiedMatchesShown: copied === shown,
     copiedButton,
     closed,
+    sheetGeometry,
     sameDesktop: reparsed?.id === original.id,
     pageErrors: errors,
   }))

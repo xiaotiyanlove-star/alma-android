@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ChangeEvent, FormEvent, KeyboardEvent, ReactNode, TouchEvent } from 'react';
 import {
-  ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown, GitBranch,
+  ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown, ChevronRight, GitBranch,
   Camera, CircleAlert, CornerDownLeft, Eye, EyeOff, Loader2, MessageSquare, Plus, RefreshCw,
   Send, Server, Settings, Square, Terminal, Trash2, WrapText, X, FileCode, Pencil, ChevronUp, Paperclip, PlusCircle,
   QrCode, Copy, BellOff, RotateCcw, MoreHorizontal,
@@ -522,15 +522,7 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
     if (scanning) setScanning(false)
   }, [overlay]);
   const bump = () => setTick(value => value + 1);
-  const confirmation = useRef<HTMLDialogElement>(null);
   const forgottenHost = hosts.find(host => host.host.id === forgetting);
-
-  useEffect(() => {
-    if (!forgetting) return;
-    const dialog = confirmation.current;
-    dialog?.showModal();
-    return () => { dialog?.close(); };
-  }, [forgetting]);
 
   async function copyShareLink() {
     try {
@@ -570,15 +562,15 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
   return <section className="settings-view">
     <header className="page-header">
       {hosts.length > 0 ? <button className="icon-button" title={t('返回会话')} aria-label={t('返回会话')} onClick={onClose}><ArrowLeft size={21} /></button> : <span className="icon-button" aria-hidden="true" />}
-      <div className="header-copy"><h1>{t('设置')}</h1><p>{tWith('{count} 个节点', { count: hosts.length })}</p></div>
+      <div className="header-copy"><h1>{t('设置')}</h1><p>{tWith('{count} 个桌面', { count: hosts.length })}</p></div>
       <button className="icon-button" title={t('添加节点')} aria-label={t('添加节点')} onClick={() => push({ name: 'addHost' })}><Plus size={21} /></button>
     </header>
     <div className="page-scroll settings-scroll">
       {error && <Notice error>{error}</Notice>}
 
       <section className="settings-group">
-        <h2 className="group-title">{t('节点')}</h2>
-        <p className="group-hint">{t('每台桌面单独配对。点名称切换，右侧可重连或移除。')}</p>
+        <h2 className="group-title">{t('桌面')}</h2>
+        <p className="group-hint">{t('每台桌面单独配对。点名称切换，点铅笔编辑。')}</p>
         {hosts.length > 0 ? <ul className={`host-list${collapsed ? ' is-collapsed' : ''}`}>
           {visibleHosts.map(host => <li className={`host-row${host.host.enabled === false ? ' is-off' : ''}`} key={host.host.id}>
             {/* One line per node: the identity, one state, and the switch.
@@ -611,7 +603,7 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
           </li>)}
         </ul> : <EmptyState icon={<Server size={26} />} title={t('尚未添加节点')}><button type="button" className="primary-button" onClick={() => push({ name: 'addHost' })}><Plus size={17} />{t('添加节点')}</button></EmptyState>}
         {hosts.length > COLLAPSE_AFTER && <button type="button" className="text-button host-toggle" aria-expanded={!collapsed} onClick={() => setCollapsed(value => !value)}>
-          {collapsed ? <><ChevronDown size={16} />{tWith('展开全部 {count} 个节点', { count: hosts.length })}</> : <><ChevronUp size={16} />{t('收起')}</>}
+          {collapsed ? <><ChevronDown size={16} />{tWith('展开全部 {count} 个桌面', { count: hosts.length })}</> : <><ChevronUp size={16} />{t('收起')}</>}
         </button>}
       </section>
 
@@ -691,58 +683,96 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
       </section>
     </div>
     {editing && editOpen && <div className="sheet-backdrop" role="presentation" onClick={() => { closeOverlay(); setEditing(undefined) }}>
-      <div className="host-sheet host-edit-sheet" role="dialog" aria-modal="true" aria-labelledby="host-edit-title" onClick={(event) => event.stopPropagation()}>
-        <h2 id="host-edit-title">{t('节点设置')}</h2>
-        <p className="confirm-host">{hosts.find(item => item.host.id === editing)?.host.name}</p>
-
-        {/* Rename: the only field on the sheet, so it saves from the keyboard. */}
-        <form onSubmit={rename} className="rename-form">
-          <label htmlFor="rename-input">{t('名称')}</label>
-          <input
-            id="rename-input"
-            value={renameValue}
-            onChange={event => setRenameValue(event.target.value)}
-            maxLength={80}
-            autoComplete="off"
-            disabled={saving}
-          />
-          <p className="field-hint">{t('只改本机显示的名称，连接与会话不受影响。')}</p>
-          <div className="dialog-actions">
-            <button type="submit" className="secondary-button" disabled={saving || !renameValue.trim()}>{saving ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{t('保存名称')}</button>
-            <button type="button" className="secondary-button" disabled={!editing} onClick={() => { setSharing(editing); setShareLink(pairingLink(hosts.find(item => item.host.id === editing)!.host)); setShareCopied(false); setEditing(undefined); openOverlay({ kind: 'share' }) }}><QrCode size={16} />{t('连接链接')}</button>
+      <div className="host-sheet sheet-standard host-edit-sheet" role="dialog" aria-modal="true" aria-labelledby="host-edit-title" onClick={(event) => event.stopPropagation()}>
+        <header className="sheet-head">
+          <div>
+            <p className="sheet-eyebrow">{t('桌面')}</p>
+            <h2 id="host-edit-title">{t('桌面设置')}</h2>
+            <p className="sheet-context">{hosts.find(item => item.host.id === editing)?.host.name}</p>
           </div>
-        </form>
+          <button type="button" className="icon-button sheet-close" aria-label={t('关闭')} title={t('关闭')} onClick={() => { closeOverlay(); setEditing(undefined) }}><X size={20} /></button>
+        </header>
+        <div className="sheet-body">
 
-        {/* Actions that used to sit as icons on the row, where four of them and
-            a switch left no room for the name. */}
-        <div className="host-edit-actions">
-          <button type="button" className="secondary-button" disabled={removing || hosts.find(item => item.host.id === editing)?.status === 'connecting'} onClick={() => { const id = editing; setEditing(undefined); closeOverlay(); if (id) controller.retryHost(id) }}><RefreshCw size={16} />{t('重新连接')}</button>
+          <form onSubmit={rename} className="sheet-field-group">
+            <label htmlFor="rename-input">{t('名称')}</label>
+            <input
+              id="rename-input"
+              value={renameValue}
+              onChange={event => setRenameValue(event.target.value)}
+              maxLength={80}
+              autoComplete="off"
+              disabled={saving}
+            />
+            <p className="field-hint">{t('只改本机显示的名称，连接与会话不受影响。')}</p>
+            <button type="submit" className="primary-button sheet-inline-action" disabled={saving || !renameValue.trim()}>{saving ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{t('保存名称')}</button>
+          </form>
+
+          <div className="sheet-action-list">
+            <button type="button" className="sheet-action" disabled={!editing} onClick={() => { setSharing(editing); setShareLink(pairingLink(hosts.find(item => item.host.id === editing)!.host)); setShareCopied(false); setEditing(undefined); openOverlay({ kind: 'share' }) }}>
+              <QrCode size={18} aria-hidden="true" /><span><strong>{t('中继地址')}</strong><small>{t('查看或复制另一台设备的配对地址')}</small></span><ChevronRight size={18} aria-hidden="true" />
+            </button>
+            <button type="button" className="sheet-action" disabled={removing || hosts.find(item => item.host.id === editing)?.status === 'connecting'} onClick={() => { const id = editing; setEditing(undefined); closeOverlay(); if (id) controller.retryHost(id) }}>
+              <RefreshCw size={18} aria-hidden="true" /><span><strong>{t('重新连接')}</strong><small>{t('重新建立到这台桌面的加密连接')}</small></span><ChevronRight size={18} aria-hidden="true" />
+            </button>
+          </div>
+
+          {error && <Notice error>{error}</Notice>}
+
+          <div className="sheet-danger-zone">
+            <button type="button" className="sheet-action is-danger" disabled={removing} onClick={() => { setForgetting(editing); openOverlay({ kind: 'forget' }) }}><Trash2 size={18} aria-hidden="true" /><span><strong>{t('移除桌面')}</strong><small>{t('只移除本机凭据，不会删除桌面会话')}</small></span></button>
+          </div>
         </div>
-
-        {error && <Notice error>{error}</Notice>}
-
-        <button type="button" className="destructive-button host-edit-delete" disabled={removing} onClick={() => { setForgetting(editing); openOverlay({ kind: 'forget' }) }}><Trash2 size={16} />{t('删除这个节点')}</button>
-        <p className="field-hint">{t('只移除这台手机上的连接凭据，不会删除桌面上的会话。')}</p>
-        <button type="button" className="secondary-button sheet-cancel" onClick={() => { closeOverlay(); setEditing(undefined) }}>{t('关闭')}</button>
+        <footer className="sheet-footer">
+          <button type="button" className="secondary-button sheet-footer-cancel" onClick={() => { closeOverlay(); setEditing(undefined) }}>{t('关闭')}</button>
+        </footer>
       </div>
     </div>}
-    {sharing && <dialog className="confirm-dialog share-dialog" open aria-labelledby="share-title">
-      <h2 id="share-title">{t('在另一台设备上连接')}</h2>
-      <p className="confirm-host">{hosts.find(item => item.host.id === sharing)?.host.name}</p>
-      <p className="field-hint">{t('把这段链接粘贴到另一台手机的「添加节点」里即可。它等同于这台桌面的完整访问权，请只发给你自己。')}</p>
-      <textarea className="share-link" readOnly value={shareLink} rows={4} spellCheck={false} aria-label={t('连接链接')} onFocus={(event) => event.currentTarget.select()} />
-      <div className="dialog-actions">
-        <button type="button" className="secondary-button" onClick={() => { setSharing(undefined); setShareLink(''); closeOverlay() }}>{t('关闭')}</button>
-        <button type="button" className="primary-button" onClick={() => void copyShareLink()}>{shareCopied ? <Check size={16} /> : <Copy size={16} />}{shareCopied ? t('已复制') : t('复制链接')}</button>
+    {sharing && <div className="sheet-backdrop" role="presentation" onClick={() => { setSharing(undefined); setShareLink(''); closeOverlay() }}>
+      <div className="host-sheet sheet-standard share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-title" onClick={(event) => event.stopPropagation()}>
+        <header className="sheet-head">
+          <div>
+            <p className="sheet-eyebrow">{t('连接')}</p>
+        <h2 id="share-title">{t('连接与中继')}</h2>
+            <p className="sheet-context">{hosts.find(item => item.host.id === sharing)?.host.name}</p>
+          </div>
+          <button type="button" className="icon-button sheet-close" aria-label={t('关闭')} title={t('关闭')} onClick={() => { setSharing(undefined); setShareLink(''); closeOverlay() }}><X size={20} /></button>
+        </header>
+        <div className="sheet-body">
+          <div className="sheet-summary">
+            <span><small>{t('中继地址')}</small><strong>{hosts.find(item => item.host.id === sharing)?.host.relayUrl}</strong></span>
+            <span><small>{t('连接范围')}</small><strong>{t('本机凭据 · 端到端加密')}</strong></span>
+          </div>
+          <p className="sheet-description">{t('把这段链接粘贴到另一台手机的「添加桌面」里即可。它等同于这台桌面的完整访问权，请只发给你自己。')}</p>
+          <textarea className="share-link" readOnly value={shareLink} rows={5} spellCheck={false} aria-label={t('中继地址')} onFocus={(event) => event.currentTarget.select()} />
+          <p className="field-hint">{t('链接包含连接凭据，请勿转发给他人。')}</p>
+        </div>
+        <footer className="sheet-footer sheet-footer-split">
+          <button type="button" className="secondary-button" onClick={() => { setSharing(undefined); setShareLink(''); closeOverlay() }}>{t('关闭')}</button>
+          <button type="button" className="primary-button" onClick={() => void copyShareLink()}>{shareCopied ? <Check size={16} /> : <Copy size={16} />}{shareCopied ? t('已复制') : t('复制地址')}</button>
+        </footer>
       </div>
-    </dialog>}
-    {forgetting && <dialog className="confirm-dialog" ref={confirmation} onCancel={event => { if (removing) event.preventDefault(); else setForgetting(undefined); }} aria-labelledby="forget-title" aria-describedby="forget-description">
-      <h2 id="forget-title">{t('忘记此节点？')}</h2>
-      <p className="confirm-host">{forgottenHost?.host.name}</p>
-      <p id="forget-description">{t('此设备上的连接凭据将被移除。重新连接需要再次配对，不会删除远端会话。')}</p>
-      {error && <Notice error>{error}</Notice>}
-      <div className="dialog-actions"><button className="secondary-button" disabled={removing} onClick={() => { setForgetting(undefined); closeOverlay() }}>{t('取消')}</button><button className="destructive-button" disabled={removing} onClick={() => void forget()}>{removing ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}确认忘记</button></div>
-    </dialog>}
+    </div>}
+    {forgetting && <div className="sheet-backdrop" role="presentation" onClick={() => !removing && setForgetting(undefined)}>
+      <div className="host-sheet sheet-standard confirm-sheet" role="dialog" aria-modal="true" aria-labelledby="forget-title" aria-describedby="forget-description" onClick={(event) => event.stopPropagation()}>
+        <header className="sheet-head">
+          <div>
+            <p className="sheet-eyebrow">{t('移除桌面')}</p>
+            <h2 id="forget-title">{t('要移除这个桌面吗？')}</h2>
+            <p className="sheet-context">{forgottenHost?.host.name}</p>
+          </div>
+          <button type="button" className="icon-button sheet-close" aria-label={t('关闭')} title={t('关闭')} disabled={removing} onClick={() => { setForgetting(undefined); closeOverlay() }}><X size={20} /></button>
+        </header>
+        <div className="sheet-body">
+          <p id="forget-description" className="sheet-description">{t('本机的连接凭据会被移除。以后重新连接需要再次配对，桌面上的会话不会被删除。')}</p>
+          {error && <Notice error>{error}</Notice>}
+        </div>
+        <footer className="sheet-footer sheet-footer-split">
+          <button type="button" className="secondary-button" disabled={removing} onClick={() => { setForgetting(undefined); closeOverlay() }}>{t('取消')}</button>
+          <button type="button" className="destructive-button" disabled={removing} onClick={() => void forget()}>{removing ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}{t('移除桌面')}</button>
+        </footer>
+      </div>
+    </div>}
   </section>;
 }
 
@@ -987,9 +1017,9 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
       <Status host={host} />
     </div>}
     {picking && <div className="sheet-backdrop" role="presentation" onClick={() => { setPicking(false); closeOverlay() }}>
-      <div className="host-sheet" role="dialog" aria-modal="true" aria-label={t('选择节点')} onClick={event => event.stopPropagation()}>
-        <h2>{t('选择节点')}</h2>
-        {state.hosts.map(item => <button
+      <div className="host-sheet sheet-standard picker-sheet" role="dialog" aria-modal="true" aria-labelledby="picker-title" onClick={event => event.stopPropagation()}>
+        <header className="sheet-head"><div><p className="sheet-eyebrow">{t('连接')}</p><h2 id="picker-title">{t('选择桌面')}</h2><p className="sheet-context">{tWith('已配对 {count} 台桌面，选择要继续的那台。', { count: state.hosts.length })}</p></div><button type="button" className="icon-button sheet-close" aria-label={t('关闭')} title={t('关闭')} onClick={() => { setPicking(false); closeOverlay() }}><X size={20} /></button></header>
+        <div className="sheet-body picker-body">{state.hosts.map(item => <button
           type="button"
           key={item.host.id}
           className={`sheet-option${item.host.id === host?.host.id ? ' is-current' : ''}`}
@@ -1000,40 +1030,25 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
           {item.host.id === host?.host.id ? <Check size={18} aria-hidden="true" /> : null}
         </button>)}
         <button type="button" className="sheet-option sheet-add" onClick={() => { setPicking(false); push({ name: 'addHost' }) }}>
-          <span className="sheet-option-copy"><strong>{t('添加节点')}</strong></span>
+          <span className="sheet-option-copy"><strong>{t('添加桌面')}</strong></span>
           <Plus size={18} aria-hidden="true" />
-        </button>
-        <button type="button" className="secondary-button sheet-cancel" onClick={() => setPicking(false)}>{t('取消')}</button>
+        </button></div>
+        <footer className="sheet-footer"><button type="button" className="secondary-button sheet-footer-cancel" onClick={() => { setPicking(false); closeOverlay() }}>{t('关闭')}</button></footer>
       </div>
     </div>}
     {creating && <div className="sheet-backdrop" role="presentation" onClick={() => setCreating(false)}>
-      <form className="host-sheet new-session" role="dialog" aria-modal="true" aria-label={t('新建会话')}
+      <form className="host-sheet sheet-standard new-session" role="dialog" aria-modal="true" aria-label={t('新建会话')}
         onClick={(event) => event.stopPropagation()}
         onSubmit={(event) => { event.preventDefault(); void createSession() }}>
-        <h2>{t('新建会话')}</h2>
-        <label htmlFor="new-kind">{t('Agent')}</label>
-        <select id="new-kind" value={newKind} onChange={(event) => setNewKind(event.target.value)}>
-          <option value="claude">Claude Code</option>
-          <option value="codex">Codex</option>
-          <option value="pi">pi</option>
-        </select>
-        <span className="field-label-row"><label htmlFor={cwdMode === 'choice' ? 'new-cwd-choice' : 'new-cwd'}>{t('工作目录')}</label>
-          <button type="button" className="text-button field-switch" onClick={() => setCwdMode((value) => value === 'choice' ? 'manual' : 'choice')}>
-            {t(cwdMode === 'choice' ? '手动输入' : '选择已有目录')}
-          </button>
-        </span>
-        {cwdMode === 'choice' && knownDirectories.length > 0
-          ? <select id="new-cwd-choice" value={newCwd} onChange={(event) => setNewCwd(event.target.value)} aria-label={t('选择已有目录')}>
-            {knownDirectories.map((path) => <option key={path} value={path}>{path}</option>)}
-          </select>
-          : <input id="new-cwd" value={newCwd} onChange={(event) => setNewCwd(event.target.value)} placeholder={t('输入桌面上的绝对路径')} autoComplete="off" spellCheck={false} />}
-        <label htmlFor="new-label">{t('会话名称')}</label>
-        <input id="new-label" value={newLabel} onChange={(event) => setNewLabel(event.target.value)} placeholder={t('可选，稍后也能改')} maxLength={80} autoComplete="off" spellCheck={false} />
-        <p className="field-hint">{t('新会话会在这个目录下启动，可在桌面端继续。')}</p>
-        <div className="dialog-actions">
-          <button type="button" className="secondary-button" onClick={() => setCreating(false)}>{t('取消')}</button>
-          <button type="submit" className="primary-button" disabled={!newCwd.trim()}>{t('创建')}</button>
+        <header className="sheet-head"><div><p className="sheet-eyebrow">{t('会话')}</p><h2>{t('新建会话')}</h2><p className="sheet-context">{agentLook(newKind).label || newKind} · {newCwd}</p></div><button type="button" className="icon-button sheet-close" aria-label={t('关闭')} title={t('关闭')} onClick={() => setCreating(false)}><X size={20} /></button></header>
+        <div className="sheet-body new-session-fields">
+          <div className="sheet-field-group"><label htmlFor="new-kind">{t('Agent')}</label><select id="new-kind" value={newKind} onChange={(event) => setNewKind(event.target.value)}><option value="claude">Claude Code</option><option value="codex">Codex</option><option value="pi">pi</option></select></div>
+          <div className="sheet-field-group"><span className="field-label-row"><label htmlFor={cwdMode === 'choice' ? 'new-cwd-choice' : 'new-cwd'}>{t('工作目录')}</label><button type="button" className="text-button field-switch" onClick={() => setCwdMode((value) => value === 'choice' ? 'manual' : 'choice')}>{t(cwdMode === 'choice' ? '手动输入' : '选择已有目录')}</button></span>
+            {cwdMode === 'choice' && knownDirectories.length > 0 ? <select id="new-cwd-choice" value={newCwd} onChange={(event) => setNewCwd(event.target.value)} aria-label={t('选择已有目录')}>{knownDirectories.map((path) => <option key={path} value={path}>{path}</option>)}</select> : <input id="new-cwd" value={newCwd} onChange={(event) => setNewCwd(event.target.value)} placeholder={t('输入桌面上的绝对路径')} autoComplete="off" spellCheck={false} />}
+          </div>
+          <div className="sheet-field-group"><label htmlFor="new-label">{t('会话名称')}</label><input id="new-label" value={newLabel} onChange={(event) => setNewLabel(event.target.value)} placeholder={t('可选，稍后也能改')} maxLength={80} autoComplete="off" spellCheck={false} /><p className="field-hint">{t('新会话会在这个目录下启动，可在桌面端继续。')}</p></div>
         </div>
+        <footer className="sheet-footer sheet-footer-split"><button type="button" className="secondary-button" onClick={() => setCreating(false)}>{t('取消')}</button><button type="submit" className="primary-button" disabled={!newCwd.trim()}>{t('创建')}</button></footer>
       </form>
     </div>}
     <div className="page-scroll">
@@ -1130,35 +1145,19 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
       </> : ready && host.snapshot ? <EmptyState icon={<MessageSquare size={30} />} title={t('暂无会话')}><p>{t('此节点还没有打开的终端会话。')}</p></EmptyState> : <EmptyState icon={<Server size={30} />} title={host.error ? t('无法读取会话') : t('等待节点连接')} />}
     </div>
     {renamingPane && renameOpen && <div className="sheet-backdrop" role="presentation" onClick={closeRename}>
-      <form className="host-sheet rename-form" role="dialog" aria-modal="true" aria-label={t('重命名会话')}
+      <form className="host-sheet sheet-standard rename-form" role="dialog" aria-modal="true" aria-label={t('重命名会话')}
         onClick={(event) => event.stopPropagation()}
         onSubmit={(event) => void renameSession(event)}>
-        <h2>{t('重命名会话')}</h2>
-        <label htmlFor="session-name" className="sr-only">{t('会话名称')}</label>
-        <input id="session-name" value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={80} placeholder={t('留空则恢复默认名称')} autoComplete="off" spellCheck={false} autoFocus />
-        <p className="field-hint">{t('名称只影响这项会话的显示，桌面端会同步显示。')}</p>
-        {renameError && <Notice error>{renameError}</Notice>}
-        <button type="button" className="danger-button rename-delete" disabled={renameBusy} onClick={() => { setDeletingPane(renamingPane); openOverlay({ kind: 'deletePane' }) }}>
-          <Trash2 size={16} aria-hidden="true" />{t('删除会话')}
-        </button>
-        <div className="dialog-actions">
-          <button type="button" className="secondary-button" onClick={closeRename}>{t('取消')}</button>
-          <button type="submit" className="primary-button" disabled={renameBusy}>{renameBusy ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{t('保存')}</button>
-        </div>
+        <header className="sheet-head"><div><p className="sheet-eyebrow">{t('会话')}</p><h2>{t('重命名会话')}</h2><p className="sheet-context">{paneTitle(host?.snapshot?.panes.find((pane) => pane.pane_id === renamingPane) ?? ({ pane_id: renamingPane } as Pane), tabLabelOf(host?.snapshot, host?.snapshot?.panes.find((pane) => pane.pane_id === renamingPane) ?? ({ pane_id: renamingPane } as Pane)))}</p></div><button type="button" className="icon-button sheet-close" aria-label={t('关闭')} title={t('关闭')} onClick={closeRename}><X size={20} /></button></header>
+        <div className="sheet-body"><div className="sheet-field-group"><label htmlFor="session-name">{t('会话名称')}</label><input id="session-name" value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={80} placeholder={t('留空则恢复默认名称')} autoComplete="off" spellCheck={false} autoFocus /><p className="field-hint">{t('名称只影响这项会话的显示，桌面端会同步显示。')}</p></div>{renameError && <Notice error>{renameError}</Notice>}<div className="sheet-danger-zone"><button type="button" className="sheet-action is-danger" disabled={renameBusy} onClick={() => { setDeletingPane(renamingPane); openOverlay({ kind: 'deletePane' }) }}><Trash2 size={18} aria-hidden="true" /><span><strong>{t('删除会话')}</strong><small>{t('永久关闭桌面上的这个终端会话')}</small></span></button></div></div>
+        <footer className="sheet-footer sheet-footer-split"><button type="button" className="secondary-button" onClick={closeRename}>{t('取消')}</button><button type="submit" className="primary-button" disabled={renameBusy}>{renameBusy ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{t('保存')}</button></footer>
       </form>
     </div>}
     {deletePane && deleteOpen && <div className="sheet-backdrop" role="presentation" onClick={() => !deleteBusy && closeOverlay()}>
-      <div className="host-sheet delete-session-sheet" role="dialog" aria-modal="true" aria-label={t('删除会话')} onClick={(event) => event.stopPropagation()}>
-        <h2>{t('删除会话')}</h2>
-        <p className="confirm-host">{paneTitle(deletePane, tabLabelOf(host?.snapshot, deletePane))}</p>
-        <p className="field-hint">{t('这会关闭桌面端对应的终端会话，正在运行的任务也会结束。此操作无法撤销。')}</p>
-        {openError && <Notice error>{openError}</Notice>}
-        <div className="dialog-actions">
-          <button type="button" className="secondary-button" disabled={deleteBusy} onClick={closeOverlay}>{t('取消')}</button>
-          <button type="button" className="destructive-button" disabled={deleteBusy || !ready} onClick={() => void closeSession()}>
-            {deleteBusy ? <Loader2 size={16} className="spin" /> : <Trash2 size={16} />}{t('删除会话')}
-          </button>
-        </div>
+      <div className="host-sheet sheet-standard confirm-sheet delete-session-sheet" role="dialog" aria-modal="true" aria-label={t('删除会话')} onClick={(event) => event.stopPropagation()}>
+        <header className="sheet-head"><div><p className="sheet-eyebrow">{t('会话')}</p><h2>{t('要删除这个会话吗？')}</h2><p className="sheet-context">{paneTitle(deletePane, tabLabelOf(host?.snapshot, deletePane))}</p></div><button type="button" className="icon-button sheet-close" aria-label={t('关闭')} title={t('关闭')} disabled={deleteBusy} onClick={closeOverlay}><X size={20} /></button></header>
+        <div className="sheet-body"><p className="sheet-description">{t('这会关闭桌面上的终端会话，正在运行的任务也会结束。此操作无法撤销。')}</p>{openError && <Notice error>{openError}</Notice>}</div>
+        <footer className="sheet-footer sheet-footer-split"><button type="button" className="secondary-button" disabled={deleteBusy} onClick={closeOverlay}>{t('取消')}</button><button type="button" className="destructive-button" disabled={deleteBusy || !ready} onClick={() => void closeSession()}>{deleteBusy ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}{t('删除会话')}</button></footer>
       </div>
     </div>}
   </section>;
