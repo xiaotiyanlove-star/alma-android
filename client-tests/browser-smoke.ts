@@ -70,7 +70,7 @@ try {
   }
   await page.getByRole('button', { name: '当前节点' }).click()
   await page.getByRole('dialog', { name: '选择节点' }).getByRole('button', { name: new RegExp(names[0]) }).click()
-  await page.locator('.session-row').filter({ hasText: '中文长会话标题' }).click()
+  await page.locator('.session-row-hit').first().click()
   await expect(page.getByText(/测试历史：中文长路径/)).toBeVisible()
   await page.screenshot({ path: `${screenshots}/chat-phone.png` })
   await page.getByRole('textbox', { name: '消息', exact: true }).fill('合成消息')

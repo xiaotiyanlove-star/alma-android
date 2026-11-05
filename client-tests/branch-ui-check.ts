@@ -53,7 +53,7 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
 try {
   await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await addDesktop(page, '分支节点', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
-  await page.locator('.session-row').first().click()
+  await page.getByRole('button', { name: /^打开 / }).first().click()
   const chip = page.locator('.session-branch')
   await chip.waitFor({ timeout: 15000 })
   const shown = await chip.innerText()

@@ -59,7 +59,7 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
 try {
   await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await addDesktop(page, '测试节点', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
-  await page.locator('.session-row').filter({ hasText: '会话 A' }).click()
+  await page.locator('.session-row-hit').first().click()
   await page.waitForTimeout(700)
 
   // Session info comes from the terminal status line. The model and context
@@ -105,7 +105,7 @@ try {
   const composer = page.getByRole('textbox', { name: '消息' })
   await composer.fill('未发送的草稿')
   await page.getByRole('button', { name: '返回会话' }).click()
-  await page.locator('.session-row').filter({ hasText: '会话 A' }).click()
+  await page.locator('.session-row-hit').first().click()
   await page.waitForTimeout(500)
   const draftRestored = await page.getByRole('textbox', { name: '消息' }).inputValue()
 

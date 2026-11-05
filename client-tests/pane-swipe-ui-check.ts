@@ -88,7 +88,7 @@ try {
   result.rowsInList = await page.locator('.session-row').count()
   result.paneBadge = await page.locator('.session-pane-count').first().innerText()
 
-  await page.locator('.session-row').first().click()
+  await page.locator('.session-row-hit').first().click()
   await page.locator('.conversation-view').waitFor({ timeout: 20000 })
   await page.waitForTimeout(600)
   // The counter says which page of the tab this is.

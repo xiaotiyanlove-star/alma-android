@@ -140,7 +140,7 @@ try {
   result.renameClosed = await page.getByRole('dialog', { name: '重命名会话' }).count() === 0
 
   // ── session: image, agents, subagent ─────────────────────────────────
-  await page.locator('.session-row').first().click()
+  await page.locator('.session-row-hit').first().click()
   await page.locator('.conversation-view').waitFor({ timeout: 20000 })
   await page.locator('button.transcript-image').first().waitFor({ timeout: 15000 })
 

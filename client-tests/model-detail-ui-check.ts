@@ -68,7 +68,7 @@ try {
   await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await addDesktop(page, '模型节点', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
   for (const agent of agents) {
-    await page.locator('.session-row').filter({ hasText: `${agent} detail` }).click()
+    await page.locator('.session-row-hit').nth(agents.indexOf(agent)).click()
     const chip = page.locator('.composer-fact.is-model')
     await chip.waitFor({ timeout: 15000 })
     shown[agent] = await chip.innerText()

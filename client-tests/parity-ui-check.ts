@@ -142,7 +142,7 @@ try {
   if (await page.getByRole('button', { name: '返回会话', exact: true }).isVisible().catch(() => false)) {
     await page.getByRole('button', { name: '返回会话', exact: true }).click()
   }
-  await page.locator('.session-row').filter({ hasText: '合成会话' }).click()
+  await page.locator('.session-row-hit').first().click()
 
   // ── the model chip comes from the desktop, not the screen ──────────────
   // Model and effort sit under the composer, next to the box you type into.

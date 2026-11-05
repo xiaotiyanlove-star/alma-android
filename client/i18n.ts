@@ -18,6 +18,7 @@ const en: Dict = {
   '保存': 'Save',
   '删除': 'Delete',
   '删除 {name}': 'Delete {name}',
+  '打开 {name}': 'Open {name}',
   '刷新': 'Refresh',
   '加载中': 'Loading',
   '会话': 'Sessions',

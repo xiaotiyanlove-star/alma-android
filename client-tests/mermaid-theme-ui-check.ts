@@ -61,7 +61,7 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
 try {
   await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await addDesktop(page, '测试节点', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
-  await page.locator('.session-row').first().click()
+  await page.locator('.session-row-hit').first().click()
   await page.locator('.mermaid-diagram svg').waitFor({ timeout: 30000 })
 
   const darkBackground = await page.locator('.mermaid-diagram svg').evaluate((svg) => {

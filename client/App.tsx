@@ -1077,27 +1077,13 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
             const tabPanes = group.members.filter(item => (item.tab_id || item.pane_id) === (pane.tab_id || pane.pane_id))
             const unread = tabPanes.some(item => news.some(entry => entry.hostId === host.host.id && entry.paneId === item.pane_id))
             const swiped = swipedPane === pane.pane_id
-    return <li
-      key={pane.pane_id}
-      className={`session-item${swiped ? ' is-swiped' : ''}`}
-      onTouchStart={(event) => trackSessionSwipe(event, pane.pane_id)}
-      onTouchEnd={(event) => finishSessionSwipe(event, pane.pane_id)}
-    >
-              <button
-                type="button"
-                className="session-delete-action"
-                tabIndex={swiped ? 0 : -1}
-                aria-hidden={!swiped}
-                disabled={!ready || Boolean(opening) || Boolean(deletingPane)}
-                aria-label={tWith('删除 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })}
-                onClick={(event) => { event.stopPropagation(); setDeletingPane(pane.pane_id); openOverlay({ kind: 'deletePane' }) }}
-              ><Trash2 size={18} aria-hidden="true" /><span>{t('删除')}</span></button>
-              <div
-                className="session-row-surface"
-              >
+            return <li key={pane.pane_id} className="session-item">
+              <div className={`session-row-wrap${swiped ? ' is-swiped' : ''}`}>
+                <div className="session-open-zone">
                 <button
                   type="button"
-                  className="session-row"
+                  className="session-row-hit"
+                  aria-label={tWith('打开 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })}
                   disabled={!ready || Boolean(opening)}
                   onClick={() => {
                     if (consumedSessionClick.current === pane.pane_id) {
@@ -1107,7 +1093,20 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
                     if (swiped) { setSwipedPane(undefined); return }
                     void openPane(pane.pane_id)
                   }}
-                >
+                  onTouchStart={(event) => trackSessionSwipe(event, pane.pane_id)}
+                  onTouchEnd={(event) => finishSessionSwipe(event, pane.pane_id)}
+                  onPointerDown={(event) => { if (event.pointerType === 'mouse') sessionSwipe.current = { id: pane.pane_id, x: event.clientX, y: event.clientY } }}
+                  onPointerUp={(event) => {
+                    if (event.pointerType !== 'mouse') return
+                    const start = sessionSwipe.current
+                    sessionSwipe.current = undefined
+                    if (!start || start.id !== pane.pane_id) return
+                    const dx = event.clientX - start.x
+                    const dy = event.clientY - start.y
+                    if (Math.abs(dx) >= 56 && Math.abs(dx) >= Math.abs(dy) * 1.5) setSwipedPane(dx < 0 ? pane.pane_id : undefined)
+                  }}
+                />
+                <div className="session-row" aria-hidden="true">
                 {/* The agent's own mark replaces the generic terminal glyph, so a
                     list of several sessions can be scanned without reading. */}
                 <AgentBadge agent={pane.agent ?? pane.agent_session?.agent} />
@@ -1121,13 +1120,21 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
                   </span>
                 </span>
                 {unread ? <span className="news-dot" role="img" aria-label={t('有新消息')} title={t('有新消息')} /> : null}
-                <ArrowRight size={18} className="muted session-arrow" aria-hidden="true" />
-                </button>
-                <span className="session-actions">
-                  {opening === pane.pane_id
-                    ? <Loader2 size={18} className="spin" aria-label={t('正在打开')} />
-                    : <button type="button" className="session-rename" disabled={!ready} aria-label={tWith('重命名 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })} title={t('重命名会话')} onClick={(event) => { event.stopPropagation(); startRename(pane, tabLabelOf(host.snapshot, pane)) }}><Pencil size={16} /></button>}
-                </span>
+                </div>
+                {opening === pane.pane_id ? <Loader2 size={18} className="spin session-arrow" aria-label={t('正在打开')} /> : <ArrowRight size={18} className="muted session-arrow" aria-hidden="true" />}
+                </div>
+                <button type="button" className="icon-button session-rename" disabled={!ready} aria-label={tWith('重命名 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })} title={t('重命名会话')} onClick={() => startRename(pane, tabLabelOf(host.snapshot, pane))}><Pencil size={16} /></button>
+                <div className="session-delete-reveal" aria-hidden={!swiped}>
+                <button
+                  type="button"
+                  className="session-delete-action"
+                  tabIndex={swiped ? 0 : -1}
+                  aria-hidden={!swiped}
+                  disabled={!ready || Boolean(opening) || Boolean(deletingPane)}
+                  aria-label={tWith('删除 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })}
+                  onClick={(event) => { event.stopPropagation(); setDeletingPane(pane.pane_id); openOverlay({ kind: 'deletePane' }) }}
+                ><Trash2 size={18} aria-hidden="true" /><span>{t('删除')}</span></button>
+                </div>
               </div>
             </li>;
           })}</ul>

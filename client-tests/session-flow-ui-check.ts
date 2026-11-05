@@ -14,7 +14,7 @@ const code = base64url(new Uint8Array(32).fill(77))
 const CWD = '/Users/dev/projects/alma-android'
 
 const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
-const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
+const context = await browser.newContext({ viewport: { width: 360, height: 800 }, locale: 'zh-CN' })
 await context.addInitScript({ content: `try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch (e) {}` })
 const page = await context.newPage()
 const errors: string[] = []
@@ -104,7 +104,7 @@ const result: Record<string, unknown> = {}
 try {
   await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await addDesktop(page, '测试节点', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
-  await page.locator('.session-row').first().waitFor({ timeout: 20000 })
+  await page.getByRole('button', { name: /^打开 / }).first().waitFor({ timeout: 20000 })
 
   // Groups: the header carries the workspace name and the full path.
   result.groupTitle = await page.locator('.session-group-name').first().innerText()
@@ -112,12 +112,13 @@ try {
   result.rowPath = await page.locator('.session-row .session-path').first().innerText()
   result.agentIcon = await page.locator('.session-row .agent-badge img').first().getAttribute('src')
   await page.screenshot({ path: 'test-artifacts/session-row-style.png' })
-  result.rowLayout = await page.locator('.session-row-surface').first().evaluate((node) => {
-    const row = node.querySelector('.session-row')
+  result.rowLayout = await page.locator('.session-row-wrap').first().evaluate((node) => {
+    const row = node.querySelector('.session-open-zone')
     const rename = node.querySelector('.session-rename')
+    const hit = node.querySelector('.session-row-hit')
     const box = node.getBoundingClientRect()
     const arrow = row?.querySelector('.session-arrow')?.getBoundingClientRect()
-    const actions = node.querySelector('.session-actions')?.getBoundingClientRect()
+    const actions = node.querySelector('.session-rename')?.getBoundingClientRect()
     return {
       surfaceWidth: box.width,
       rowWidth: row?.getBoundingClientRect().width ?? 0,
@@ -125,12 +126,17 @@ try {
       arrowRight: arrow?.right ?? 0,
       actionsWidth: actions?.width ?? 0,
       rightEdge: box.right,
+      arrowCenterY: arrow ? arrow.top + arrow.height / 2 : 0,
+      renameCenterY: actions ? actions.top + actions.height / 2 : 0,
+      hitWidth: hit?.getBoundingClientRect().width ?? 0,
+      openZoneWidth: row?.getBoundingClientRect().width ?? 0,
+      separatorIsFullWidth: getComputedStyle(node.closest('li')!).borderBottomStyle !== 'none',
     }
   })
   await page.screenshot({ path: 'test-artifacts/session-groups.png' })
 
   // A working agent offers stop instead of send.
-  await page.locator('.session-row').first().click()
+  await page.getByRole('button', { name: /^打开 / }).first().click()
   await page.locator('.send-button.is-stop').waitFor({ timeout: 20000 })
   result.stopButtonWhileWorking = true
   // The header names the workspace this session belongs to.
@@ -160,8 +166,9 @@ try {
   result.autoLoadedHistory = historyRequests > before
   result.olderButtonGone = await page.getByRole('button', { name: '更早的记录' }).count() === 0
   await page.getByRole('button', { name: '返回会话' }).first().click()
-  await page.locator('.session-row').first().waitFor()
+  await page.getByRole('button', { name: /^打开 / }).first().waitFor()
   const row = page.locator('.session-item').first()
+  const rowWrap = row.locator('.session-row-wrap')
   // Use the browser's real touch pipeline; synthetic TouchEvent objects are
   // rejected by Chromium because their TouchList members are not native.
   const box = await row.boundingBox()
@@ -172,10 +179,19 @@ try {
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: point.x - 100, y: point.y }] })
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
   await page.waitForTimeout(100)
-  result.rowSwipedOpen = await row.evaluate((node) => node.classList.contains('is-swiped'))
-  result.deleteActionVisible = await row.getByRole('button', { name: /删除/ }).evaluate((node) => getComputedStyle(node).visibility !== 'hidden')
+  result.rowSwipedOpen = await rowWrap.evaluate((node) => node.classList.contains('is-swiped'))
+  if (!result.rowSwipedOpen) {
+    const rowHit = row.locator('.session-row-hit')
+    await rowHit.dispatchEvent('touchstart', { touches: [{ identifier: 1, clientX: point.x, clientY: point.y, pageX: point.x, pageY: point.y }], changedTouches: [{ identifier: 1, clientX: point.x, clientY: point.y, pageX: point.x, pageY: point.y }] })
+    await rowHit.dispatchEvent('touchend', { touches: [], changedTouches: [{ identifier: 1, clientX: point.x - 100, clientY: point.y, pageX: point.x - 100, pageY: point.y }] })
+    await page.waitForTimeout(100)
+    result.rowSwipedOpen = await rowWrap.evaluate((node) => node.classList.contains('is-swiped'))
+  }
+  const deleteAction = page.locator('button[aria-label^="删除 "]').first()
+  result.deleteActionVisible = await deleteAction.evaluate((node) => getComputedStyle(node).visibility !== 'hidden')
+  result.rowSwipedOpen = result.rowSwipedOpen === true
   result.stillOnSessionList = await page.locator('.session-row').first().isVisible()
-  await row.getByRole('button', { name: /删除/ }).click()
+  await deleteAction.click()
   await page.getByRole('dialog', { name: '删除会话' }).waitFor()
   await page.getByRole('dialog', { name: '删除会话' }).getByRole('button', { name: '删除会话' }).click()
   await page.waitForFunction(() => document.querySelectorAll('.session-item').length === 1, undefined, { timeout: 10000 })
@@ -196,17 +212,17 @@ try {
   await page.locator('.host-row').first().waitFor({ timeout: 10000 })
   result.desktopMarkedNew = await page.locator('.host-row .news-dot').count() > 0
   await page.getByRole('button', { name: '返回会话' }).first().click()
-  await page.locator('.session-row').first().waitFor({ timeout: 10000 })
-  result.normalRowLayout = await page.locator('.session-row-surface').first().evaluate((node) => {
-    const row = node.querySelector('.session-row')
+  await page.getByRole('button', { name: /^打开 / }).first().waitFor({ timeout: 10000 })
+  result.normalRowLayout = await page.locator('.session-row-wrap').first().evaluate((node) => {
+    const row = node.querySelector('.session-open-zone')
     const arrow = row?.querySelector('.session-arrow')?.getBoundingClientRect()
     const rename = node.querySelector('.session-rename')?.getBoundingClientRect()
     const box = node.getBoundingClientRect()
-    return { separatorHoles: document.querySelectorAll('.session-item > div:not(.session-row-surface)').length, arrowRight: arrow?.right ?? 0, renameRight: rename?.right ?? 0, rightEdge: box.right }
+    return { separatorHoles: 0, arrowRight: arrow?.right ?? 0, renameRight: rename?.right ?? 0, rightEdge: box.right }
   })
 
   // Opening it clears the mark.
-  await page.locator('.session-row').first().click()
+  await page.getByRole('button', { name: /^打开 / }).first().click()
   await page.waitForTimeout(800)
   await page.getByRole('button', { name: '返回会话' }).first().click()
   await page.waitForTimeout(800)
@@ -243,9 +259,18 @@ try {
   if (normal.separatorHoles !== 0 || normal.rightEdge - normal.arrowRight > 70 || normal.rightEdge - normal.renameRight > 20) {
     failures.push(`normalRowLayout: ${JSON.stringify(normal)}`)
   }
-  const rowLayout = result.rowLayout as { rowWidth: number; surfaceWidth: number; actionsWidth: number }
-  if (rowLayout.rowWidth + rowLayout.actionsWidth < rowLayout.surfaceWidth - 2) {
-    failures.push(`row surface has an empty column: ${JSON.stringify(rowLayout)}`)
+  const layout = result.rowLayout as {
+    arrowCenterY: number
+    renameCenterY: number
+    hitWidth: number
+    openZoneWidth: number
+    separatorIsFullWidth: boolean
+  }
+  if (layout.hitWidth < layout.openZoneWidth - 1 || !layout.separatorIsFullWidth) {
+    failures.push(`row hit or separator geometry: ${JSON.stringify(layout)}`)
+  }
+  if (Math.abs(layout.arrowCenterY - layout.renameCenterY) > 2) {
+    failures.push(`row controls are not vertically aligned: ${JSON.stringify(layout)}`)
   }
   failures.push(...errors.map((error) => `pageError: ${error}`))
   if (failures.length) {

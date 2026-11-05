@@ -88,7 +88,7 @@ const result: Record<string, unknown> = {}
 try {
   await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await addDesktop(page, '测试节点', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)
-  await page.locator('.session-row').first().click()
+  await page.locator('.session-row-hit').first().click()
   await page.locator('.markdown-body').first().waitFor({ timeout: 20000 })
 
   // Two diagrams, the second one untagged.
