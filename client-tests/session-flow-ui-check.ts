@@ -179,30 +179,14 @@ try {
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: point.x - 100, y: point.y }] })
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
   await page.waitForTimeout(100)
-  result.rowSwipedOpen = await rowWrap.evaluate((node) => node.classList.contains('is-swiped'))
-  if (!result.rowSwipedOpen) {
-    const rowHit = row.locator('.session-row-hit')
-    await rowHit.dispatchEvent('touchstart', { touches: [{ identifier: 1, clientX: point.x, clientY: point.y, pageX: point.x, pageY: point.y }], changedTouches: [{ identifier: 1, clientX: point.x, clientY: point.y, pageX: point.x, pageY: point.y }] })
-    await rowHit.dispatchEvent('touchend', { touches: [], changedTouches: [{ identifier: 1, clientX: point.x - 100, clientY: point.y, pageX: point.x - 100, pageY: point.y }] })
-    await page.waitForTimeout(100)
-    result.rowSwipedOpen = await rowWrap.evaluate((node) => node.classList.contains('is-swiped'))
-  }
-  const deleteAction = page.locator('button[aria-label^="删除 "]').first()
-  result.deleteActionVisible = await deleteAction.evaluate((node) => getComputedStyle(node).visibility !== 'hidden')
-  result.deleteActionLayout = await deleteAction.evaluate((node) => {
-    const icon = node.querySelector('svg')?.getBoundingClientRect()
-    const label = node.querySelector('span')?.getBoundingClientRect()
-    return {
-      direction: getComputedStyle(node).flexDirection,
-      singleLine: label ? label.height <= 24 : false,
-      iconCenterY: icon ? icon.top + icon.height / 2 : 0,
-      labelCenterY: label ? label.top + label.height / 2 : 0,
-    }
-  })
-  await page.screenshot({ path: 'test-artifacts/session-delete-action.png' })
-  result.rowSwipedOpen = result.rowSwipedOpen === true
+  result.noInlineDeleteAfterSwipe = await row.locator('.session-delete-action').count() === 0
   result.stillOnSessionList = await page.locator('.session-row').first().isVisible()
-  await deleteAction.click()
+  await page.locator('.session-rename').first().click()
+  const renameDialog = page.getByRole('dialog', { name: '重命名会话' })
+  await renameDialog.waitFor()
+  result.deleteInRenameDialog = await renameDialog.getByRole('button', { name: '删除会话' }).isVisible()
+  await page.screenshot({ path: 'test-artifacts/session-edit-delete.png' })
+  await renameDialog.getByRole('button', { name: '删除会话' }).click()
   await page.getByRole('dialog', { name: '删除会话' }).waitFor()
   await page.getByRole('dialog', { name: '删除会话' }).getByRole('button', { name: '删除会话' }).click()
   await page.waitForFunction(() => document.querySelectorAll('.session-item').length === 1, undefined, { timeout: 10000 })
@@ -255,8 +239,8 @@ try {
   must('stopButtonWhileWorking', true)
   must('stopSentCtrlC', true)
   must('stayedOnTerminalAfterMessage', true)
-  must('rowSwipedOpen', true)
-  must('deleteActionVisible', true)
+  must('noInlineDeleteAfterSwipe', true)
+  must('deleteInRenameDialog', true)
   must('stillOnSessionList', true)
   must('sessionDeleteClosedTab', true)
   must('deleteSheetClosed', true)
@@ -282,10 +266,6 @@ try {
   }
   if (Math.abs(layout.arrowCenterY - layout.renameCenterY) > 2) {
     failures.push(`row controls are not vertically aligned: ${JSON.stringify(layout)}`)
-  }
-  const deleteLayout = result.deleteActionLayout as { direction: string; singleLine: boolean; iconCenterY: number; labelCenterY: number }
-  if (deleteLayout.direction !== 'row' || !deleteLayout.singleLine || Math.abs(deleteLayout.iconCenterY - deleteLayout.labelCenterY) > 2) {
-    failures.push(`delete action wrapped: ${JSON.stringify(deleteLayout)}`)
   }
   failures.push(...errors.map((error) => `pageError: ${error}`))
   if (failures.length) {

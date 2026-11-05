@@ -835,7 +835,6 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
   const [cwdMode, setCwdMode] = useState<'choice' | 'manual'>('choice');
   const [newLabel, setNewLabel] = useState('');
   const [renamingPane, setRenamingPane] = useState<string>();
-  const [swipedPane, setSwipedPane] = useState<string>();
   const [deletingPane, setDeletingPane] = useState<string>();
   const deleteInFlight = useRef(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -849,7 +848,14 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState('');
   const deleteOpen = overlay?.kind === 'deletePane';
-  const deletePane = host?.snapshot?.panes.find((pane) => pane.pane_id === deletingPane);
+  useEffect(() => {
+    if (!deleteOpen || !deletingPane) return
+    setRenamingPane(undefined)
+    setRenameValue('')
+    setRenameError('')
+  }, [deleteOpen, deletingPane]);
+  const deletePaneId = deleteOpen ? deletingPane : undefined;
+  const deletePane = host?.snapshot?.panes.find((pane) => pane.pane_id === deletePaneId);
   useEffect(() => { if (!deleteOpen && deletingPane) setDeletingPane(undefined); }, [deleteOpen, deletingPane]);
   const openingLock = useRef(false);
   useEffect(() => { setOpenError(''); }, [host?.host.id]);
@@ -927,7 +933,6 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
     setOpenError('')
     try {
       await controller.closeSession(host.host.id, deletingPane)
-      setSwipedPane(undefined)
       setDeletingPane(undefined)
       closeOverlay()
     } catch (error) {
@@ -955,11 +960,7 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
     if (!start || !touch || start.id !== id) return
     const dx = touch.clientX - start.x
     const dy = touch.clientY - start.y
-    if (Math.abs(dx) >= 56 && Math.abs(dx) >= Math.abs(dy) * 1.5) {
-      consumedSessionClick.current = id
-      ;(document.activeElement as HTMLElement | null)?.blur()
-      setSwipedPane(dx < 0 ? id : undefined)
-    }
+    if (Math.abs(dx) >= 56 && Math.abs(dx) >= Math.abs(dy) * 1.5) consumedSessionClick.current = id
   }
 
   async function openPane(paneId: string) {
@@ -1076,9 +1077,8 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
             // show anywhere on this screen.
             const tabPanes = group.members.filter(item => (item.tab_id || item.pane_id) === (pane.tab_id || pane.pane_id))
             const unread = tabPanes.some(item => news.some(entry => entry.hostId === host.host.id && entry.paneId === item.pane_id))
-            const swiped = swipedPane === pane.pane_id
             return <li key={pane.pane_id} className="session-item">
-              <div className={`session-row-wrap${swiped ? ' is-swiped' : ''}`}>
+              <div className="session-row-wrap">
                 <div className="session-open-zone">
                 <button
                   type="button"
@@ -1090,7 +1090,6 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
                       consumedSessionClick.current = undefined
                       return
                     }
-                    if (swiped) { setSwipedPane(undefined); return }
                     void openPane(pane.pane_id)
                   }}
                   onTouchStart={(event) => trackSessionSwipe(event, pane.pane_id)}
@@ -1103,7 +1102,7 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
                     if (!start || start.id !== pane.pane_id) return
                     const dx = event.clientX - start.x
                     const dy = event.clientY - start.y
-                    if (Math.abs(dx) >= 56 && Math.abs(dx) >= Math.abs(dy) * 1.5) setSwipedPane(dx < 0 ? pane.pane_id : undefined)
+                    if (Math.abs(dx) >= 56 && Math.abs(dx) >= Math.abs(dy) * 1.5) consumedSessionClick.current = pane.pane_id
                   }}
                 />
                 <div className="session-row" aria-hidden="true">
@@ -1124,17 +1123,6 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
                 {opening === pane.pane_id ? <Loader2 size={18} className="spin session-arrow" aria-label={t('正在打开')} /> : <ArrowRight size={18} className="muted session-arrow" aria-hidden="true" />}
                 </div>
                 <button type="button" className="icon-button session-rename" disabled={!ready} aria-label={tWith('重命名 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })} title={t('重命名会话')} onClick={() => startRename(pane, tabLabelOf(host.snapshot, pane))}><Pencil size={16} /></button>
-                <div className="session-delete-reveal" aria-hidden={!swiped}>
-                <button
-                  type="button"
-                  className="session-delete-action"
-                  tabIndex={swiped ? 0 : -1}
-                  aria-hidden={!swiped}
-                  disabled={!ready || Boolean(opening) || Boolean(deletingPane)}
-                  aria-label={tWith('删除 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })}
-                  onClick={(event) => { event.stopPropagation(); setDeletingPane(pane.pane_id); openOverlay({ kind: 'deletePane' }) }}
-                ><Trash2 size={18} aria-hidden="true" /><span>{t('删除')}</span></button>
-                </div>
               </div>
             </li>;
           })}</ul>
@@ -1150,6 +1138,9 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
         <input id="session-name" value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={80} placeholder={t('留空则恢复默认名称')} autoComplete="off" spellCheck={false} autoFocus />
         <p className="field-hint">{t('名称只影响这项会话的显示，桌面端会同步显示。')}</p>
         {renameError && <Notice error>{renameError}</Notice>}
+        <button type="button" className="danger-button rename-delete" disabled={renameBusy} onClick={() => { setDeletingPane(renamingPane); openOverlay({ kind: 'deletePane' }) }}>
+          <Trash2 size={16} aria-hidden="true" />{t('删除会话')}
+        </button>
         <div className="dialog-actions">
           <button type="button" className="secondary-button" onClick={closeRename}>{t('取消')}</button>
           <button type="submit" className="primary-button" disabled={renameBusy}>{renameBusy ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{t('保存')}</button>
