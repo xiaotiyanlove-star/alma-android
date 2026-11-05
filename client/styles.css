@@ -225,7 +225,7 @@ pre { max-width: 100%; }
 .session-row > .session-path { max-width: 100%; }
 .session-delete-reveal { display: flex; grid-column: 1 / -1; justify-content: flex-end; width: 100%; height: 0; overflow: hidden; background: var(--surface); transition: height .18s ease-out; }
 .session-row-wrap.is-swiped .session-delete-reveal { height: 48px; }
-.session-delete-action { display: flex; width: 88px; height: 48px; align-items: center; justify-content: center; flex-direction: column; gap: 2px; border-radius: 0 0 0 8px; color: #fff; background: var(--red-solid); font-size: 11px; font-weight: 600; }
+.session-delete-action { display: flex; width: 88px; height: 48px; align-items: center; justify-content: center; flex-direction: row; gap: 7px; border-radius: 0 0 0 8px; color: #fff; background: var(--red-solid); font-size: 12px; font-weight: 600; white-space: nowrap; }
 .session-row-wrap:not(.is-swiped) .session-delete-action { visibility: hidden; pointer-events: none; }
 /* Its own tap target, so renaming never opens the session by accident. */
 .session-rename { position: relative; z-index: 1; flex: 0 0 auto; color: var(--muted); }

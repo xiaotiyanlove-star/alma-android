@@ -189,6 +189,17 @@ try {
   }
   const deleteAction = page.locator('button[aria-label^="删除 "]').first()
   result.deleteActionVisible = await deleteAction.evaluate((node) => getComputedStyle(node).visibility !== 'hidden')
+  result.deleteActionLayout = await deleteAction.evaluate((node) => {
+    const icon = node.querySelector('svg')?.getBoundingClientRect()
+    const label = node.querySelector('span')?.getBoundingClientRect()
+    return {
+      direction: getComputedStyle(node).flexDirection,
+      singleLine: label ? label.height <= 24 : false,
+      iconCenterY: icon ? icon.top + icon.height / 2 : 0,
+      labelCenterY: label ? label.top + label.height / 2 : 0,
+    }
+  })
+  await page.screenshot({ path: 'test-artifacts/session-delete-action.png' })
   result.rowSwipedOpen = result.rowSwipedOpen === true
   result.stillOnSessionList = await page.locator('.session-row').first().isVisible()
   await deleteAction.click()
@@ -271,6 +282,10 @@ try {
   }
   if (Math.abs(layout.arrowCenterY - layout.renameCenterY) > 2) {
     failures.push(`row controls are not vertically aligned: ${JSON.stringify(layout)}`)
+  }
+  const deleteLayout = result.deleteActionLayout as { direction: string; singleLine: boolean; iconCenterY: number; labelCenterY: number }
+  if (deleteLayout.direction !== 'row' || !deleteLayout.singleLine || Math.abs(deleteLayout.iconCenterY - deleteLayout.labelCenterY) > 2) {
+    failures.push(`delete action wrapped: ${JSON.stringify(deleteLayout)}`)
   }
   failures.push(...errors.map((error) => `pageError: ${error}`))
   if (failures.length) {
