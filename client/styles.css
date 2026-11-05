@@ -907,3 +907,21 @@ button.transcript-image:focus-visible { outline: 2px solid var(--green); outline
 .host-edit-delete { display: flex; width: calc(100% - 16px); margin: 4px 8px 6px; justify-content: center; gap: 6px; min-height: 44px; border-radius: 8px; }
 .host-edit-sheet > .field-hint { margin: 0 8px 12px; }
 .host-edit-sheet > .sheet-cancel { margin-top: 4px; }
+
+/* ── mermaid diagrams ────────────────────────────────────────────────────
+   A diagram is content, not code: no language bar, no monospace, and it takes
+   the width it needs. The SVG is scaled down to fit the column and can be
+   scrolled sideways when the graph is wider than the phone. */
+.mermaid-figure { margin: 12px 0; padding: 0; }
+.mermaid-diagram { overflow-x: auto; overflow-y: hidden; padding: 8px 0 4px; background: transparent; }
+.mermaid-diagram svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.mermaid-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 0; color: var(--muted); font-size: 10.5px; }
+.mermaid-label { font-family: 'SFMono-Regular', Consolas, monospace; }
+.mermaid-placeholder { min-height: 90px; border-radius: 8px; background: var(--surface-3); animation: mermaid-pulse 1.4s ease-in-out infinite; }
+@keyframes mermaid-pulse { 0%, 100% { opacity: .55; } 50% { opacity: .85; } }
+@media (prefers-reduced-motion: reduce) { .mermaid-placeholder { animation: none; } }
+/* A diagram that will not draw still has to be readable, and the reason shown
+   rather than hidden: it is usually a syntax error in the agent's output. */
+.mermaid-figure.is-failed figcaption { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 6px 0; color: var(--red); font-size: 11.5px; }
+.mermaid-reason { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-family: 'SFMono-Regular', Consolas, monospace; font-size: 10.5px; }
+.mermaid-figure.is-failed pre { max-height: 340px; overflow: auto; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-3); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }

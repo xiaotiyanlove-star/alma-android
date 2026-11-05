@@ -4,6 +4,7 @@ import { Check, Copy } from 'lucide-react'
 import { Capacitor } from '@capacitor/core'
 import { Clipboard } from '@capacitor/clipboard'
 import { t } from './i18n'
+import { Mermaid, isMermaid } from './Mermaid'
 
 /** The language react-markdown put on the code element, if any. */
 function languageOf(children: ReactNode): string {
@@ -49,6 +50,11 @@ export function CopyButton({ text, label, compact = false, className = '' }: { t
 /** A fenced block with a header carrying its language and a copy button. */
 export function CodeBlock({ children }: { children: ReactNode }) {
   const language = languageOf(children)
+  const source = textOf(children)
+  // A Mermaid fence is a picture, not code: it is drawn instead of printed.
+  // Checked here rather than in Markdown so every fence — including one with
+  // no language that still starts a diagram — takes the same path.
+  if (isMermaid(language, source)) return <Mermaid source={source} label={language || undefined} />
   return <div className="md-code">
     <div className="md-code-bar">
       <span className="md-code-lang">{language || t('代码')}</span>

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { FRAME_LIMIT_BYTES, imageRequestPath, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, MAX_ATTACHMENTS, buildMessage, checkFile, uploadRoute } from '../client/attachments.ts'
+import { FRAME_LIMIT_BYTES, imageRequestPath, looksLikeImage, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, MAX_ATTACHMENTS, buildMessage, checkFile, resolveMediaType, sniffMediaType, uploadRoute } from '../client/attachments.ts'
 
 test('images take the image route, everything else the generic one', () => {
   assert.equal(uploadRoute('image/png'), '/api/attachments/image')
@@ -75,4 +75,39 @@ test('image references become the route the desktop serves them from', () => {
   assert.throws(() => imageRequestPath('https://example.com/x.png'))
   assert.throws(() => imageRequestPath('//example.com/x.png'))
   assert.throws(() => imageRequestPath('relative/x.png'))
+})
+
+const bytes = (...values: number[]) => new Uint8Array(values)
+
+test('a PNG is recognised from its bytes when the picker sends no type', () => {
+  // Android's document picker returns an empty type for ordinary pictures.
+  const png = bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0)
+  assert.equal(sniffMediaType(png), 'image/png')
+  assert.equal(resolveMediaType({ name: 'Screenshot.png', type: '' }, png), 'image/png')
+  assert.equal(resolveMediaType({ name: 'shot', type: '' }, png), 'image/png')
+})
+
+test('a generic type does not override what the bytes say', () => {
+  const jpeg = bytes(0xff, 0xd8, 0xff, 0xe0, 0, 0)
+  assert.equal(resolveMediaType({ name: 'photo.jpg', type: 'application/octet-stream' }, jpeg), 'image/jpeg')
+  assert.equal(uploadRoute(resolveMediaType({ name: 'photo.jpg', type: 'application/octet-stream' }, jpeg)), '/api/attachments/image')
+})
+
+test('other formats are recognised too', () => {
+  assert.equal(sniffMediaType(bytes(0x47, 0x49, 0x46, 0x38, 0x39, 0x61)), 'image/gif')
+  assert.equal(sniffMediaType(bytes(0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50)), 'image/webp')
+  assert.equal(sniffMediaType(bytes(0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66)), 'image/avif')
+  assert.equal(sniffMediaType(bytes(0x25, 0x50, 0x44, 0x46)), 'application/pdf')
+  assert.equal(sniffMediaType(bytes(1, 2, 3, 4)), null)
+})
+
+test('a name is the last resort when the bytes are not a known format', () => {
+  assert.equal(resolveMediaType({ name: 'notes.md', type: '' }, bytes(1, 2)), 'text/markdown')
+  assert.equal(resolveMediaType({ name: 'thing.unknown', type: '' }, bytes(1, 2)), 'application/octet-stream')
+})
+
+test('pictures are detected by extension as well as by declared type', () => {
+  assert.equal(looksLikeImage({ name: 'a.png', type: '' }), true)
+  assert.equal(looksLikeImage({ name: 'a', type: 'image/jpeg' }), true)
+  assert.equal(looksLikeImage({ name: 'a.txt', type: 'text/plain' }), false)
 })

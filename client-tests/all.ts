@@ -24,6 +24,7 @@ const UI_CHECKS = [
   'scan-flow-check',
   'prompt-ui-check',
   'markdown-ui-check',
+  'mermaid-ui-check',
   'copy-ui-check',
   'attach-ui-check',
   'session-name-ui-check',

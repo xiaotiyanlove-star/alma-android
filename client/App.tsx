@@ -16,7 +16,7 @@ import { AlertTracker, actionFor, localNotifier, registerAlertActions } from './
 import { applyKeepAlive, keepAliveMode, replyInProgress, setKeepAliveMode, type KeepAliveMode } from './keepalive';
 import { lanDiscoveryEnabled, setLanDiscoveryEnabled } from './lanprefs';
 import { parsePrompt, promptFingerprint, stripAnsi } from './prompt';
-import { buildMessage, checkFile, MAX_ATTACHMENTS } from './attachments';
+import { buildMessage, checkFile, looksLikeImage, MAX_ATTACHMENTS, resolveMediaType } from './attachments';
 import { Markdown } from './Markdown';
 import { CopyButton } from './CodeBlock';
 import { APP_VERSION, APP_ID, BUILD_TIME } from './version';
@@ -270,6 +270,25 @@ function stepDetail(item: ChatItem): string | undefined {
  * While the burst is still going the line breathes and counts up, so a long
  * stretch of work does not look like a frozen screen.
  */
+/**
+ * The local copy of a picture the user attached, if this reference is one.
+ *
+ * The desktop may hand back a different path than the one it was given — it
+ * renames on collision — and the transcript then carries the rewritten name.
+ * So both the exact path and the file name are keys, and a miss simply falls
+ * through to the normal fetch.
+ */
+function localCopy(localImages: Record<string, string> | undefined, reference: string): string | undefined {
+  if (!localImages) return undefined
+  if (localImages[reference]) return localImages[reference]
+  const name = reference.split('/').filter(Boolean).pop()
+  if (!name) return undefined
+  for (const [key, value] of Object.entries(localImages)) {
+    if (key.split('/').filter(Boolean).pop() === name) return value
+  }
+  return undefined
+}
+
 function WorkGroup({ items, running, counts, hostId, onOpenImage, localImages }: { items: ChatItem[]; running: boolean; counts: WorkCount[]; hostId: string; onOpenImage(src: string): void; localImages?: Record<string, string> }) {
   const active = running ? [...items].reverse().find((item) => item.tool && item.tool.done !== true) : undefined;
   // Pictures are results, not process: they sit below the folded line, visible
@@ -291,7 +310,7 @@ function WorkGroup({ items, running, counts, hostId, onOpenImage, localImages }:
     <div className="work-body">{items.map((item) => <WorkStep item={item} hostId={hostId} key={item.id} />)}</div>
   </details>
   {images.length > 0 && <div className="transcript-images is-run">
-    {images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} thumbnail local={localImages?.[image.url]} />)}
+    {images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} thumbnail local={localCopy(localImages, image.url)} />)}
   </div>}
   </>;
 }
@@ -354,7 +373,7 @@ function TranscriptImage({ hostId, url, mediaType, onOpen, thumbnail = false, lo
     }).catch(() => { if (alive) setError(true) });
     return () => { alive = false; if (objectUrl) URL.revokeObjectURL(objectUrl) };
   }, [hostId, url, mediaType, local]);
-  if (error) return <div className="transcript-image is-blocked">{t('图片无法显示')}</div>;
+  if (error) return <div className="transcript-image is-blocked" title={t('桌面端没有返回这张图片')}>{t('图片无法显示')}</div>;
   if (!src) return <div className="transcript-image is-loading" role="status" aria-label={t('正在读取图片')}><Loader2 size={16} className="spin" /></div>;
   // A button, not an anchor: the tap target used to navigate the WebView to the
   // blob, which is a same-origin document rather than a picture. It now opens
@@ -385,7 +404,7 @@ function Message({ item, markdown, hostId, onOpenImage, localImages }: { item: C
     </div>
     {text && <RichText text={text} markdown={markdown} />}
     {(item.images?.length || inlineImages.length) ? <div className="transcript-images">
-      {[...(item.images ?? []), ...inlineImages.map((url): ImageRef => ({ url }))].map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} local={localImages?.[image.url]} />)}
+      {[...(item.images ?? []), ...inlineImages.map((url): ImageRef => ({ url }))].map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} local={localCopy(localImages, image.url)} />)}
     </div> : null}
     {!text && !item.tool && <p className="muted">{t('此条记录没有文本内容')}</p>}
   </article>;
@@ -1314,7 +1333,12 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
       setAttachments((current) => current.map((entry) => entry.id === item.id ? { ...entry, state: 'uploading' } : entry));
       try {
         const bytes = new Uint8Array(await item.file.arrayBuffer());
-        const uploaded = await controller.uploadAttachment(session.hostId, { name: item.file.name, type: item.file.type, bytes });
+        // The bytes decide the type: an empty `file.type` from the Android
+        // picker used to send a PNG as `application/octet-stream`, which the
+        // desktop stores as a generic file — the agent then never gets a
+        // picture, and the phone can never render it.
+        const type = resolveMediaType(item.file, bytes);
+        const uploaded = await controller.uploadAttachment(session.hostId, { name: item.file.name, type, bytes });
         paths.push({ item, path: uploaded.path });
         setAttachments((current) => current.map((entry) => entry.id === item.id ? { ...entry, state: 'done', path: uploaded.path } : entry));
       } catch (error) {
@@ -1340,7 +1364,10 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
         await controller.sendMessage(buildMessage(text, uploaded.map((entry) => ({ path: entry.path, name: entry.path, size: 0, renamed: false }))));
         // Remember what each picture looks like before its File goes away: the
         // transcript only ever gets the path back.
-        const pictures = uploaded.filter((entry) => /^image\//i.test(entry.item.file.type));
+        // Extension as well as MIME: Android's picker often reports an empty
+        // type, and a picture whose copy was skipped falls through to a remote
+        // fetch the desktop refuses — which is the "图片无法显示" box.
+        const pictures = uploaded.filter((entry) => looksLikeImage(entry.item.file));
         if (pictures.length) {
           setLocalImages((current) => {
             const next = { ...current };

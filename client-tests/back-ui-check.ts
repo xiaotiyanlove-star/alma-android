@@ -95,9 +95,18 @@ try {
   // The list's own "+" is the new-session form; settings owns adding desktops.
   await page.getByRole('button', { name: '节点设置', exact: true }).click()
   await page.getByRole('button', { name: '添加节点', exact: true }).first().click()
-  await page.getByLabel('节点名称', { exact: true }).fill('节点乙')
-  await page.getByLabel('配对链接', { exact: true }).fill(`alma://connect?u=https://relay.invalid&k=${codeB}&e2e=1`)
-  await page.getByRole('button', { name: '添加节点', exact: true }).last().click()
+  await page.getByLabel('节点名称', { exact: true }).waitFor({ timeout: 10000 })
+  // The form is controlled and its submit stays disabled until both fields are
+  // committed, so wait for that rather than a fixed delay: a slow first paint
+  // used to leave the button disabled and the fill half-applied.
+  const submit = page.getByRole('button', { name: '添加节点', exact: true }).last()
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.getByLabel('节点名称', { exact: true }).fill('节点乙')
+    await page.getByLabel('配对链接', { exact: true }).fill(`alma://connect?u=https://relay.invalid&k=${codeB}&e2e=1`)
+    if (await submit.isEnabled().catch(() => false)) break
+    await page.waitForTimeout(250)
+  }
+  await submit.click()
   await page.waitForTimeout(800)
   await page.getByRole('button', { name: '返回会话', exact: true }).first().click().catch(() => undefined)
   await page.locator('.host-picker').waitFor({ timeout: 10000 })
