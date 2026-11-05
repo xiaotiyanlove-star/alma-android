@@ -57,6 +57,7 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
         else if (frame.path === '/__alma_lan__') await reply(frame.id, null)
         else {
           // A bodyless GET is not an RPC; decoding it unconditionally throws.
+          if (!frame.b) { await reply(frame.id, { result: {} }); return }
           const rpc = JSON.parse(new TextDecoder().decode(fromBase64url(frame.b)))
           if (rpc.method === 'pane.read') await reply(frame.id, { result: { read: { text: MENU } } })
           else {
@@ -85,9 +86,23 @@ try {
   await page.getByRole('group', { name: '需要你选择' }).waitFor({ timeout: 20000 })
   await page.screenshot({ path: 'test-artifacts/prompt-card.png' })
   const labels = await page.locator('.prompt-option .prompt-label').allTextContents()
+  const panel = await page.locator('.prompt-card').evaluate((element) => {
+    const box = element.getBoundingClientRect()
+    const options = [...element.querySelectorAll('.prompt-option')].map((option) => option.getBoundingClientRect())
+    return {
+      height: box.height,
+      screenHeight: window.innerHeight,
+      hasClose: Boolean(element.querySelector('.prompt-close')),
+      closeHeight: element.querySelector('.prompt-close')?.getBoundingClientRect().height ?? 0,
+      optionHeights: options.map((option) => option.height),
+      optionsInside: options.every((option) => option.top >= box.top && option.bottom <= box.bottom + 1),
+    }
+  })
   await page.getByRole('button', { name: /Yes, always allow/ }).click()
   await page.waitForTimeout(800)
-  console.log(JSON.stringify({ labels, sentKeys: sent, pageErrors: errors }))
+  console.log(JSON.stringify({ labels, panel, sentKeys: sent, pageErrors: errors }))
+  if (!panel.hasClose || panel.closeHeight < 44 || panel.optionHeights.some((height) => height < 40)
+    || !panel.optionsInside || panel.height > panel.screenHeight * 0.5 || errors.length) process.exitCode = 1
 } finally {
   await browser.close()
 }

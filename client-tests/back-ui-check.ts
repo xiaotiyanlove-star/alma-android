@@ -168,6 +168,8 @@ try {
   await page.waitForTimeout(250)
   result.sendOfferedWithDraft = await page.locator('.send-button:not(.is-stop)').count() === 1
   result.stopStillOfferedWithDraft = await page.locator('.send-button.is-stop').count() === 1
+  const inlineStop = await page.locator('.send-button.is-stop.is-inline').boundingBox()
+  result.stopKeepsSquareShape = Boolean(inlineStop && Math.abs(inlineStop.width - inlineStop.height) <= 1)
   await page.locator('#message-input').fill('')
   await page.waitForTimeout(200)
 

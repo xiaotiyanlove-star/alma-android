@@ -65,6 +65,41 @@ try {
   // Session info comes from the terminal status line. The model and context
   // live on their own row under the title; the pane's state stays beside it.
   const chips = await page.locator('.composer-facts, .session-chip').allTextContents()
+  const toolbar = await page.locator('.view-toolbar').evaluate((element) => {
+    const segments = element.querySelector('.view-segments')
+    const first = segments?.querySelector('button')
+    if (!(segments instanceof HTMLElement) || !(first instanceof HTMLElement)) return null
+    return {
+      toolbarHeight: element.getBoundingClientRect().height,
+      segmentHeight: segments.getBoundingClientRect().height,
+      buttonHeight: first.getBoundingClientRect().height,
+      label: first.textContent?.trim(),
+    }
+  })
+  const restoredToolbar = toolbar !== null
+    && toolbar.toolbarHeight <= 49
+    && toolbar.segmentHeight <= 39
+    && toolbar.buttonHeight <= 33
+    && toolbar.label === '消息'
+  const maintenance = page.locator('.view-maintenance')
+  const primaryActions = await page.locator('.view-toolbar .view-actions > button').count()
+  await maintenance.locator('summary').click()
+  const maintenanceMenu = maintenance.locator('.view-maintenance-menu')
+  const menuBox = await maintenanceMenu.boundingBox()
+  const maintenanceItemHeight = await maintenance.locator('.maintenance-action').first().evaluate((node) => node.getBoundingClientRect().height)
+  const menuVisible = await maintenanceMenu.evaluate((node) => {
+    const box = node.getBoundingClientRect()
+    const top = document.elementFromPoint(box.left + box.width / 2, box.top + 10)
+    return Boolean(top && node.contains(top))
+  })
+  await page.screenshot({ path: 'test-artifacts/session-maintenance-menu.png' })
+  await maintenance.locator('summary').click()
+  const maintenanceCollapsed = !(await maintenance.locator('.view-maintenance-menu').isVisible())
+  const segmentHitArea = await page.locator('.view-segments button').evaluateAll((nodes) => nodes.map((node) => {
+    const after = getComputedStyle(node, '::after')
+    return node.getBoundingClientRect().height + Math.abs(parseFloat(after.top)) * 2
+  }))
+  const composerFontSizes = await page.locator('.composer-fact, .composer-status').evaluateAll((nodes) => nodes.map((node) => parseFloat(getComputedStyle(node).fontSize)))
 
   // Draft survives leaving the session and coming back.
   const composer = page.getByRole('textbox', { name: '消息' })
@@ -78,7 +113,6 @@ try {
   await page.getByRole('textbox', { name: '消息' }).fill('hi')
   const sendBtnDisabled = await page.getByRole('button', { name: '发送', exact: true }).isDisabled()
   const draftBefore = await page.getByRole('textbox', { name: '消息' }).inputValue()
-  console.log('DEBUG before send', JSON.stringify({ sendBtnDisabled, draftBefore }))
   // Poll immediately: the mock replies fast, so the indicator is short-lived.
   await page.getByRole('button', { name: '发送', exact: true }).click()
   let thinkingShown = false
@@ -98,7 +132,10 @@ try {
   const english = await page.locator('.group-title').allTextContents()
   await page.screenshot({ path: 'test-artifacts/settings-english.png' })
 
-  console.log(JSON.stringify({ chips, draftRestored, thinkingShown, englishGroups: english, pageErrors: errors }))
+  console.log(JSON.stringify({ chips, toolbar, restoredToolbar, menuBox, menuVisible, maintenanceItemHeight, primaryActions, maintenanceCollapsed, segmentHitArea, composerFontSizes, draftRestored, thinkingShown, englishGroups: english, pageErrors: errors }))
+  if (!restoredToolbar || primaryActions !== 0 || !menuVisible || !menuBox || menuBox.height === 0 || maintenanceItemHeight < 44 || !maintenanceCollapsed) process.exitCode = 1
+  if (segmentHitArea.some((height) => height < 48)) process.exitCode = 1
+  if (composerFontSizes.some((size) => size < 12)) process.exitCode = 1
 } finally {
   await browser.close()
 }

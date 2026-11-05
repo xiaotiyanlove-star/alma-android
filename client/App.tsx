@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ChangeEvent, FormEvent, KeyboardEvent, ReactNode, TouchEvent } from 'react';
 import {
-  ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown,
+  ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown, GitBranch,
   Camera, CircleAlert, CornerDownLeft, Eye, EyeOff, Loader2, MessageSquare, Plus, RefreshCw,
   Send, Server, Settings, Square, Terminal, Trash2, WrapText, X, FileCode, Pencil, ChevronUp, Paperclip, PlusCircle,
-  QrCode, Copy, BellOff, RotateCcw,
+  QrCode, Copy, BellOff, RotateCcw, MoreHorizontal,
 } from 'lucide-react';
 import { controller } from './controller';
 import { watchNetwork } from './network';
@@ -26,14 +26,17 @@ import { back, closeOverlay, openOverlay, push, replace, useOverlay, useRoute } 
 import { takePendingLink } from './pending-link';
 import { initialState, step } from './lifecycle';
 import { stopMessage } from './backoff';
-import { headerInfo } from './session-info';
+import { mergedHeaderInfo } from './session-info';
 import { agentLook, statusTone, statusWord } from './agents';
 import { paneTitle, tabLabelOf } from './session-title';
-import { imagePaths, isThinking, timeline, withoutImagePaths, workImages, type WorkCount } from './timeline';
+import { imagePaths, isThinking, timeline, withoutImagePaths, workImageSources, workImages, type WorkCount } from './timeline';
 import { backgroundAgents, runningAgents } from './subagents';
 import { agentMark } from './agent-marks';
 import { acknowledge, pruneUnread, subscribeUnread, unreadPanes } from './unread';
 import { ImageViewer } from './ImageViewer';
+import { addLocalMedia, clearLocalMedia, evictOldestLocalMedia, localCopy, localMediaOwner, type LocalMediaEntry } from './local-media';
+import { defaultSessionCwd } from './session-directory';
+import { branchFromPane } from './git-branch';
 import { commandsFor, filterCommands, slashQuery } from './commands';
 import { formatTime, localeChoice, setLocaleChoice, timeZoneChoice, setTimeZoneChoice, resolvedTimeZone, resolvedLocale, COMMON_ZONES, markdownEnabled, setMarkdownEnabled, themeChoice, setThemeChoice, resolvedTheme, applyTheme, type LocaleChoice, type ThemeChoice } from './prefs';
 import type { AppState, ChatItem, HostState, ImageRef, Pane, SessionState, Snapshot } from './model';
@@ -270,31 +273,15 @@ function stepDetail(item: ChatItem): string | undefined {
  * While the burst is still going the line breathes and counts up, so a long
  * stretch of work does not look like a frozen screen.
  */
-/**
- * The local copy of a picture the user attached, if this reference is one.
- *
- * The desktop may hand back a different path than the one it was given — it
- * renames on collision — and the transcript then carries the rewritten name.
- * So both the exact path and the file name are keys, and a miss simply falls
- * through to the normal fetch.
- */
-function localCopy(localImages: Record<string, string> | undefined, reference: string): string | undefined {
-  if (!localImages) return undefined
-  if (localImages[reference]) return localImages[reference]
-  const name = reference.split('/').filter(Boolean).pop()
-  if (!name) return undefined
-  for (const [key, value] of Object.entries(localImages)) {
-    if (key.split('/').filter(Boolean).pop() === name) return value
-  }
-  return undefined
-}
-
-function WorkGroup({ items, running, counts, hostId, onOpenImage, localImages }: { items: ChatItem[]; running: boolean; counts: WorkCount[]; hostId: string; onOpenImage(src: string): void; localImages?: Record<string, string> }) {
+function WorkGroup({ items, running, counts, hostId, paneId, onOpenImage, localImages }: { items: ChatItem[]; running: boolean; counts: WorkCount[]; hostId: string; paneId: string; onOpenImage(src: string): void; localImages?: Record<string, LocalMediaEntry> }) {
   const active = running ? [...items].reverse().find((item) => item.tool && item.tool.done !== true) : undefined;
   // Pictures are results, not process: they sit below the folded line, visible
   // without opening it. A run that produced a screenshot is exactly the case
   // where the user must not have to guess that something is hidden inside.
   const images = useMemo(() => workImages(items), [items]);
+  // Keep the producing tool next to each picture. A Bash screenshot and a
+  // browser capture are both images, but not the same kind of evidence.
+  const imageSources = useMemo(() => workImageSources(items), [items]);
   return <>
   <details className={`work-group${running ? ' is-running' : ''}`}>
     <summary>
@@ -309,8 +296,11 @@ function WorkGroup({ items, running, counts, hostId, onOpenImage, localImages }:
     </summary>
     <div className="work-body">{items.map((item) => <WorkStep item={item} hostId={hostId} key={item.id} />)}</div>
   </details>
-  {images.length > 0 && <div className="transcript-images is-run">
-    {images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} thumbnail local={localCopy(localImages, image.url)} />)}
+      {images.length > 0 && <div className="transcript-images is-run">
+    {images.map((image, index) => <div className="transcript-image-result" key={`${image.url}:${index}`}>
+      {imageSources.has(image.url) && <span className="transcript-image-source">{tWith('来自 {tool}', { tool: imageSources.get(image.url)! })}</span>}
+      <TranscriptImage hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} thumbnail local={localCopy(localImages, localMediaOwner(hostId, paneId), image.url)} />
+    </div>)}
   </div>}
   </>;
 }
@@ -351,28 +341,17 @@ function TranscriptImage({ hostId, url, mediaType, onOpen, thumbnail = false, lo
   const [error, setError] = useState(false);
   useEffect(() => {
     let alive = true;
-    let objectUrl: string | undefined;
     // A picture this phone attached is already decoded here; the desktop keeps
     // it as a generic file and will not hand it back through the image route.
     if (local) { setSrc(local); setError(false); return () => { alive = false } }
     setSrc(undefined);
     setError(false);
-    void controller.fetchImage(hostId, url).then(({ bytes, contentType }) => {
+    void controller.fetchSessionImage(hostId, url).then((src) => {
       if (!alive) return;
-      // The desktop's header wins; the transcript's own hint is the fallback.
-      const type = contentType || mediaType || 'image/png';
-      // Only a picture becomes an object URL. The header comes from the
-      // desktop, and the bytes come from a transcript an agent controls, so a
-      // text/html body here would be a same-origin document built from
-      // message content. It is never rendered as one.
-      if (!/^image\//i.test(type)) { setError(true); return; }
-      // A copy into a plain ArrayBuffer: the tunnel hands back a subarray view
-      // whose backing store is typed as possibly shared.
-      objectUrl = URL.createObjectURL(new Blob([bytes.slice().buffer as ArrayBuffer], { type }));
-      setSrc(objectUrl);
+      setSrc(src);
     }).catch(() => { if (alive) setError(true) });
-    return () => { alive = false; if (objectUrl) URL.revokeObjectURL(objectUrl) };
-  }, [hostId, url, mediaType, local]);
+    return () => { alive = false };
+  }, [hostId, url, local]);
   if (error) return <div className="transcript-image is-blocked" title={t('桌面端没有返回这张图片')}>{t('图片无法显示')}</div>;
   if (!src) return <div className="transcript-image is-loading" role="status" aria-label={t('正在读取图片')}><Loader2 size={16} className="spin" /></div>;
   // A button, not an anchor: the tap target used to navigate the WebView to the
@@ -383,7 +362,7 @@ function TranscriptImage({ hostId, url, mediaType, onOpen, thumbnail = false, lo
   </button>;
 }
 
-function Message({ item, markdown, hostId, onOpenImage, localImages }: { item: ChatItem; markdown: boolean; hostId: string; onOpenImage(src: string): void; localImages?: Record<string, string> }) {
+function Message({ item, markdown, hostId, paneId, onOpenImage, localImages }: { item: ChatItem; markdown: boolean; hostId: string; paneId: string; onOpenImage(src: string): void; localImages?: Record<string, LocalMediaEntry> }) {
   const isUser = item.kind === 'user' || item.from === 'user' || item.from === 'human';
   const role = isUser ? t('你') : item.kind === 'system' ? t('系统') : item.kind === 'error' ? t('错误') : t('助手');
   // Pictures written as paths in the body are shown as pictures. The desktop's
@@ -404,7 +383,7 @@ function Message({ item, markdown, hostId, onOpenImage, localImages }: { item: C
     </div>
     {text && <RichText text={text} markdown={markdown} />}
     {(item.images?.length || inlineImages.length) ? <div className="transcript-images">
-      {[...(item.images ?? []), ...inlineImages.map((url): ImageRef => ({ url }))].map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} local={localCopy(localImages, image.url)} />)}
+      {[...(item.images ?? []), ...inlineImages.map((url): ImageRef => ({ url }))].map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} local={localCopy(localImages, localMediaOwner(hostId, paneId), image.url)} />)}
     </div> : null}
     {!text && !item.tool && <p className="muted">{t('此条记录没有文本内容')}</p>}
   </article>;
@@ -853,8 +832,13 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
   const setCreating = setName;
   const [newKind, setNewKind] = useState('claude');
   const [newCwd, setNewCwd] = useState('');
+  const [cwdMode, setCwdMode] = useState<'choice' | 'manual'>('choice');
   const [newLabel, setNewLabel] = useState('');
   const [renamingPane, setRenamingPane] = useState<string>();
+  const [swipedPane, setSwipedPane] = useState<string>();
+  const [deletingPane, setDeletingPane] = useState<string>();
+  const deleteInFlight = useRef(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   // The pane being renamed is local; whether the form is up is the overlay.
   const renameOpen = overlay?.kind === 'renamePane';
   const openRename = (paneId: string) => { setRenamingPane(paneId); openOverlay({ kind: 'renamePane' }); };
@@ -864,15 +848,31 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
   const [renameValue, setRenameValue] = useState('');
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState('');
+  const deleteOpen = overlay?.kind === 'deletePane';
+  const deletePane = host?.snapshot?.panes.find((pane) => pane.pane_id === deletingPane);
+  useEffect(() => { if (!deleteOpen && deletingPane) setDeletingPane(undefined); }, [deleteOpen, deletingPane]);
   const openingLock = useRef(false);
   useEffect(() => { setOpenError(''); }, [host?.host.id]);
   // A new session starts where the user already is: the focused pane's
   // directory, else the workspace's. Still editable before creating.
-  const currentCwd = host?.snapshot?.panes.find((pane) => pane.pane_id === host.snapshot?.panes[0]?.pane_id)?.cwd
-    ?? host?.snapshot?.panes[0]?.cwd
-    ?? host?.snapshot?.workspaces[0]?.cwd
-    ?? '';
+  const currentCwd = defaultSessionCwd(host?.snapshot, state.selectedPaneId);
+  const knownDirectories = useMemo(() => {
+    const candidates = [
+      ...(host?.snapshot?.workspaces.map((workspace) => workspace.cwd) ?? []),
+      ...(host?.snapshot?.panes.flatMap((pane) => [pane.cwd, pane.foreground_cwd]) ?? []),
+    ]
+    return [...new Set(candidates.filter((path): path is string => Boolean(path?.trim())))]
+  }, [host?.snapshot]);
   useEffect(() => { setNewCwd((current) => current || currentCwd) }, [currentCwd]);
+
+  /** Read the pane after an external picker or app switch, not from stale render closure. */
+  function createWithCurrentDirectory() {
+    const live = controller.getState();
+    const liveHost = live.hosts.find((item) => item.host.id === state.selectedHostId);
+    setNewCwd(defaultSessionCwd(liveHost?.snapshot, live.selectedPaneId));
+    setCwdMode('choice');
+    setCreating(true);
+  }
 
   async function createSession() {
     if (!host || !newCwd.trim() || openingLock.current) return
@@ -919,6 +919,49 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
     } finally { setRenameBusy(false) }
   }
 
+  async function closeSession() {
+    if (!host || !deletingPane || deleteInFlight.current || openingLock.current) return
+    openingLock.current = true
+    deleteInFlight.current = true
+    setDeleteBusy(true)
+    setOpenError('')
+    try {
+      await controller.closeSession(host.host.id, deletingPane)
+      setSwipedPane(undefined)
+      setDeletingPane(undefined)
+      closeOverlay()
+    } catch (error) {
+      setOpenError(error instanceof Error ? error.message : t('删除会话失败'))
+    } finally { deleteInFlight.current = false; setDeleteBusy(false); openingLock.current = false }
+  }
+
+  const sessionSwipe = useRef<{ id: string; x: number; y: number }>();
+  const consumedSessionClick = useRef<string>();
+  useEffect(() => {
+    const clear = () => { consumedSessionClick.current = undefined }
+    window.addEventListener('pointerup', clear)
+    return () => window.removeEventListener('pointerup', clear)
+  }, [])
+  function trackSessionSwipe(event: TouchEvent<HTMLElement>, id: string) {
+    const touch = event.touches[0]
+    if (touch) {
+      sessionSwipe.current = { id, x: touch.clientX, y: touch.clientY }
+    }
+  }
+  function finishSessionSwipe(event: TouchEvent<HTMLElement>, id: string) {
+    const start = sessionSwipe.current
+    sessionSwipe.current = undefined
+    const touch = event.changedTouches[0]
+    if (!start || !touch || start.id !== id) return
+    const dx = touch.clientX - start.x
+    const dy = touch.clientY - start.y
+    if (Math.abs(dx) >= 56 && Math.abs(dx) >= Math.abs(dy) * 1.5) {
+      consumedSessionClick.current = id
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      setSwipedPane(dx < 0 ? id : undefined)
+    }
+  }
+
   async function openPane(paneId: string) {
     if (openingLock.current || !ready) return;
     openingLock.current = true;
@@ -934,7 +977,7 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
   }
 
   return <section className="sessions-view">
-    <header className="page-header"><div className="brand-mark" aria-hidden="true"><Terminal size={23} /></div><div className="header-copy"><h1>Herdr</h1><p>{t('会话')}</p></div><button className="icon-button" title={t('新建会话')} aria-label={t('新建会话')} disabled={!ready} onClick={() => { setNewCwd(currentCwd); setCreating(true) }}><PlusCircle size={21} /></button><button className="icon-button" title={t('节点设置')} aria-label={t('节点设置')} onClick={onSettings}><Settings size={21} /></button></header>
+    <header className="page-header"><div className="brand-mark" aria-hidden="true"><Terminal size={23} /></div><div className="header-copy"><h1>Herdr</h1><p>{t('会话')}</p></div><button className="icon-button" title={t('新建会话')} aria-label={t('新建会话')} disabled={!ready} onClick={createWithCurrentDirectory}><PlusCircle size={21} /></button><button className="icon-button" title={t('节点设置')} aria-label={t('节点设置')} onClick={onSettings}><Settings size={21} /></button></header>
     {host && <div className="host-selector-bar">
       <button type="button" className="host-picker" aria-label={t('当前节点')} aria-haspopup="dialog" aria-expanded={picking} disabled={state.hosts.length < 2} onClick={() => setPicking(true)}>
         <Server size={18} aria-hidden="true" /><span className="host-picker-name">{host.host.name}</span>
@@ -973,8 +1016,16 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
           <option value="codex">Codex</option>
           <option value="pi">pi</option>
         </select>
-        <label htmlFor="new-cwd">{t('目录')}</label>
-        <input id="new-cwd" value={newCwd} onChange={(event) => setNewCwd(event.target.value)} placeholder={t('默认为当前目录')} autoComplete="off" spellCheck={false} />
+        <span className="field-label-row"><label htmlFor={cwdMode === 'choice' ? 'new-cwd-choice' : 'new-cwd'}>{t('工作目录')}</label>
+          <button type="button" className="text-button field-switch" onClick={() => setCwdMode((value) => value === 'choice' ? 'manual' : 'choice')}>
+            {t(cwdMode === 'choice' ? '手动输入' : '选择已有目录')}
+          </button>
+        </span>
+        {cwdMode === 'choice' && knownDirectories.length > 0
+          ? <select id="new-cwd-choice" value={newCwd} onChange={(event) => setNewCwd(event.target.value)} aria-label={t('选择已有目录')}>
+            {knownDirectories.map((path) => <option key={path} value={path}>{path}</option>)}
+          </select>
+          : <input id="new-cwd" value={newCwd} onChange={(event) => setNewCwd(event.target.value)} placeholder={t('输入桌面上的绝对路径')} autoComplete="off" spellCheck={false} />}
         <label htmlFor="new-label">{t('会话名称')}</label>
         <input id="new-label" value={newLabel} onChange={(event) => setNewLabel(event.target.value)} placeholder={t('可选，稍后也能改')} maxLength={80} autoComplete="off" spellCheck={false} />
         <p className="field-hint">{t('新会话会在这个目录下启动，可在桌面端继续。')}</p>
@@ -1025,8 +1076,38 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
             // show anywhere on this screen.
             const tabPanes = group.members.filter(item => (item.tab_id || item.pane_id) === (pane.tab_id || pane.pane_id))
             const unread = tabPanes.some(item => news.some(entry => entry.hostId === host.host.id && entry.paneId === item.pane_id))
-            return <li key={pane.pane_id} className="session-item">
-              <button className="session-row" disabled={!ready || Boolean(opening)} onClick={() => void openPane(pane.pane_id)}>
+            const swiped = swipedPane === pane.pane_id
+    return <li
+      key={pane.pane_id}
+      className={`session-item${swiped ? ' is-swiped' : ''}`}
+      onTouchStart={(event) => trackSessionSwipe(event, pane.pane_id)}
+      onTouchEnd={(event) => finishSessionSwipe(event, pane.pane_id)}
+    >
+              <button
+                type="button"
+                className="session-delete-action"
+                tabIndex={swiped ? 0 : -1}
+                aria-hidden={!swiped}
+                disabled={!ready || Boolean(opening) || Boolean(deletingPane)}
+                aria-label={tWith('删除 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })}
+                onClick={(event) => { event.stopPropagation(); setDeletingPane(pane.pane_id); openOverlay({ kind: 'deletePane' }) }}
+              ><Trash2 size={18} aria-hidden="true" /><span>{t('删除')}</span></button>
+              <div
+                className="session-row-surface"
+              >
+                <button
+                  type="button"
+                  className="session-row"
+                  disabled={!ready || Boolean(opening)}
+                  onClick={() => {
+                    if (consumedSessionClick.current === pane.pane_id) {
+                      consumedSessionClick.current = undefined
+                      return
+                    }
+                    if (swiped) { setSwipedPane(undefined); return }
+                    void openPane(pane.pane_id)
+                  }}
+                >
                 {/* The agent's own mark replaces the generic terminal glyph, so a
                     list of several sessions can be scanned without reading. */}
                 <AgentBadge agent={pane.agent ?? pane.agent_session?.agent} />
@@ -1040,9 +1121,14 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
                   </span>
                 </span>
                 {unread ? <span className="news-dot" role="img" aria-label={t('有新消息')} title={t('有新消息')} /> : null}
-                {opening === pane.pane_id ? <Loader2 size={18} className="spin" aria-label={t('正在打开')} /> : <ArrowRight size={18} className="muted" aria-hidden="true" />}
-              </button>
-              <button type="button" className="icon-button session-rename" disabled={!ready} aria-label={tWith('重命名 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })} title={t('重命名会话')} onClick={() => startRename(pane, tabLabelOf(host.snapshot, pane))}><Pencil size={16} /></button>
+                <ArrowRight size={18} className="muted session-arrow" aria-hidden="true" />
+                </button>
+                <span className="session-actions">
+                  {opening === pane.pane_id
+                    ? <Loader2 size={18} className="spin" aria-label={t('正在打开')} />
+                    : <button type="button" className="session-rename" disabled={!ready} aria-label={tWith('重命名 {name}', { name: paneTitle(pane, tabLabelOf(host.snapshot, pane)) })} title={t('重命名会话')} onClick={(event) => { event.stopPropagation(); startRename(pane, tabLabelOf(host.snapshot, pane)) }}><Pencil size={16} /></button>}
+                </span>
+              </div>
             </li>;
           })}</ul>
         </section>)}
@@ -1063,6 +1149,20 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
         </div>
       </form>
     </div>}
+    {deletePane && deleteOpen && <div className="sheet-backdrop" role="presentation" onClick={() => !deleteBusy && closeOverlay()}>
+      <div className="host-sheet delete-session-sheet" role="dialog" aria-modal="true" aria-label={t('删除会话')} onClick={(event) => event.stopPropagation()}>
+        <h2>{t('删除会话')}</h2>
+        <p className="confirm-host">{paneTitle(deletePane, tabLabelOf(host?.snapshot, deletePane))}</p>
+        <p className="field-hint">{t('这会关闭桌面端对应的终端会话，正在运行的任务也会结束。此操作无法撤销。')}</p>
+        {openError && <Notice error>{openError}</Notice>}
+        <div className="dialog-actions">
+          <button type="button" className="secondary-button" disabled={deleteBusy} onClick={closeOverlay}>{t('取消')}</button>
+          <button type="button" className="destructive-button" disabled={deleteBusy || !ready} onClick={() => void closeSession()}>
+            {deleteBusy ? <Loader2 size={16} className="spin" /> : <Trash2 size={16} />}{t('删除会话')}
+          </button>
+        </div>
+      </div>
+    </div>}
   </section>;
 }
 
@@ -1081,8 +1181,8 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
   const [mode, setMode] = useState<'messages' | 'terminal' | 'source'>(() => noMessages ? 'terminal' : 'messages');
   // A pane that turns out to have no transcript at all moves to the terminal.
   useEffect(() => { if (noMessages) setMode('terminal'); }, [noMessages]);
-  // Once a transcript finally arrives, leave the terminal view automatically.
-  useEffect(() => { if (!session.unsupported && session.items.length > 0) setMode('messages'); }, [session.unsupported, session.items.length]);
+  // A transcript arriving while the user is reading the terminal or source
+  // must not steal their chosen view. The user returns to messages explicitly.
   const [wrap, setWrap] = useState(true);
   const [markdownPreference] = useState(markdownEnabled);
   const [draft, setDraft] = useState(() => loadDraft(session.hostId, session.paneId));
@@ -1119,7 +1219,23 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
    * a picture the phone already has in memory. These are read while the file is
    * still in hand and painted straight from the blob.
    */
-  const [localImages, setLocalImages] = useState<Record<string, string>>({});
+  const [localImages, setLocalImages] = useState<Record<string, LocalMediaEntry>>({});
+  const localMediaOwnerId = localMediaOwner(session.hostId, session.paneId);
+  const localImagesRef = useRef(localImages);
+  localImagesRef.current = localImages;
+  // Switching pane reuses Session for a smooth swipe, so the previous pane's
+  // local files have to be released without discarding the active pane's copy.
+  const previousMediaOwner = useRef(localMediaOwnerId);
+  useEffect(() => {
+    const previous = previousMediaOwner.current;
+    previousMediaOwner.current = localMediaOwnerId;
+    if (previous === localMediaOwnerId) return;
+    setLocalImages((current) => clearLocalMedia(current, previous));
+  }, [localMediaOwnerId]);
+  // Leaving the conversation releases any pictures that remain on screen.
+  useEffect(() => () => {
+    for (const entry of Object.values(localImagesRef.current)) URL.revokeObjectURL(entry.url);
+  }, []);
   const fileInput = useRef<HTMLInputElement>(null);
   // Both of these are overlays in the router rather than local state, so the
   // hardware Back button closes them instead of leaving the app.
@@ -1155,8 +1271,10 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
   // The desktop reads the model and effort out of the transcript; the screen is
   // only a fallback for desktops too old to send them. Context usage has no
   // other source, so that part is always scraped.
-  const info = useMemo(() => headerInfo(stripAnsi(session.screen ?? ''), session.settings), [session.screen, session.settings]);
+  const info = useMemo(() => mergedHeaderInfo(stripAnsi(session.details ?? ''), stripAnsi(session.screen ?? ''), session.settings), [session.details, session.screen, session.settings]);
   const agents = useMemo(() => backgroundAgents(session.items), [session.items]);
+  const pane = host?.snapshot?.panes.find(item => item.pane_id === routePaneId);
+  const branch = branchFromPane(pane);
   const sessionRoute = host ? routeLabel(host) : undefined;
   // Every dispatched agent, background or not: the notification is about the
   // session, but the sheet is where a user checks what is still running.
@@ -1171,7 +1289,6 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
   // `session` still holds the previous one. The header follows the route so the
   // screen answers the gesture immediately; the transcript catches up below.
   const switching = routePaneId !== session.paneId;
-  const pane = host?.snapshot?.panes.find(item => item.pane_id === routePaneId);
   // The session's own directory, not the workspace root: a split tab often has
   // one pane in a subdirectory, and that is the one worth naming.
   const workspacePath = pane?.cwd || host?.snapshot?.workspaces.find(item => item.workspace_id === pane?.workspace_id)?.cwd || '';
@@ -1243,10 +1360,23 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
     [pane?.agent, pane?.agent_session?.agent, query],
   );
   const commandOpen = query !== null && availableCommands.length > 0 && !terminal;
-  const disabled = !ready || busy || session.sending || session.loading || switching || Boolean(session.uncertain);
+  /**
+   * One UI state for every way an operation can block the composer. The
+   * controller still owns mutation truth (`sending`, `uncertain`); this only
+   * prevents a screen from disagreeing about whether its buttons are usable.
+   */
   const hasDraft = Boolean(draft.trim()) || attachments.length > 0;
   // The agent itself is busy: that is the only moment "stop" means anything.
   const working = pane?.agent_status === 'working';
+  const canQueue = Boolean(working && hasDraft);
+  const operation = {
+    sending: busy || session.sending,
+    uncertain: Boolean(session.uncertain),
+    switching,
+    loading: session.loading,
+    blocked: !ready || switching || Boolean(session.uncertain),
+  };
+  const disabled = operation.blocked;
   const [restarting, setRestarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const muted = pane ? controller.isMuted(session.hostId, pane) : false;
@@ -1271,8 +1401,10 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
       if (followBottom.current) element.scrollTop = element.scrollHeight;
     });
     observer.observe(element);
+    const transcript = element.querySelector('.messages');
+    if (transcript) observer.observe(transcript);
     return () => observer.disconnect();
-  }, []);
+  }, [mode]);
 
   useLayoutEffect(() => {
     const element = composer.current;
@@ -1351,17 +1483,18 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
 
   async function send() {
     const text = draft;
+    const target = controller.sessionTarget();
     const hasFiles = attachments.some((item) => item.state !== 'failed');
-    if ((!text.trim() && !hasFiles) || composing.current || actionLock.current || disabled) return;
+    if ((!text.trim() && !hasFiles) || composing.current || actionLock.current || disabled || !target) return;
     actionLock.current = true;
     setBusy(true);
     setLocalError('');
     try {
       if (terminal) {
-        await controller.sendTerminalText(text);
+        await controller.sendTerminalText(text, target);
       } else {
         const uploaded = await uploadPending();
-        await controller.sendMessage(buildMessage(text, uploaded.map((entry) => ({ path: entry.path, name: entry.path, size: 0, renamed: false }))));
+        await controller.sendMessage(buildMessage(text, uploaded.map((entry) => ({ path: entry.path, name: entry.path, size: 0, renamed: false }))), target);
         // Remember what each picture looks like before its File goes away: the
         // transcript only ever gets the path back.
         // Extension as well as MIME: Android's picker often reports an empty
@@ -1370,9 +1503,11 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
         const pictures = uploaded.filter((entry) => looksLikeImage(entry.item.file));
         if (pictures.length) {
           setLocalImages((current) => {
-            const next = { ...current };
-            for (const entry of pictures) next[entry.path] = URL.createObjectURL(entry.item.file);
-            return next;
+            const next = pictures.reduce(
+              (images, entry) => addLocalMedia(images, localMediaOwnerId, entry.path, entry.item.file.name, URL.createObjectURL(entry.item.file)),
+              current,
+            );
+            return evictOldestLocalMedia(next, 12);
           });
         }
         setAttachments([]);
@@ -1423,11 +1558,12 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
   }
 
   async function sendKey(key: string) {
-    if (disabled || actionLock.current) return;
+    const target = controller.sessionTarget();
+    if (disabled || actionLock.current || !target) return;
     actionLock.current = true;
     setBusy(true);
     setLocalError('');
-    try { await controller.sendKeys([key]); }
+    try { await controller.sendKeys([key], target); }
     catch { setLocalError(t('按键结果未确认。请刷新终端后再决定是否重试。')); }
     finally { setBusy(false); actionLock.current = false; }
   }
@@ -1443,10 +1579,12 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
    */
   async function stopAgent() {
     if (!ready || session.sending || actionLock.current) return;
+    const target = controller.sessionTarget();
+    if (!target) return;
     actionLock.current = true;
     setStopping(true);
     setLocalError('');
-    try { await controller.sendKeys(['C-c']); }
+    try { await controller.sendKeys(['C-c'], target); }
     catch { setLocalError(t('中断请求未确认，请刷新终端后确认。')); }
     finally { setStopping(false); actionLock.current = false; }
   }
@@ -1510,6 +1648,7 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
             phone is wide, so it scrolls sideways instead of wrapping or
             truncating — the tail is what tells two checkouts apart. */}
         {workspacePath && <p className="session-workspace" title={workspacePath}>{workspacePath}</p>}
+        {branch && <p className="session-branch" title={t('当前 Git 分支')}><GitBranch size={12} aria-hidden="true" />{branch}</p>}
       </div>{host && <Status host={host} compact />}</header>
 
     {/* Three views, one segmented control. Separate tab, wrap and markdown
@@ -1522,14 +1661,17 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
         <button role="tab" id="source-tab" aria-controls="session-content" aria-selected={source} disabled={noMessages} className={source ? 'is-active' : ''} onClick={() => switchMode('source')}><FileCode size={15} />{t('源码')}</button>
       </div>
       <div className="view-actions">
-        {terminal && <>
-          <button type="button" className={`icon-button${wrap ? ' is-active' : ''}`} title={wrap ? t('切换为保留原始行') : t('切换为自动换行')} aria-label={wrap ? t('切换为保留原始行') : t('切换为自动换行')} aria-pressed={wrap} onClick={() => setWrap(value => !value)}><WrapText size={18} /></button>
-          <button type="button" className="icon-button" title={t('刷新终端')} aria-label={t('刷新终端')} disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={18} className={refreshing ? 'spin' : ''} /></button>
-        </>}
-        {/* Muting is stored on the desktop, so the switch reads back its own
-            answer: the label is derived from the list, not from a local flag. */}
-        <button type="button" className={`icon-button${muted ? ' is-active' : ''}`} aria-pressed={muted} disabled={!ready || !pane?.tab_id} title={muted ? t('恢复提醒') : t('静音这个会话')} aria-label={muted ? t('恢复提醒') : t('静音这个会话')} onClick={() => void toggleMute()}><BellOff size={17} /></button>
-        <button type="button" className="icon-button" disabled={!ready || restarting} title={t('重启这个 agent')} aria-label={t('重启这个 agent')} onClick={() => void restart()}>{restarting ? <Loader2 size={17} className="spin" /> : <RotateCcw size={17} />}</button>
+        <details className="view-maintenance">
+          <summary className="icon-button" aria-label={t('更多操作')} title={t('更多操作')}><MoreHorizontal size={18} /></summary>
+          <div className="view-maintenance-menu">
+            {terminal && <>
+              <button type="button" className="maintenance-action" aria-pressed={wrap} onClick={() => setWrap(value => !value)}><WrapText size={16} />{wrap ? t('保留原始行') : t('自动换行')}</button>
+              <button type="button" className="maintenance-action" disabled={!ready || refreshing} onClick={() => void refresh()}><RefreshCw size={16} className={refreshing ? 'spin' : ''} />{t('刷新终端')}</button>
+            </>}
+            <button type="button" className="maintenance-action" aria-pressed={muted} disabled={!ready || !pane?.tab_id} onClick={() => void toggleMute()}><BellOff size={16} />{muted ? t('恢复提醒') : t('静音这个会话')}</button>
+            <button type="button" className="maintenance-action" disabled={!ready || restarting} onClick={() => void restart()}>{restarting ? <Loader2 size={16} className="spin" /> : <RotateCcw size={16} />}{t('重启这个 agent')}</button>
+          </div>
+        </details>
       </div>
     </div>
     <div className="session-notices">
@@ -1546,11 +1688,12 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
                 : t('Herdr 还没收到这个 agent 的会话 ID，聊天记录会在收到后出现。现在就可以发消息。')}
               <button className="inline-button" onClick={() => void controller.reloadSession()}>{t('立即重试')}</button>
             </Notice>)}
-      {session.uncertain && <Notice error><strong>{t('操作结果不确定')}</strong><p>{session.uncertain}</p><p>{t('请先核对消息或终端内容，避免重复操作。')}</p></Notice>}
+      {session.uncertain && <Notice error><strong>{t('操作结果不确定')}</strong><p>{session.uncertain}</p><p>{t('请先核对消息或终端内容，避免重复操作。')}</p><button type="button" className="inline-button" onClick={() => void controller.reloadSession()}>{t('重新读取记录')}</button></Notice>}
       {session.error && <Notice error>{session.error}</Notice>}
       {localError && <Notice error>{localError}</Notice>}
     </div>
-    {prompt && !terminal && <div className="prompt-card" role="group" aria-label={t('需要你选择')}>
+      {prompt && !terminal && <div className="prompt-card" role="group" aria-label={t('需要你选择')}>
+        <button type="button" className="prompt-close" aria-label={t('在终端里处理')} title={t('在终端里处理')} onClick={() => switchMode('terminal')}><X size={15} /></button>
       <div className="prompt-head"><CircleAlert size={16} aria-hidden="true" /><span>{t('需要你选择')}</span></div>
       <p className="prompt-question">{prompt.question}</p>
       <div className="prompt-options">
@@ -1592,8 +1735,8 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
             : subagent.items.length === 0
               ? <p className="muted">{t('这个子 agent 还没有可读的记录')}</p>
               : <div className="subagent-transcript">{timeline(subagent.items).map(entry => entry.kind === 'work'
-                  ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />
-                  : <Message item={entry.item} markdown={markdown} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />)}</div>}
+          ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} paneId={session.paneId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />
+                  : <Message item={entry.item} markdown={markdown} hostId={session.hostId} paneId={session.paneId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />)}</div>}
         <button type="button" className="secondary-button sheet-cancel" onClick={closeSubagent}>{t('关闭')}</button>
       </div>
     </div>}
@@ -1615,8 +1758,8 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
                 : <span className="older-status">{t('继续上滑加载更早的记录')}</span>}
           </div>}
           {session.loading && !session.items.length ? <Loading label={t('正在读取消息…')} /> : !session.items.length ? <EmptyState icon={<MessageSquare size={28} />} title={session.error ? t('消息暂不可用') : t('暂无消息记录')} /> : <div className="messages">{timeline(session.items).map(entry => entry.kind === 'work'
-                ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />
-                : <Message item={entry.item} markdown={markdown} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />)}
+                ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} paneId={session.paneId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />
+                : <Message item={entry.item} markdown={markdown} hostId={session.hostId} paneId={session.paneId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />)}
               {awaitingReply && !session.uncertain && <div className="thinking" role="status" aria-live="polite">
                 <span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span>
                 <span className="thinking-label">{t('正在等待回复…')}</span>
@@ -1676,8 +1819,8 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
         ? <button type="button" className="send-button is-stop" title={t('停止')} aria-label={t('停止')} disabled={!ready || stopping || switching} onClick={() => void stopAgent()}>
             {stopping ? <Loader2 size={18} className="spin" /> : <span className="stop-ring" aria-hidden="true"><span className="stop-glyph" /></span>}
           </button>
-        : <button type="submit" className="send-button" title={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} aria-label={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} disabled={disabled || (!draft.trim() && attachments.length === 0)}>{busy || session.sending ? <Loader2 size={20} className="spin" /> : <Send size={20} />}</button>}
-      {working && !terminal && hasDraft && <button type="button" className="send-button is-stop is-inline" title={t('停止')} aria-label={t('停止')} disabled={!ready || stopping || switching} onClick={() => void stopAgent()}>
+        : <button type="submit" className="send-button" title={t(operation.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} aria-label={t(operation.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} disabled={disabled || (!draft.trim() && attachments.length === 0)}>{operation.sending ? <Loader2 size={20} className="spin" /> : <Send size={20} />}</button>}
+      {canQueue && !terminal && <button type="button" className="send-button is-stop is-inline" title={t('停止')} aria-label={t('停止')} disabled={!ready || stopping || switching} onClick={() => void stopAgent()}>
         {stopping ? <Loader2 size={16} className="spin" /> : <span className="stop-ring" aria-hidden="true"><span className="stop-glyph" /></span>}
       </button>}
     </form>
@@ -1693,7 +1836,7 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
           <span className="agents-dot" aria-hidden="true" />{agents.length} {t('个 agent')}
         </button>}
       </div>
-      <div className="composer-status" role="status">{busy || session.sending ? <><Loader2 size={12} className="spin" />{t('正在发送')}</> : session.queued.length ? tWith('{count} 条待发送', { count: session.queued.length }) : session.uncertain ? t('操作结果未确认，发送已暂停') : ready ? <><Check size={12} />{host?.host.name}</> : t('发送不可用')}</div>
+      <div className="composer-status" role="status">{operation.sending ? <><Loader2 size={12} className="spin" />{t('正在发送')}</> : session.queued.length ? tWith('{count} 条待发送', { count: session.queued.length }) : operation.uncertain ? t('操作结果未确认，发送已暂停') : operation.loading ? <><Loader2 size={12} className="spin" />{t('正在读取消息…')}</> : ready ? <><Check size={12} />{host?.host.name}</> : t('发送不可用')}</div>
     </div>
   </section>;
 }

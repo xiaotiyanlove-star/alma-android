@@ -68,6 +68,19 @@ export function workImages(items: ChatItem[]): ImageRef[] {
   return out
 }
 
+/** The tool that produced each picture, in the same order as `workImages`. */
+export function workImageSources(items: ChatItem[]): Map<string, string> {
+  const sources = new Map<string, string>()
+  for (const item of items) {
+    const name = item.tool?.name
+    if (!name) continue
+    for (const image of [...(item.tool?.result_images ?? []), ...(item.tool?.images ?? [])]) {
+      if (image?.url && !sources.has(image.url)) sources.set(image.url, name)
+    }
+  }
+  return sources
+}
+
 export function workKind(toolName: string | undefined): WorkKind {
   if (!toolName) return 'other'
   return TOOL_KIND[toolName.trim().toLowerCase()] ?? 'other'
@@ -156,7 +169,7 @@ export function timeline(items: ChatItem[]): TimelineEntry[] {
  * and the trailing `(?![A-Za-z0-9_-]|\.[A-Za-z0-9])` keeps prose from being
  * swallowed into the extension.
  */
-const IMAGE_PATH = /(?:^|[^A-Za-z0-9_./~\\`-])(~?\/(?!\/)[^`)\]"'<>，。；、！？）」》\n]*?\.(?:png|jpe?g|gif|webp|heic))(?![A-Za-z0-9_-]|\.[A-Za-z0-9])/gi
+const IMAGE_PATH = /(?:^|[^A-Za-z0-9_./~\\`-])(~?\/(?!\/)[^`)\]"'<>，。；、！？）」》\n]*?\.(?:png|jpe?g|gif|webp|heic|avif))(?![A-Za-z0-9_-]|\.[A-Za-z0-9])/gi
 
 export function imagePaths(text: string | undefined): string[] {
   if (!text) return []

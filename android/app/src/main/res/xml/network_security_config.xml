@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Cleartext is permitted, and the restriction lives one layer up.
+    Cleartext is permitted only so the E2E-sealed direct WebSocket can open.
 
     Alma's direct listener speaks plain ws:// and has no TLS port, so reaching a
     desktop over the LAN means unencrypted transport. This file is the system

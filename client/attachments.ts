@@ -143,6 +143,9 @@ function extensionMediaType(name: string): string | null {
 /** Chooses the image route only for what the desktop will accept there. */
 export function uploadRoute(mediaType: string): string {
   const type = mediaType.toLowerCase()
+  // AVIF is accepted as an attachment, but Alma's image endpoint does not
+  // decode it today. Send it through the generic file route so the desktop
+  // stores the file intact instead of rejecting the upload.
   if (type === 'image/png' || type === 'image/jpeg' || type === 'image/webp' || type === 'image/gif' || type === 'image/heic') {
     return '/api/attachments/image'
   }

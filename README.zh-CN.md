@@ -145,7 +145,13 @@ client/                应用源码
   transport.ts         端到端加密隧道：P-256 + HKDF + AES-GCM，HTTP/WS 多路复用
   frames.ts            内层帧编解码（JSON/base64 与可选二进制形式）
   crypto.ts            加密原语（改编自 lazyeo/alma-android，MIT）
-  controller.ts        按桌面维护的状态、订阅、发送与授权
+  controller.ts        按桌面维护的路由、mutation 与主机生命周期
+  session-loader.ts    会话身份的订阅、历史读取与预热
+  session-rules.ts     settings 收敛与 transcript gap 分类
+  transcript-cache.ts  有上限的会话预热缓存
+  media-cache.ts       按主机隔离、有上限的远端图片缓存
+  protocol.ts          远端长生命周期响应的严格解析
+  operations.ts        终端按键与菜单回答编码
   prompt.ts            终端菜单解析与漂移检测
   router.ts            界面与返回键共用的导航栈
   lifecycle.ts         前后台连接策略
@@ -187,15 +193,15 @@ Playwright 流程驱动真实 UI，配合合成中继：完成加密握手、切
 回答授权菜单、扫描生成的二维码、切换 Markdown。只使用合成配对码，不接触真实桌面。
 `client-tests/live-*.ts` 下的脚本才需要真实桌面，默认不跑。
 
-有一个守卫测试：任何通过 `t()` 使用的中文串如果缺少英文条目，测试就会失败。
-它目前只扫描 `App.tsx`、`controller.ts` 和 `transport.ts`，
-`ScanPairs.tsx`、`notify.ts`、`attachments.ts` 里的文案不在它的覆盖范围内。
+有一个守卫测试：任何通过 `t()` 或 `tWith()` 使用的中文串如果缺少英文条目，
+测试就会失败。它会扫描 `client/` 下所有 `.ts` 和 `.tsx` 文件。
 
 ## 安全
 
 - 配对链接等于该桌面的完整访问权。界面遮罩、保存后清空、不写日志，
   只存放在 `noBackupFilesDir` 下由 Keystore 加密的存储中；`allowBackup` 关闭。
-- 只接受 HTTPS 中继，全局禁用明文流量。
+- 只接受 HTTPS 中继。Android 仅为 E2E 密封的 `ws://` 局域网直连允许明文；
+  该路径受手机当前子网和完整配对握手约束，并始终保留中继兜底。
 - 模型输出的 Markdown 不渲染原始 HTML，图片只允许内联 data，避免消息触发任意网络请求。
 - 传输断开会结束全部待处理请求；属于你已离开的会话的迟到响应会按身份丢弃，不会合并。
 

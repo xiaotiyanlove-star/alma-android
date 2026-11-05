@@ -69,6 +69,7 @@ public class MainActivity extends BridgeActivity {
 
     /** A consumed `alma://connect` link, waiting for a page that can take it. */
     private String pendingPairingLink;
+    private android.webkit.PermissionRequest pendingCameraRequest;
 
     /** Set while the page is waiting for the user to pick files. */
     private android.webkit.ValueCallback<Uri[]> pendingFileChooser;
@@ -130,7 +131,15 @@ public class MainActivity extends BridgeActivity {
 
     private final androidx.activity.result.ActivityResultLauncher<String> cameraPermission =
         registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
-            // The next getUserMedia call re-enters the bridge once the user answers.
+            android.webkit.PermissionRequest pending = pendingCameraRequest;
+            pendingCameraRequest = null;
+            if (pending == null) return;
+            try {
+                if (granted) pending.grant(pending.getResources());
+                else pending.deny();
+            } catch (RuntimeException ignored) {
+                // The user may have closed the scanner while the dialog was up.
+            }
         });
 
     @Override
@@ -329,11 +338,22 @@ public class MainActivity extends BridgeActivity {
                 if (granted) {
                     request.grant(request.getResources());
                 } else {
+                    if (pendingCameraRequest != null) pendingCameraRequest.deny();
+                    pendingCameraRequest = request;
                     cameraPermission.launch(Manifest.permission.CAMERA);
-                    request.deny();
                 }
             }
         });
+    }
+
+    @Override
+    public void onDestroy() {
+        android.webkit.PermissionRequest pending = pendingCameraRequest;
+        pendingCameraRequest = null;
+        if (pending != null) {
+            try { pending.deny(); } catch (RuntimeException ignored) { }
+        }
+        super.onDestroy();
     }
 
     private static final String CHANNEL_ID = "herdr-alerts";

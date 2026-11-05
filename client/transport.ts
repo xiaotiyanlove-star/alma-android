@@ -232,6 +232,7 @@ export class EncryptedTunnel implements Transport {
     void this.dial(epoch).catch((error) => { if (epoch === this.epoch) this.fail(error instanceof Error ? error : new Error('连接失败')) })
     return promise
   }
+
   /**
    * The path the current generation is using, once it is known.
    *

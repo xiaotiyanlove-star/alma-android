@@ -6,6 +6,7 @@ test('images take the image route, everything else the generic one', () => {
   assert.equal(uploadRoute('image/png'), '/api/attachments/image')
   assert.equal(uploadRoute('IMAGE/JPEG'), '/api/attachments/image')
   assert.equal(uploadRoute('image/webp'), '/api/attachments/image')
+  assert.equal(uploadRoute('image/avif'), '/api/attachments/file')
   assert.equal(uploadRoute('application/pdf'), '/api/attachments/file')
   assert.equal(uploadRoute(''), '/api/attachments/file')
 })

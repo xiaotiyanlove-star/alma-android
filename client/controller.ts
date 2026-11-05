@@ -1,4 +1,4 @@
-import type { AgentSettings, AppState, ChatItem, Host, Mutes, Pane, SessionState, Snapshot, TranscriptGap } from './model'
+import type { AppState, ChatItem, Host, Mutes, SessionState, Snapshot } from './model'
 import { parsePairing } from './pairing'
 import { t, tWith } from './i18n'
 import { isOnLocalNetwork, lanUrl, usableLanAddress, type LanAddress } from './lan'
@@ -12,8 +12,15 @@ import { forgetSubnets } from './localnet'
 import { clearAllBreakers } from './breaker'
 import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, sessionDelay, type RetryContext } from './backoff'
 import { metrics } from './metrics'
-import { imageRequestPath, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, uploadRoute, type UploadResponse, type UploadedFile } from './attachments'
+import { imageRequestPath, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, uploadRoute, type UploadedFile } from './attachments'
 import { moveKeys, needsSpace, optionForIntent, parsePrompt, promptFingerprint, samePrompt, stripAnsi, type Prompt } from './prompt'
+import { parseSessionInfo } from './session-info'
+import { readChatPage, mergeChatItems, readMediaResponse, readSnapshot, readUploadResponse } from './protocol'
+import { MediaCache } from './media-cache'
+import { answerKeys, bracketedTerminalText, protocolKeys, terminalKeys, validTerminalKeys } from './operations'
+import { SessionLoader, type SessionLoaderHost, type SessionTransport } from './session-loader'
+import { readSettings } from './session-rules'
+export { transcriptGap } from './session-rules'
 
 /** How often a desktop with no known local address is looked for. */
 const DISCOVERY_INTERVAL_MS = 10 * 60_000
@@ -39,7 +46,7 @@ const ASK_INTERVAL_MS = 60_000
 /** Deadline for the foreground liveness read; a healthy desktop answers at once. */
 const VERIFY_TIMEOUT_MS = 5_000
 import { hostStorage, type HostStorage } from './storage'
-import { EncryptedTunnel, OperationUncertainError, RejectedError, type BinaryResponse, type Transport, type TunnelError, type TunnelSocket } from './transport'
+import { EncryptedTunnel, OperationUncertainError, RejectedError, type RequestInit2, type Transport, type TunnelError, type TunnelSocket } from './transport'
 
 /**
  * One page of a transcript.
@@ -48,28 +55,7 @@ import { EncryptedTunnel, OperationUncertainError, RejectedError, type BinaryRes
  * itself. It is the only authoritative source: the terminal prints a model name
  * only sometimes, and what it prints is what the agent chose to draw.
  */
-type Page = {
-  session_id?: string
-  page?: { items?: ChatItem[]; start?: number; end?: number }
-  queued?: { id: string; text: string }[]
-  settings?: { model?: string | null; effort?: string | null }
-  error?: { code?: string; message?: string }
-}
 const message = (error: unknown) => error instanceof Error ? error.message : t('请求失败')
-
-/** Narrows the desktop's `settings`, which may be missing or partial. */
-function readSettings(value: Page['settings']): AgentSettings | undefined {
-  if (!value) return undefined
-  const model = typeof value.model === 'string' && value.model ? value.model : null
-  const effort = typeof value.effort === 'string' && value.effort ? value.effort : null
-  return { model, effort }
-}
-
-/** True when the desktop's answer changes what the header shows. */
-function settingsChanged(current: AgentSettings | undefined, next: AgentSettings | undefined): boolean {
-  if (!next) return false
-  return (current?.model ?? null) !== next.model || (current?.effort ?? null) !== next.effort
-}
 
 /**
  * The argv Herdr should start for a new session.
@@ -83,35 +69,6 @@ function settingsChanged(current: AgentSettings | undefined, next: AgentSettings
 export function agentLaunchCommand(kind: string): string[] {
   const executable = /^[a-z][a-z0-9-]{0,31}$/.test(kind) ? kind : 'claude'
   return ['/bin/sh', '-lc', `${executable}; exec "\${SHELL:-/bin/sh}" -il`]
-}
-
-/**
- * Why a pane has no transcript, given the error Alma reported for it.
- *
- * The two codes say different things, which is the whole point of telling
- * them apart:
- *
- * - `no_agent_session` means Herdr has no session id for the pane — which is
- *   also what a plain shell reports, so the pane itself decides whether an
- *   agent is there. A missing id is normal for a moment after an agent starts,
- *   because its integration reports the id when the session begins. It is only
- *   the integration's fault once the agent has been given work — it is
- *   working, or finished, or blocked — and still no id ever arrived.
- * - `transcript_not_found` means the id exists but the transcript is not where
- *   Alma looks. That is not an install problem either: it is typically a CLI
- *   whose session lives elsewhere, such as one behind SSH or in a container.
- * - `unsupported_agent` means Alma has no reader for that agent at all, which
- *   is never something the user can install their way out of.
- */
-export function transcriptGap(code: string, pane: Pane | undefined, sentMessage: boolean): TranscriptGap {
-  if (code === 'unsupported_agent') return 'unsupported'
-  if (code === 'transcript_not_found') return 'transcript'
-  // Without a snapshot there is no way to tell a shell from an agent, so say
-  // the harmless thing; the next refresh classifies it once the list arrives.
-  if (!pane) return 'waiting'
-  if (!pane.agent && !pane.agent_session?.agent) return 'terminal'
-  const worked = sentMessage || ['working', 'done', 'blocked'].includes(pane.agent_status ?? '')
-  return worked ? 'integration' : 'waiting'
 }
 
 /**
@@ -146,36 +103,7 @@ const CREATE_TIMEOUT_MS = 75_000
  */
 const TRANSCRIPT_PAGE = 150
 
-/**
- * A transcript kept warm between pane switches.
- *
- * Only the fields a paint needs: rows, the cursor they cover, and whatever the
- * desktop said about the session. The live socket still owns the truth; this
- * is a head start, not a second source.
- */
-interface StoredTranscript {
-  sessionId?: string
-  items: ChatItem[]
-  start: number
-  end: number
-  queued: SessionState['queued']
-  screen: string
-  settings?: SessionState['settings']
-  /** When it was captured, so an old copy is refreshed rather than trusted. */
-  at: number
-}
-
-/** Old enough that painting it first would be misleading. */
-const TRANSCRIPT_TTL = 5 * 60_000
-/** Panes kept warm; the tab's neighbours are what a swipe needs. */
-const TRANSCRIPT_CACHE = 6
-
-function merge(current: ChatItem[], incoming: ChatItem[], prepend = false): ChatItem[] {
-  const all = new Map(current.map((item) => [item.id, item]))
-  for (const item of incoming) all.set(item.id, item)
-  const order = prepend ? [...incoming, ...current] : [...current, ...incoming]
-  return [...new Set(order.map((item) => item.id))].map((id) => all.get(id)!)
-}
+const merge = mergeChatItems
 interface Runtime {
   transport: Transport
   epoch: number
@@ -191,33 +119,43 @@ export class Controller {
   private listeners = new Set<() => void>()
   private runtimes = new Map<string, Runtime>()
   /** In-flight/successful remote image fetches, scoped to this controller. */
-  private media = new Map<string, Promise<string>>()
-  private mediaCache = new Map<string, string>()
-  private sessionEpoch = 0
-  /** Bumped whenever the transcript identity changes, so stale history pages cannot merge. */
-  private sessionIdentity = 0
-  private sessionSockets: TunnelSocket[] = []
-  private sessionTimers = new Set<ReturnType<typeof setTimeout>>()
+  private media = new MediaCache(24)
+  private uncertain = new Map<string, string>()
   private initialized?: Promise<void>
   private openingHost = false
   private initializedStorage = false
-  private sessionRefresh?: Promise<void>
-  /** Consecutive failed session loads, which pace the refresh retries. */
-  private sessionFailures = 0
-  /**
-   * Transcripts seen recently, keyed by host and pane.
-   *
-   * Swapping panes inside a tab used to blank the screen and wait for a round
-   * trip every time. Keeping the last few transcripts means a swipe paints the
-   * pane it already knows, and the fetch that follows only refreshes it.
-   */
-  private transcripts = new Map<string, StoredTranscript>()
-  constructor(private storage: HostStorage = hostStorage, private createTransport = (host: Host, status: (state: 'connecting' | 'online' | 'offline', error?: string, code?: TunnelError['code']) => void): Transport => new EncryptedTunnel(host, status)) {}
+  private sessions: SessionLoader
+  constructor(
+    private storage: HostStorage = hostStorage,
+    private createTransport = (host: Host, status: (state: 'connecting' | 'online' | 'offline', error?: string, code?: TunnelError['code']) => void): Transport => new EncryptedTunnel(host, status),
+  ) {
+    // The loader calls this only through its browser-safe host bridge, and the
+    // fields it needs are installed before either public method runs.
+    this.sessions = new SessionLoader(this as unknown as SessionLoaderHost)
+  }
   getState = () => this.state
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   private publish(patch: Partial<AppState>) { this.state = { ...this.state, ...patch }; for (const listener of this.listeners) listener() }
   private patchHost(id: string, patch: Partial<AppState['hosts'][number]>) { this.publish({ hosts: this.state.hosts.map((item) => item.host.id === id ? { ...item, ...patch } : item) }) }
-  private patchSession(epoch: number, patch: Partial<SessionState>) { if (epoch === this.sessionEpoch && this.state.session) this.publish({ session: { ...this.state.session, ...patch } }) }
+  private patchSession(epoch: number, patch: Partial<SessionState>) {
+    if (epoch === this.sessions.epoch && this.state.session) {
+      this.publish({ session: { ...this.state.session, ...patch } })
+    }
+  }
+  private getSession(): SessionState | undefined { return this.state.session }
+  private setSession(session: SessionState | undefined): void {
+    this.publish({ session })
+  }
+  private getRuntime(hostId: string): SessionTransport | undefined {
+    return this.runtimes.get(hostId)?.transport
+  }
+  private getSnapshot(hostId: string): Snapshot | undefined {
+    return this.state.hosts.find((item) => item.host.id === hostId)?.snapshot
+  }
+  private prefetch(hostId: string, paneId: string): void {
+    if (this.state.session?.hostId === hostId) this.prefetchNeighbours(paneId)
+  }
+  private message(error: unknown): string { return message(error) }
   initialize = () => this.initialized ??= this.load()
   private async load() {
     try {
@@ -303,6 +241,24 @@ export class Controller {
     return this.state.hosts.find((item) => item.host.id === id)?.discoveredLan
   }
 
+  private sessionKey(hostId: string, paneId: string): string {
+    return `${hostId}\u0000${paneId}`
+  }
+
+  private rememberUncertain(hostId: string, paneId: string, error: unknown): void {
+    if (error instanceof OperationUncertainError) this.uncertain.set(this.sessionKey(hostId, paneId), message(error))
+  }
+
+  private uncertaintyFor(hostId: string, paneId: string): string | undefined {
+    return this.uncertain.get(this.sessionKey(hostId, paneId))
+  }
+
+  private assertTarget(current: SessionState | undefined, hostId: string, paneId: string, epoch: number): asserts current is SessionState {
+    if (!current || current.hostId !== hostId || current.paneId !== paneId || epoch !== this.sessions.epoch) {
+      throw new Error(t('会话已切换，本次操作未发送。请在新会话中重试。'))
+    }
+  }
+
   /**
    * Hands a discovered local address to a transport, when it supports one.
    *
@@ -336,7 +292,6 @@ export class Controller {
 
   /** Applies the user's discovery switch to already-open tunnels. */
   lanDiscoveryChanged = (enabled: boolean) => {
-    this.discoveryEpoch++
     this.abortScans()
     this.lastDiscover.clear()
     this.lastAsk.clear()
@@ -363,7 +318,6 @@ export class Controller {
    * was in progress belongs to the old subnet and is discarded.
    */
   networkChanged = () => {
-    this.discoveryEpoch++
     this.abortScans()
     this.lastDiscover.clear()
     this.lastAsk.clear()
@@ -414,8 +368,24 @@ export class Controller {
    * Bounded retry: three attempts, at most 30 s apart, then stop. Automatic
    * retrying only resumes when the app is foregrounded, the network returns,
    * or the user asks — nothing else resets the ladder.
+   *
+   * LAN/relay split: this function is the only place that may start a local
+   * search after a failed dial. The transport, pairing proof, E2E handshake,
+   * subnet gate and relay URL construction are separate security boundaries
+   * and must not be changed to make discovery work. A relay failure starts a
+   * LAN search here; the runtime's normal retry and relay fallback remain.
    */
   private scheduleHost(id: string, runtime: Runtime, code?: TunnelError['code']) {
+    // A dead relay is the reason to look on the LAN, not a reason to stop
+    // looking. Start that search independently of the retry timer so a slow
+    // relay timeout cannot hold local discovery hostage.
+    const hostState = this.state.hosts.find((item) => item.host.id === id)
+    const retryPending = Boolean(runtime.retry)
+    if (!retryPending && !hostState?.discoveredLan && !this.discoveryRequestedForOutage.has(id)) {
+      this.discoveryRequestedForOutage.add(id)
+      this.lastDiscover.delete(id)
+      this.maybeDiscover(id, true)
+    }
     if (runtime.retry || this.runtimes.get(id) !== runtime) return
     const permanent = isPermanentFailure(code)
     // The patient stage only runs while the app is on screen: a phone in a
@@ -454,7 +424,10 @@ export class Controller {
     if (foreground === undefined) return
     if (this.state.foreground === foreground) return
     this.publish({ foreground })
-    if (foreground) this.retryStopped()
+    if (foreground) {
+      this.retryStopped()
+      this.maybeDiscoverAll()
+    }
     // The idle probe costs a round trip every few seconds. It only exists to
     // catch a link that died while the user is looking at the app; a hidden
     // phone should not keep waking its radio to ask.
@@ -471,6 +444,10 @@ export class Controller {
       runtime.stopHeartbeat?.()
       runtime.stopHeartbeat = undefined
     }
+    // A subnet scan can outlive the screen by minutes on a dense network.
+    // Once hidden there is no one to use its result, so stop at the next
+    // bounded probe instead of letting the radio finish all 254 addresses.
+    this.abortScans()
   }
 
   /**
@@ -485,6 +462,14 @@ export class Controller {
   private discovering = new Set<string>()
   /** Scans still running, so a network change can stop them early. */
   private scans = new Set<{ aborted: boolean }>()
+  /** Which scan owns the per-desktop lock, so an old finally cannot release a new scan. */
+  private scanOwners = new Map<string, { aborted: boolean }>()
+  /** Set when relay connectivity makes the desktop answerable, so a scan yields. */
+  private relocateScans = new Set<string>()
+  /** Discovery tasks owned by this controller; disposal waits for them to finish. */
+  private discoveryTasks = new Set<Promise<void>>()
+  /** One eager LAN search per connection outage, never once per retry loop. */
+  private discoveryRequestedForOutage = new Set<string>()
   private discoveryEpoch = 0
   private lastDiscover = new Map<string, number>()
   /** When each desktop was last asked for its addresses, per the tunnel life. */
@@ -511,7 +496,7 @@ export class Controller {
     if (state?.status !== 'online' || state.herdrOnline !== true) return []
     let answer: unknown
     try {
-      answer = await runtime.transport.request<unknown>(LAN_CANDIDATE_PATH, undefined, { kind: 'read', timeoutMs: 5_000 })
+      answer = await this.request(id, LAN_CANDIDATE_PATH, undefined, { kind: 'read', timeoutMs: 5_000 })
     } catch { return [] }
     const candidate: LanCandidate | null = parseLanCandidate(answer)
     if (!candidate || this.runtimes.get(id) !== runtime) return []
@@ -561,13 +546,12 @@ export class Controller {
     return null
   }
 
-  private maybeDiscover(id: string) {
+  private maybeDiscover(id: string, force = false) {
     // Discovery does not wait for a relay connection: if the public path is
     // broken, the LAN path is precisely how this phone can still reach home.
     // It remains background work and only runs while the app is visible.
     if (!lanDiscoveryEnabled()) return
     if (!this.state.foreground) return
-    if (this.discovering.has(id)) return
     const hostState = this.state.hosts.find((item) => item.host.id === id)
     const host = hostState?.host
     if (!host || host.enabled === false) return
@@ -592,10 +576,24 @@ export class Controller {
     // useful question ten minutes away, which is why a connected desktop stayed
     // on the relay for the rest of the session.
     const live = hostState?.status === 'online' && hostState.herdrOnline === true
-    const wait = this.lastMiss.get(id) === 'unreachable' ? DISCOVERY_MISS_MS : DISCOVERY_INTERVAL_MS
-    if (live) {
-      if (now - (this.lastAsk.get(id) ?? 0) < ASK_INTERVAL_MS) return
-    } else if (now - at < wait) return
+    // Once the desktop can answer over its tunnel, a subnet scan is no longer
+    // the shortest answer. Let it finish only if nobody can ask the desktop;
+    // otherwise stop it at its next candidate and use one authenticated request.
+    if (live && this.discovering.has(id)) {
+      const owner = this.scanOwners.get(id)
+      if (owner) {
+        owner.aborted = true
+        this.relocateScans.add(id)
+      }
+      this.discovering.delete(id)
+      this.scanOwners.delete(id)
+    } else if (this.discovering.has(id)) return
+    const lastLook = live ? this.lastAsk.get(id) ?? 0 : at
+    const wait = live ? ASK_INTERVAL_MS : this.lastMiss.get(id) === 'unreachable' ? DISCOVERY_MISS_MS : DISCOVERY_INTERVAL_MS
+    // A new connection outage resets the scan clock. Otherwise a failed scan
+    // made at launch kept the phone from using the LAN for ten minutes after
+    // the relay died — the exact case this recovery path exists for.
+    if (!force && now - lastLook < wait) return
     if (live) this.lastAsk.set(id, now)
     else this.lastDiscover.set(id, now)
     this.discovering.add(id)
@@ -605,8 +603,17 @@ export class Controller {
     // alone cannot do that: it only discards the answer after the fact.
     const scan = { aborted: false }
     this.scans.add(scan)
-    void (async () => {
+    this.scanOwners.set(id, scan)
+    const task = (async () => {
       try {
+        if (this.relocateScans.has(id) && scan.aborted) return
+        // A hidden app has no user to benefit from a multi-second subnet scan.
+        // Check again after entering the async task: `scheduleHost` can be
+        // invoked synchronously while a transport is closing during suspend.
+        if (!this.state.foreground || !lanDiscoveryEnabled()) {
+          scan.aborted = true
+          return
+        }
         const subnets = await deviceSubnets()
         // The desktop's own answer first: one round trip, and it is right even
         // when this phone's idea of its subnets is wrong. Only when it has
@@ -628,21 +635,42 @@ export class Controller {
       } catch { /* discovery is best effort; the relay still works */ }
       finally {
         this.scans.delete(scan)
-        this.discovering.delete(id)
+        const displaced = this.relocateScans.delete(id)
+        if (!displaced && this.scanOwners.get(id) === scan) {
+          this.scanOwners.delete(id)
+          this.discovering.delete(id)
+        }
         // A connect that finished while this search was running had its own
         // call dropped by the `discovering` guard above. That call is the one
         // that can ask the desktop, so it must not be lost — run it now that
         // the slot is free.
-        if (this.runtimes.has(id) && this.state.foreground) this.maybeDiscover(id)
+        if (this.runtimes.has(id) && this.state.foreground) {
+          // The eager outage search is already in flight or complete. Queue
+          // only the normal cadence; a second forced call here would loop.
+          this.maybeDiscover(id)
+        }
       }
     })()
+    this.discoveryTasks.add(task)
+    void task.finally(() => this.discoveryTasks.delete(task))
   }
 
   /** Stops every scan in flight; the caller has already bumped the epoch. */
   private abortScans() {
+    this.discoveryEpoch++
     for (const scan of this.scans) scan.aborted = true
     this.scans.clear()
+    this.scanOwners.clear()
+    this.relocateScans.clear()
     this.discovering.clear()
+    this.discoveryRequestedForOutage.clear()
+  }
+
+  /** Resumes discovery only after the app is visible again. */
+  private maybeDiscoverAll() {
+    for (const [id, runtime] of [...this.runtimes]) {
+      if (runtime.stopped || this.state.hosts.find((item) => item.host.id === id)?.status !== 'online') this.maybeDiscover(id, true)
+    }
   }
 
   /** Remembers a discovered address and lets the next connection use it. */
@@ -666,6 +694,7 @@ export class Controller {
     // this switches an existing relay connection to LAN as soon as discovery
     // succeeds, rather than making the user wait for the next reconnect.
     this.patchHost(id, { discoveredLan: address })
+    this.media.clear(id)
     const runtime = this.runtimes.get(id)
     if (runtime) this.rebuild(id, runtime)
   }
@@ -703,7 +732,7 @@ export class Controller {
     this.applyLan(runtime, id, this.discoveredLanFor(id) ?? lastRoute(id))
     try {
       await runtime.transport.connect()
-      const info = await runtime.transport.request<{ online: boolean; offline_reason?: string; herdr_error?: string }>('/api/herdr/info')
+      const info = await this.request<{ online: boolean; offline_reason?: string; herdr_error?: string }>(id, '/api/herdr/info')
       if (this.runtimes.get(id) !== runtime || epoch !== runtime.epoch) return
       this.patchHost(id, {
         status: 'online',
@@ -713,7 +742,10 @@ export class Controller {
       })
       runtime.hub = runtime.transport.subscribe('/ws/herdr', (event) => {
         if (epoch !== runtime.epoch || this.runtimes.get(id) !== runtime) return
-        if (event.type === 'snapshot' && Array.isArray(event.snapshot?.panes) && Array.isArray(event.snapshot?.workspaces)) this.patchHost(id, { snapshot: event.snapshot as Snapshot, herdrOnline: true, error: undefined, offlineReason: undefined })
+        if (event.type === 'snapshot') {
+          const snapshot = readSnapshot(event.snapshot)
+          if (snapshot) this.patchHost(id, { snapshot, herdrOnline: true, error: undefined, offlineReason: undefined })
+        }
         if (event.type === 'herdr') {
           const reason = typeof event.reason === 'string' && event.reason.trim() ? event.reason.trim() : undefined
           this.patchHost(id, {
@@ -729,6 +761,7 @@ export class Controller {
       }, () => { if (epoch === runtime.epoch) this.scheduleHost(id, runtime) })
       runtime.attempts = 0
       runtime.stopped = undefined
+      this.discoveryRequestedForOutage.delete(id)
       this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined })
       // A tunnel that dies without delivering `close` — the page was frozen
       // when the relay dropped it — would otherwise look healthy until the
@@ -743,7 +776,7 @@ export class Controller {
       // Muting is stored on the desktop, so it has to be read back rather than
       // assumed; a failure here must not make the desktop look offline.
       void this.refreshMutes(id).catch(() => undefined)
-      if (this.state.session?.hostId === id) void this.refreshSession()
+      if (this.state.session?.hostId === id) void this.sessions.reload()
       // The relay is up and working; that is the moment to look for the same
       // desktop on the local network, so the next connection can skip it.
       this.maybeDiscover(id)
@@ -780,6 +813,8 @@ export class Controller {
     const previous = this.runtimes.get(host.id)
     this.runtimes.delete(host.id)
     if (previous) this.closeRuntime(previous)
+    this.clearMedia(host.id)
+    for (const key of [...this.uncertain.keys()]) if (key.startsWith(`${host.id}\u0000`)) this.uncertain.delete(key)
     // Always close the open session: the selected host changes, so an old pane must not stay as the mutation target.
     if (this.state.session) this.stopSession()
     this.publish({
@@ -799,14 +834,14 @@ export class Controller {
     if (!file.bytes.length) throw new Error(t('文件内容为空'))
     if (file.bytes.length > MAX_ATTACHMENT_BYTES) throw new Error(tWith('文件超过 {size} MB', { size: MAX_ATTACHMENT_MB }))
     const route = uploadRoute(file.type)
-    const response = await runtime.transport.request<UploadResponse>(route, undefined, {
+    const response = readUploadResponse(await this.request(hostId, route, undefined, {
       kind: 'mutation',
       raw: file.bytes,
       headers: {
         'content-type': file.type || 'application/octet-stream',
         'x-alma-filename': encodeURIComponent(file.name),
       },
-    })
+    }))
     if (!response?.filePath) throw new Error(response?.error || t('上传失败'))
     return {
       path: response.filePath,
@@ -1001,7 +1036,7 @@ export class Controller {
     const runtime = this.runtimes.get(hostId)
     const empty: Mutes = { workspaces: [], tabs: [] }
     if (!runtime) return empty
-    const answer = await runtime.transport.request<Partial<Mutes> | null>('/api/herdr/mutes', undefined, { kind: 'read' })
+    const answer = await this.request<Partial<Mutes> | null>(hostId, '/api/herdr/mutes', undefined, { kind: 'read' })
     const clean = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
     const mutes = { workspaces: clean(answer?.workspaces), tabs: clean(answer?.tabs) }
     // A reconnect during the round trip makes this answer belong to a runtime
@@ -1023,7 +1058,7 @@ export class Controller {
     if (!runtime) throw new Error(t('节点不存在'))
     const body = target.tab ? { tab: target.tab, muted } : target.workspace ? { workspace: target.workspace, muted } : null
     if (!body) throw new Error(t('找不到会话'))
-    const answer = await runtime.transport.request<Partial<Mutes> | null>('/api/herdr/mutes', body, { kind: 'mutation' })
+    const answer = await this.request<Partial<Mutes> | null>(hostId, '/api/herdr/mutes', body, { kind: 'mutation' })
     const clean = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
     // The desktop answers with the whole list, so the local copy cannot drift
     // from what it will actually honour.
@@ -1052,8 +1087,8 @@ export class Controller {
     const runtime = this.runtimes.get(hostId)
     if (!runtime) throw new Error(t('节点不存在'))
     const body = { pane_id: paneId, ...(thenPrompt?.trim() ? { then_prompt: thenPrompt.trim() } : {}) }
-    const answer = await runtime.transport.request<{ result?: { session_id?: string }; error?: { code?: string; message?: string } }>(
-      '/api/herdr/restart-agent', body, { kind: 'mutation', timeoutMs: CREATE_TIMEOUT_MS },
+    const answer = await this.request<{ result?: { session_id?: string }; error?: { code?: string; message?: string } }>(
+      hostId, '/api/herdr/restart-agent', body, { kind: 'mutation', timeoutMs: CREATE_TIMEOUT_MS },
     )
     if (answer?.error) throw new Error(answer.error.message || t('重启失败'))
     // Herdr replaces the session id; anything already loaded belongs to the
@@ -1064,8 +1099,8 @@ export class Controller {
       // The screen and the model/effort chips described the process that was
       // just killed, so they are cleared with the transcript rather than shown
       // as if the restarted agent were already running that way.
-      this.publish({ selectedPaneId: paneId, session: { ...open, items: [], start: -1, end: 0, queued: [], sessionId: undefined, loading: true, unsupported: false, gap: undefined, uncertain: undefined, screen: '', settings: undefined, sentMessage: false } })
-      void this.refreshSession()
+      this.publish({ selectedPaneId: paneId, session: { ...open, items: [], start: -1, end: 0, queued: [], sessionId: undefined, loading: true, unsupported: false, gap: undefined, uncertain: undefined, screen: '', details: undefined, settings: undefined, sentMessage: false } })
+      void this.sessions.reload()
     }
     return answer?.result ?? null
   }
@@ -1089,11 +1124,11 @@ export class Controller {
     const runtime = this.runtimes.get(hostId)
     if (!runtime) throw new Error(t('节点不存在'))
     const query = new URLSearchParams({ pane: paneId, tool: toolId, limit: String(limit) })
-    const answer = await runtime.transport.request<{
+    const answer = await this.request<{
       agent?: { type?: string; description?: string; finished?: boolean }
       page?: { items?: ChatItem[] }
       error?: { code?: string; message?: string }
-    }>(`/api/herdr/subagent?${query}`, undefined, { kind: 'read' })
+    }>(hostId, `/api/herdr/subagent?${query}`, undefined, { kind: 'read' })
     if (answer?.error) {
       if (answer.error.code === 'subagent_not_found') throw new Error(t('子 agent 的记录不存在或已被清理'))
       throw new Error(answer.error.message || t('无法读取子 agent'))
@@ -1112,9 +1147,11 @@ export class Controller {
   fetchImage = async (hostId: string, url: string): Promise<{ bytes: Uint8Array; contentType: string }> => {
     const runtime = this.runtimes.get(hostId)
     if (!runtime) throw new Error(t('节点不存在'))
-    const answer = await runtime.transport.request<BinaryResponse>(imageRequestPath(url), undefined, { kind: 'read', responseType: 'bytes', timeoutMs: 30_000 })
-    if (!answer.bytes.length) throw new Error(t('图片为空'))
-    return { bytes: answer.bytes, contentType: answer.contentType }
+    const path = imageRequestPath(url)
+    const answer = readMediaResponse(await this.request<unknown>(hostId, path, undefined, { kind: 'read', responseType: 'bytes', timeoutMs: 30_000 }))
+    if (!answer?.bytes.length) throw new Error(t('图片为空'))
+    if (answer.bytes.byteLength > MAX_ATTACHMENT_BYTES) throw new Error(tWith('图片超过 {size} MB', { size: MAX_ATTACHMENT_MB }))
+    return answer
   }
 
   /**
@@ -1136,6 +1173,33 @@ export class Controller {
         snapshot: { ...snapshot, tabs: (snapshot.tabs ?? []).map((tab) => tab.tab_id === pane.tab_id ? { ...tab, label: trimmed } : tab) },
       })
     }
+  }
+
+  /** Closes a Herdr tab and every pane it owns. */
+  closeSession = async (hostId: string, paneId: string): Promise<void> => {
+    const open = this.state.session
+    const pane = this.state.hosts.find((item) => item.host.id === hostId)?.snapshot?.panes.find((item) => item.pane_id === paneId)
+    if (!pane?.tab_id) throw new Error(t('找不到会话'))
+    await this.rpc(hostId, 'tab.close', { tab_id: pane.tab_id })
+    if (open?.hostId === hostId) {
+      const panes = this.state.hosts.find((item) => item.host.id === hostId)?.snapshot?.panes
+        .filter((item) => item.tab_id !== pane.tab_id) ?? []
+      const currentClosed = open.paneId === paneId || !panes.some((item) => item.pane_id === open.paneId)
+      if (currentClosed) this.stopSession()
+    }
+    // The snapshot follows, but remove the row immediately so a second tap
+    // cannot send the same destructive mutation again.
+    const host = this.state.hosts.find((item) => item.host.id === hostId)
+    if (host?.snapshot) {
+      this.patchHost(hostId, {
+        snapshot: {
+          ...host.snapshot,
+          panes: host.snapshot.panes.filter((item) => item.tab_id !== pane.tab_id),
+          tabs: host.snapshot.tabs?.filter((item) => item.tab_id !== pane.tab_id),
+        },
+      })
+    }
+    if (open?.paneId === paneId) this.publish({ selectedPaneId: undefined, session: undefined })
   }
 
   /**
@@ -1166,6 +1230,7 @@ export class Controller {
   /** Releases one desktop: sockets, retries and any session open on it. */
   private stopHost(id: string) {
     const runtime = this.runtimes.get(id)
+    this.clearMedia(id)
     if (this.state.session?.hostId === id) this.stopSession()
     this.publish({ ...(this.state.session?.hostId === id ? { session: undefined, selectedPaneId: undefined } : {}) })
     if (!runtime) return
@@ -1197,6 +1262,7 @@ export class Controller {
       const runtime = this.runtimes.get(id)
       this.runtimes.delete(id)
       if (runtime) this.closeRuntime(runtime)
+      this.clearMedia(id)
       if (this.state.session?.hostId === id) this.stopSession()
       this.publish({ hosts, ...(this.state.selectedHostId === id ? { selectedHostId: undefined, selectedPaneId: undefined, session: undefined } : {}) })
     })
@@ -1241,7 +1307,7 @@ export class Controller {
       const status = this.state.hosts.find((item) => item.host.id === id)?.status
       if (status !== 'online') continue
       try {
-        await runtime.transport.request<{ online: boolean }>('/api/herdr/info', undefined, { kind: 'read', timeoutMs: VERIFY_TIMEOUT_MS })
+        await this.request<{ online: boolean }>(id, '/api/herdr/info', undefined, { kind: 'read', timeoutMs: VERIFY_TIMEOUT_MS })
       } catch { /* the transport has already reported the failure */ }
       if (this.runtimes.get(id) !== runtime) continue
       if (this.state.hosts.find((item) => item.host.id === id)?.status !== 'online') this.rebuild(id, runtime)
@@ -1261,6 +1327,11 @@ export class Controller {
     this.runtimes.set(id, fresh)
     this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined, error: undefined })
     void this.connectHost(id, fresh)
+  }
+
+  /** Releases remote pictures for one desktop when its data stops being valid. */
+  private clearMedia(hostId: string) {
+    this.media.clear(hostId)
   }
 
   /**
@@ -1332,18 +1403,19 @@ export class Controller {
       }
       const runtime = this.makeRuntime(state.host)
       this.runtimes.set(id, runtime)
+      this.discoveryRequestedForOutage.delete(id)
       this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined, error: undefined })
       void this.connectHost(id, runtime)
     }
   }
   backToSessions = () => { this.stopSession(); this.publish({ selectedPaneId: undefined, session: undefined }) }
-  private stopSession() {
-    ++this.sessionEpoch
-    ++this.sessionIdentity
-    this.sessionRefresh = undefined
-    for (const timer of this.sessionTimers) clearTimeout(timer)
-    this.sessionTimers.clear()
-    for (const socket of this.sessionSockets.splice(0)) socket.close()
+  private stopSession() { this.sessions.stop() }
+  /** The identity of the pane on screen, captured when a UI action begins. */
+  sessionTarget = (): { hostId: string; paneId: string; epoch: number } | undefined => {
+    const session = this.state.session
+    return session
+      ? { hostId: session.hostId, paneId: session.paneId, epoch: this.sessions.epoch }
+      : undefined
   }
   selectPane = async (paneId: string) => {
     const hostId = this.state.selectedHostId
@@ -1352,66 +1424,10 @@ export class Controller {
     // succeeded and act on whatever session was opened before — which is how a
     // notification reply ended up in a different conversation.
     if (!hostId || !this.runtimes.has(hostId)) throw new Error(t('节点未连接，无法打开会话'))
-    // Remember what is on screen before tearing the session down, so coming
-    // back to this pane (a swipe, then another) paints instead of blanking.
-    if (this.state.session) this.storeTranscript(this.state.session)
-    this.stopSession()
-    const warm = this.takeTranscript(hostId, paneId)
-    // A warm pane shows its rows immediately and refreshes behind them: the
-    // screen never empties, and `loading` is only true when there is nothing
-    // to paint at all.
-    this.publish({
-      selectedPaneId: paneId,
-      session: {
-        hostId, paneId,
-        items: warm?.items ?? [],
-        start: warm?.start ?? -1,
-        end: warm?.end ?? 0,
-        queued: warm?.queued ?? [],
-        loading: !warm,
-        loadingOlder: false,
-        screen: warm?.screen ?? '',
-        unsupported: false,
-        sentMessage: false,
-        sending: false,
-        ...(warm?.sessionId ? { sessionId: warm.sessionId } : {}),
-        ...(warm?.settings ? { settings: warm.settings } : {}),
-      },
-    })
-    await this.refreshSession()
-    this.prefetchNeighbours(paneId)
-  }
-
-  /** Captures the transcript on screen, so a later return can paint from it. */
-  private storeTranscript(session: SessionState) {
-    if (!session.items.length) return
-    const key = `${session.hostId}\u0000${session.paneId}`
-    this.transcripts.delete(key)
-    this.transcripts.set(key, {
-      sessionId: session.sessionId,
-      items: session.items,
-      start: session.start,
-      end: session.end,
-      queued: session.queued,
-      screen: session.screen,
-      settings: session.settings,
-      at: Date.now(),
-    })
-    // Oldest first: Map keeps insertion order, and a re-insert above moves a
-    // refreshed entry to the end.
-    while (this.transcripts.size > TRANSCRIPT_CACHE) {
-      const oldest = this.transcripts.keys().next().value
-      if (oldest === undefined) break
-      this.transcripts.delete(oldest)
-    }
-  }
-
-  private takeTranscript(hostId: string, paneId: string): StoredTranscript | undefined {
-    const key = `${hostId}\u0000${paneId}`
-    const stored = this.transcripts.get(key)
-    if (!stored) return undefined
-    if (Date.now() - stored.at > TRANSCRIPT_TTL) { this.transcripts.delete(key); return undefined }
-    return stored
+    this.publish({ selectedPaneId: paneId })
+    await this.sessions.open(hostId, paneId)
+    const uncertain = this.uncertaintyFor(hostId, paneId)
+    if (uncertain) this.patchSession(this.sessions.epoch, { uncertain })
   }
 
   /**
@@ -1432,142 +1448,29 @@ export class Controller {
     const index = siblings.findIndex((item) => item.pane_id === paneId)
     for (const neighbour of [siblings[index + 1], siblings[index - 1]]) {
       if (!neighbour) continue
-      const key = `${session.hostId}\u0000${neighbour.pane_id}`
-      if (this.transcripts.has(key)) continue
-      void runtime.transport.request<Page>(`/api/herdr/chat?pane=${encodeURIComponent(neighbour.pane_id)}&limit=${TRANSCRIPT_PAGE}`)
+      if (this.sessions.transcripts.has(session.hostId, neighbour.pane_id)) continue
+      void this.request<unknown>(session.hostId, `/api/herdr/chat?pane=${encodeURIComponent(neighbour.pane_id)}&limit=${TRANSCRIPT_PAGE}`)
+        .then(readChatPage)
         .then((page) => {
-          if (page.error || !page.page?.items?.length) return
-          this.transcripts.set(key, {
-            sessionId: page.session_id,
-            items: page.page.items,
-            start: page.page.start ?? 0,
-            end: page.page.end ?? 0,
+          if (page.error || !page.items.length) return
+          this.sessions.transcripts.put(session.hostId, neighbour.pane_id, {
+            sessionId: page.sessionId,
+            items: page.items,
+            start: page.start,
+            end: page.end,
             queued: page.queued ?? [],
             screen: '',
             settings: readSettings(page.settings),
             at: Date.now(),
-          })
-          while (this.transcripts.size > TRANSCRIPT_CACHE) {
-            const oldest = this.transcripts.keys().next().value
-            if (oldest === undefined) break
-            // Never drop the pane the user is looking at.
-            if (oldest === `${this.state.session?.hostId}\u0000${this.state.session?.paneId}`) {
-              const entry = this.transcripts.get(oldest)!
-              this.transcripts.delete(oldest)
-              this.transcripts.set(oldest, entry)
-              continue
-            }
-            this.transcripts.delete(oldest)
-          }
+          }, this.state.session ? { hostId: this.state.session.hostId, paneId: this.state.session.paneId } : undefined)
         })
         .catch(() => undefined)
     }
   }
   /** Manual retry: drop any scheduled attempt and reload now. */
-  reloadSession = async () => {
-    for (const timer of this.sessionTimers) clearTimeout(timer)
-    this.sessionTimers.clear()
-    this.sessionRefresh = undefined
-    await this.refreshSession()
-  }
-  private refreshSession(): Promise<void> {
-    if (this.sessionRefresh) return this.sessionRefresh
-    const epoch = this.sessionEpoch
-    const promise = this.loadSession(epoch).finally(() => { if (epoch === this.sessionEpoch && this.sessionRefresh === promise) this.sessionRefresh = undefined })
-    this.sessionRefresh = promise
-    return promise
-  }
-  /**
-   * Schedules the next session refresh, backing off on repeated failures.
-   *
-   * The old fixed 1.8 s meant a session screen with the desktop unreachable
-   * made a failed request every 1.8 seconds, forever. Each failure is now
-   * spaced further apart, capped at 30 s, and a successful load resets the
-   * count. `fixed` is for the deliberate "come back later" cases, such as an
-   * agent that has not reported its session id yet.
-   */
-  private later(epoch: number, fixed?: number) {
-    const delay = fixed ?? sessionDelay(this.sessionFailures)
-    if (fixed === undefined) this.sessionFailures++
-    const timer = setTimeout(() => { this.sessionTimers.delete(timer); if (epoch === this.sessionEpoch) void this.refreshSession() }, delay)
-    this.sessionTimers.add(timer)
-  }
-  private async loadSession(epoch: number) {
-    const session = this.state.session
-    // Abandoning this load must not leave the spinner running: the caller may
-    // have switched panes, or the runtime may be gone after a suspend. Clearing
-    // here keeps the next screen from inheriting a permanent "loading".
-    if (!session || epoch !== this.sessionEpoch) return
-    const runtime = this.runtimes.get(session.hostId)
-    if (!runtime) { this.patchSession(epoch, { loading: false }); return }
-    for (const socket of this.sessionSockets.splice(0)) socket.close()
-    // Only show a spinner while the first page is in flight; an empty
-    // transcript is a valid end state, not a permanent load.
-    this.patchSession(epoch, { loading: session.items.length === 0, error: undefined })
-    try {
-      const page = await runtime.transport.request<Page>(`/api/herdr/chat?pane=${encodeURIComponent(session.paneId)}&limit=${TRANSCRIPT_PAGE}`)
-      if (epoch !== this.sessionEpoch) return
-      if (page.error) {
-        // Alma reports both `no_session` and `no_agent_session`. Two different situations
-        // land here: a plain terminal (nothing to show) and an agent whose integration has
-        // not reported its native session id yet, where a transcript will appear shortly.
-        // Neither is an error, and the second one must keep retrying.
-        const code = page.error.code || ''
-        if (['unsupported_agent', 'no_session', 'no_agent_session', 'transcript_not_found'].includes(code)) {
-          const pane = this.state.hosts.find((item) => item.host.id === session.hostId)?.snapshot?.panes.find((item) => item.pane_id === session.paneId)
-          const gap = transcriptGap(code, pane, session.sentMessage)
-          this.patchSession(epoch, { unsupported: true, gap, loading: false, error: undefined })
-          // An agent can still report its id, or its transcript can appear, so
-          // keep asking; nothing changes on its own for a shell, so look rarely.
-          this.later(epoch, gap === 'terminal' || gap === 'unsupported' ? 15_000 : 4000)
-        } else throw new Error(page.error.message || t('无法读取会话'))
-      } else {
-        // A page arrived, so the next failure starts the ladder from the top.
-        this.sessionFailures = 0
-        const same = session.sessionId === page.session_id
-        const items = same ? session.items : merge([], page.page?.items ?? [])
-        const cursor = same ? session.end : page.page?.end ?? 0
-        const settings = readSettings(page.settings)
-        this.patchSession(epoch, {
-          items, sessionId: page.session_id,
-          start: same && session.start >= 0 ? session.start : page.page?.start ?? 0,
-          end: cursor, queued: page.queued ?? [], loading: false, unsupported: false, gap: undefined,
-          ...(settings ? { settings } : {}),
-        })
-        const chat = runtime.transport.subscribe(`/ws/herdr/chat?pane=${encodeURIComponent(session.paneId)}&from=${cursor}`, (event) => {
-          if (epoch !== this.sessionEpoch || !this.state.session) return
-          if (event.type === 'items' && Array.isArray(event.items)) this.patchSession(epoch, { items: merge(this.state.session.items, event.items), end: Number(event.end) || this.state.session.end })
-          if (event.type === 'queued' && Array.isArray(event.queued)) this.patchSession(epoch, { queued: event.queued })
-          // The socket pushes `settings` whenever the transcript's model or
-          // effort changes mid-session, which is exactly when the header chip
-          // would otherwise go stale.
-          if (event.type === 'settings') {
-            const next = readSettings(event.settings)
-            const session = this.state.session
-            if (session && next && (!session.settings || settingsChanged(session.settings, next))) this.patchSession(epoch, { settings: next })
-          }
-          if (event.type === 'session_changed') { ++this.sessionIdentity; this.patchSession(epoch, { items: [], queued: [], sessionId: undefined, end: 0, start: -1, loading: true, uncertain: undefined, settings: undefined }); this.later(epoch) }
-        }, () => { if (epoch === this.sessionEpoch) this.later(epoch) })
-        this.sessionSockets.push(chat)
-      }
-      this.sessionSockets.push(runtime.transport.subscribe(`/ws/herdr/screen?pane=${encodeURIComponent(session.paneId)}`, (event) => {
-        if (event.type === 'screen') this.patchSession(epoch, { screen: typeof event.read?.text === 'string' ? event.read.text : this.state.session?.screen ?? '' })
-      }, () => { if (epoch === this.sessionEpoch) this.later(epoch) }))
-      await this.readScreen()
-    } catch (error) { this.patchSession(epoch, { loading: false, error: message(error) }); if (epoch === this.sessionEpoch) this.later(epoch) }
-  }
-  loadOlder = async () => {
-    const session = this.state.session, epoch = this.sessionEpoch, identity = this.sessionIdentity
-    if (!session || session.loadingOlder || session.start <= 0) return
-    this.patchSession(epoch, { loadingOlder: true })
-    try {
-      const page = await this.runtimes.get(session.hostId)!.transport.request<Page>(`/api/herdr/chat?pane=${encodeURIComponent(session.paneId)}&before=${session.start}&limit=${TRANSCRIPT_PAGE}`)
-      if (page.error) throw new Error(page.error.message || t('历史读取失败'))
-      // A late page from the previous session must not splice into the current transcript.
-      if (epoch !== this.sessionEpoch || identity !== this.sessionIdentity || page.session_id !== this.state.session?.sessionId) return
-      this.patchSession(epoch, { items: merge(this.state.session!.items, page.page?.items ?? [], true), start: page.page?.start ?? 0 })
-    } catch (error) { if (identity === this.sessionIdentity) this.patchSession(epoch, { error: message(error) }) } finally { this.patchSession(epoch, { loadingOlder: false }) }
-  }
+  reloadSession = () => this.sessions.reload()
+  loadOlder = () => this.sessions.loadOlder()
+
   /**
    * Answers a numbered agent prompt.
    *
@@ -1577,7 +1480,7 @@ export class Controller {
    * On drift it aborts and refreshes instead of guessing.
    */
   answerPrompt = async (expected: Prompt, optionNumber: number) => {
-    const session = this.state.session, epoch = this.sessionEpoch
+    const session = this.state.session, epoch = this.sessions.epoch
     if (!session) throw new Error(t('没有打开的会话'))
     if (session.sending) return
     if (session.uncertain) throw new Error(session.uncertain)
@@ -1585,7 +1488,8 @@ export class Controller {
     if (!option) throw new Error(t('选项不存在'))
 
     const fresh = await this.rpc<{ read?: { text?: string } }>(session.hostId, 'pane.read', { pane_id: session.paneId, source: 'visible', format: 'text' })
-    if (epoch !== this.sessionEpoch) return
+    this.assertTarget(this.state.session, session.hostId, session.paneId, epoch)
+    if (this.state.session!.uncertain) throw new Error(this.state.session!.uncertain)
     const screen = fresh.read?.text ?? ''
     const current = parsePrompt(screen)
     this.patchSession(epoch, { screen })
@@ -1598,23 +1502,12 @@ export class Controller {
 
     this.patchSession(epoch, { sending: true, error: undefined })
     try {
-      const keys: string[] = []
       const multiSelect = needsSpace(current.options[target])
-      if (current.cursor >= 0 && current.cursor !== target) {
-        const moves = moveKeys(current.cursor, target)
-        if (!moves) throw new Error(t('无法确定光标位置'))
-        keys.push(...moves)
-      }
-      // In a multi-select menu Enter *submits* the whole form, so it must never
-      // be sent for a plain row: only Space toggles. Single-choice menus commit
-      // by moving the cursor and pressing Enter, which is why the two cases are
-      // kept apart instead of sharing one fallback.
-      if (multiSelect) keys.push(' ')
-      else if (current.cursor >= 0 && current.cursor !== target) keys.push('enter')
-      else keys.push(String(optionNumber))
-      await this.rpc(session.hostId, 'pane.send_keys', { pane_id: session.paneId, keys: keys.map((key) => key === ' ' ? 'space' : key) })
-      if (epoch === this.sessionEpoch) await this.readScreen()
+      const keys = answerKeys(optionNumber, current.cursor, target, multiSelect, moveKeys, t('无法确定光标位置'))
+      await this.rpc(session.hostId, 'pane.send_keys', { pane_id: session.paneId, keys: protocolKeys(keys) })
+      if (epoch === this.sessions.epoch) await this.readScreen()
     } catch (error) {
+      this.rememberUncertain(session.hostId, session.paneId, error)
       this.patchSession(epoch, { error: message(error), ...(error instanceof OperationUncertainError ? { uncertain: message(error) } : {}) })
       throw error
     } finally { this.patchSession(epoch, { sending: false }) }
@@ -1685,24 +1578,14 @@ export class Controller {
     } else {
       throw new Error(t('不支持的图片地址'))
     }
-    const key = `${hostId}\u0000${path}`
-    const cached = this.mediaCache.get(key)
-    if (cached) return cached
-    const pending = this.media.get(key)
-    if (pending) return pending
-    const request = runtime.transport.request<{ bytes: Uint8Array; contentType: string }>(path, undefined, { kind: 'read', responseType: 'bytes' })
+    return this.media.load(hostId, path, () => this.request<{ bytes: Uint8Array; contentType: string }>(hostId, path, undefined, { kind: 'read', responseType: 'bytes' })
       .then(({ bytes, contentType }) => {
-        if (!contentType.startsWith('image/')) throw new Error(t('远端文件不是图片'))
-        if (bytes.byteLength > MAX_ATTACHMENT_BYTES) throw new Error(t('图片超过 50 MB'))
+        if (!readMediaResponse({ bytes, contentType })) throw new Error(t('远端文件不是图片'))
+        if (bytes.byteLength > MAX_ATTACHMENT_BYTES) throw new Error(tWith('图片超过 {size} MB', { size: MAX_ATTACHMENT_MB }))
         let binary = ''
         for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
-        const data = `data:${contentType};base64,${btoa(binary)}`
-        this.mediaCache.set(key, data)
-        return data
-      })
-      .finally(() => this.media.delete(key))
-    this.media.set(key, request)
-    return request
+        return `data:${contentType};base64,${btoa(binary)}`
+      }))
   }
 
   /**
@@ -1720,33 +1603,73 @@ export class Controller {
   }
 
   private async rpc<T>(hostId: string, method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
-    const runtime = this.runtimes.get(hostId)
-    if (!runtime) throw new Error(t('节点不存在'))
-    const response = await runtime.transport.request<{ result?: T; error?: { code?: string; message?: string } }>(
-      '/api/herdr/rpc', { method, params }, timeoutMs === undefined ? undefined : { timeoutMs },
+    const response = await this.request<{ result?: T; error?: { code?: string; message?: string } }>(
+      hostId,
+      '/api/herdr/rpc',
+      { method, params },
+      timeoutMs === undefined ? undefined : { timeoutMs },
     )
     if (response.error) throw new Error(response.error.message || response.error.code || t('Herdr 操作失败'))
     return response.result as T
   }
+
+  /** The one place ordinary controller code reaches a desktop. */
+  private request<T>(hostId: string, path: string, body?: unknown, init?: RequestInit2): Promise<T> {
+    const runtime = this.runtimes.get(hostId)
+    if (!runtime) return Promise.reject(new Error(t('节点不存在')))
+    return runtime.transport.request<T>(path, body, init)
+  }
   readScreen = async () => {
-    const session = this.state.session, epoch = this.sessionEpoch
+    const session = this.state.session, epoch = this.sessions.epoch
     if (!session) return
-    try { const result = await this.rpc<{ read?: { text?: string } }>(session.hostId, 'pane.read', { pane_id: session.paneId, source: 'visible', format: 'text' }); this.patchSession(epoch, { screen: result.read?.text ?? '' }) }
+    try {
+      const result = await this.rpc<{ read?: { text?: string } }>(session.hostId, 'pane.read', { pane_id: session.paneId, source: 'visible', format: 'text' })
+      this.patchSession(epoch, { screen: result.read?.text ?? '' })
+      if (this.state.session?.hostId === session.hostId) void this.readDetail().catch(() => undefined)
+    }
     catch (error) { this.patchSession(epoch, { error: message(error) }) }
   }
+  /** A second narrow read leaves a rightmost model visible on a phone. */
+  private readDetail(): Promise<void> {
+    const state = this.state.session
+    if (!state) return Promise.resolve()
+    const runtime = this.runtimes.get(state.hostId)
+    if (!runtime) return Promise.resolve()
+    const known = parseSessionInfo(state.screen)
+    if (known.model && known.contextRatio !== undefined) return Promise.resolve()
+    const epoch = this.sessions.epoch
+    void this.request<{ result?: { read?: { text?: string } } }>(
+      state.hostId, '/api/herdr/rpc',
+      { method: 'pane.read', params: { pane_id: state.paneId, source: 'visible', format: 'text' } },
+      { kind: 'read', timeoutMs: VERIFY_TIMEOUT_MS },
+    ).then((result) => {
+      if (epoch === this.sessions.epoch) this.patchSession(epoch, { details: result.result?.read?.text ?? '' })
+    }).catch(() => undefined)
+    return Promise.resolve()
+  }
   /** True when the call was actually made; false when one was already in flight. */
-  private async mutate(method: string, params: (session: SessionState) => Record<string, unknown>): Promise<boolean> {
-    const session = this.state.session, epoch = this.sessionEpoch
+  private async mutate(
+    method: string,
+    params: (session: SessionState) => Record<string, unknown>,
+    target?: { hostId: string; paneId: string; epoch: number },
+  ): Promise<boolean> {
+    const session = this.state.session
+    const epoch = target?.epoch ?? this.sessions.epoch
     if (!session) throw new Error(t('没有打开的会话'))
+    if (target) this.assertTarget(session, target.hostId, target.paneId, target.epoch)
     if (session.sending) return false
     if (session.uncertain) throw new Error(session.uncertain)
     this.patchSession(epoch, { sending: true, error: undefined })
     try {
       await this.rpc(session.hostId, method, params(session))
-      if (epoch === this.sessionEpoch) await this.readScreen()
+      if (epoch === this.sessions.epoch) await this.readScreen()
       return true
     }
-    catch (error) { this.patchSession(epoch, { error: message(error), ...(error instanceof OperationUncertainError ? { uncertain: message(error) } : {}) }); throw error }
+    catch (error) {
+      this.rememberUncertain(session.hostId, session.paneId, error)
+      this.patchSession(epoch, { error: message(error), ...(error instanceof OperationUncertainError ? { uncertain: message(error) } : {}) })
+      throw error
+    }
     finally { this.patchSession(epoch, { sending: false }) }
   }
   /**
@@ -1754,11 +1677,12 @@ export class Controller {
    * missing session id from "the agent is still starting" into "nothing is
    * going to report one", so the pane can say which of the two it is.
    */
-  private markSent(epoch: number) { if (epoch === this.sessionEpoch) this.patchSession(epoch, { sentMessage: true }) }
-  sendMessage = async (text: string) => {
+  private markSent(epoch: number) { if (epoch === this.sessions.epoch) this.patchSession(epoch, { sentMessage: true }) }
+  /** Sends to the pane the user acted on, even if an upload finishes after a switch. */
+  sendMessage = async (text: string, target?: { hostId: string; paneId: string; epoch: number }) => {
     if (!text.trim()) return
-    const epoch = this.sessionEpoch
-    if (await this.mutate('agent.prompt', (s) => ({ target: s.paneId, text }))) this.markSent(epoch)
+    const epoch = target?.epoch ?? this.sessions.epoch
+    if (await this.mutate('agent.prompt', (s) => ({ target: s.paneId, text }), target)) this.markSent(epoch)
   }
   /**
    * Runs one of the agent's own slash commands.
@@ -1770,14 +1694,14 @@ export class Controller {
   runCommand = async (command: string) => {
     const text = command.trim()
     if (!text.startsWith('/')) throw new Error(t('只支持斜杠命令'))
-    const session = this.state.session, epoch = this.sessionEpoch
+    const session = this.state.session, epoch = this.sessions.epoch
     if (!session) throw new Error(t('没有打开的会话'))
     if (session.sending) return
     if (session.uncertain) throw new Error(session.uncertain)
     this.patchSession(epoch, { sending: true, error: undefined })
     try {
       await this.rpc(session.hostId, 'pane.send_text', { pane_id: session.paneId, text })
-      if (epoch === this.sessionEpoch) await this.readScreen()
+      if (epoch === this.sessions.epoch) await this.readScreen()
     } catch (error) {
       this.patchSession(epoch, { error: message(error), ...(error instanceof OperationUncertainError ? { uncertain: message(error) } : {}) })
       throw error
@@ -1832,39 +1756,28 @@ export class Controller {
     if (optionNumber === null) throw new Error(t('这个选择在终端里已经不明确了，请打开会话确认'))
     const target = menu.options.findIndex((item) => item.number === optionNumber)
     if (target < 0) throw new Error(t('选项已不存在，请刷新后重试。'))
-    const keys: string[] = []
     const multiSelect = needsSpace(menu.options[target])
-    if (menu.cursor >= 0 && menu.cursor !== target) {
-      const moves = moveKeys(menu.cursor, target)
-      if (!moves) throw new Error(t('无法确定光标位置'))
-      keys.push(...moves)
-    }
-    // Same rule as `answerPrompt`: in a multi-select menu Enter submits the
-    // whole form, so a row is only ever toggled with Space. A notification tap
-    // must not be able to commit a form the user has not finished filling in.
-    if (multiSelect) keys.push(' ')
-    else if (menu.cursor >= 0 && menu.cursor !== target) keys.push('enter')
-    else keys.push(String(optionNumber))
-    await this.rpc(hostId, 'pane.send_keys', { pane_id: paneId, keys: keys.map((key) => key === ' ' ? 'space' : key) })
+    const keys = answerKeys(optionNumber, menu.cursor, target, multiSelect, moveKeys, t('无法确定光标位置'))
+    await this.rpc(hostId, 'pane.send_keys', { pane_id: paneId, keys: protocolKeys(keys) })
   }
 
-  sendKeys = async (keys: string[]) => {
-    const names: Record<string, string> = { Up: 'up', Down: 'down', Left: 'left', Right: 'right', Enter: 'enter', Escape: 'esc', 'C-c': 'ctrl+c' }
-    if (!keys.length || keys.length > 20 || keys.some((key) => !names[key])) throw new Error(t('不支持的终端按键'))
-    await this.mutate('pane.send_keys', (s) => ({ pane_id: s.paneId, keys: keys.map((key) => names[key]) }))
+  sendKeys = async (keys: string[], target?: { hostId: string; paneId: string; epoch: number }) => {
+    if (!validTerminalKeys(keys)) throw new Error(t('不支持的终端按键'))
+    await this.mutate('pane.send_keys', (s) => ({ pane_id: s.paneId, keys: terminalKeys(keys) }), target)
   }
-  sendTerminalText = async (text: string) => {
-    const session = this.state.session, epoch = this.sessionEpoch
+  sendTerminalText = async (text: string, target?: { hostId: string; paneId: string; epoch: number }) => {
+    const session = this.state.session, epoch = this.sessions.epoch
     if (!session) throw new Error(t('没有打开的会话'))
+    if (target) this.assertTarget(session, target.hostId, target.paneId, target.epoch)
     if (session.sending || !text) return
     if (session.uncertain) throw new Error(session.uncertain)
     this.patchSession(epoch, { sending: true, error: undefined })
     let textSent = false
     try {
-      await this.rpc(session.hostId, 'pane.send_text', { pane_id: session.paneId, text: `\u001b[200~${text}\u001b[201~` })
+      await this.rpc(session.hostId, 'pane.send_text', { pane_id: session.paneId, text: bracketedTerminalText(text) })
       textSent = true
       await this.rpc(session.hostId, 'pane.send_keys', { pane_id: session.paneId, keys: ['enter'] })
-      if (epoch === this.sessionEpoch) await this.readScreen()
+      if (epoch === this.sessions.epoch) await this.readScreen()
       this.markSent(epoch)
     } catch (error) {
       const uncertain = error instanceof OperationUncertainError || textSent
@@ -1872,6 +1785,14 @@ export class Controller {
       throw error
     } finally { this.patchSession(epoch, { sending: false }) }
   }
-  dispose() { this.stopSession(); const runtimes = [...this.runtimes.values()]; this.runtimes.clear(); for (const runtime of runtimes) this.closeRuntime(runtime) }
+  dispose() {
+    this.stopSession()
+    this.abortScans()
+    this.media.clearAll()
+    this.sessions.transcripts.clear()
+    const runtimes = [...this.runtimes.values()]
+    this.runtimes.clear()
+    for (const runtime of runtimes) this.closeRuntime(runtime)
+  }
 }
 export const controller = new Controller()

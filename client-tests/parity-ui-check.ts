@@ -115,6 +115,7 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
           calls.push({ method: 'restart-agent', params: body })
           return json(frame.id, { result: { session_id: 's2' } })
         }
+        if (!frame.b) return json(frame.id, { result: {} })
         const rpc = JSON.parse(new TextDecoder().decode(fromBase64url(frame.b)))
         calls.push({ method: rpc.method, params: rpc.params })
         return json(frame.id, { result: rpc.method === 'pane.read' ? { read: { text: 'terminal' } } : { ok: true } })
@@ -152,13 +153,16 @@ try {
   // has to turn into the file route itself.
   await expect(page.locator('.transcript-image img').first()).toBeVisible()
   expect(imageServed).toBe(true)
-  // A tool result lives inside its (collapsed) call, under the official
-  // client's `result_images` field: it is there, not silently dropped. The run
-  // and the step are both folded, so both layers are opened.
-  await page.locator('.work-group summary').first().click()
-  await page.locator('.work-step summary').first().click()
-  await expect(page.locator('.work-step .transcript-image img')).toHaveCount(1)
+  // A tool result is a result, not process: it stays below the folded work
+  // group so a user can see the screenshot without opening the call.
+  await expect(page.locator('.work-group + .transcript-images.is-run .transcript-image img')).toHaveCount(1)
 
+  // Maintenance actions are deliberately behind one more menu; the toolbar
+  // itself is reserved for choosing a view.
+  await expect(page.locator('.view-toolbar')).toContainText('消息')
+  const maintenanceSummary = page.locator('.view-maintenance > summary')
+  await expect(maintenanceSummary).toBeVisible()
+  if (!(await maintenanceSummary.evaluate((node) => (node.parentElement as HTMLDetailsElement | null)?.open))) await maintenanceSummary.click()
   // ── mute round-trips through the desktop ───────────────────────────────
   await page.getByRole('button', { name: '静音这个会话' }).click()
   await expect.poll(() => calls.find((call) => call.method === 'mutes')?.params).toEqual({ tab: 't1', muted: true })
@@ -176,10 +180,13 @@ try {
   await page.getByRole('dialog', { name: '子 agent 记录' }).getByRole('button', { name: '关闭' }).click()
 
   // ── restarting the agent reloads the session it lives in ───────────────
+  if (!(await maintenanceSummary.evaluate((node) => (node.parentElement as HTMLDetailsElement | null)?.open))) await maintenanceSummary.click()
   await page.getByRole('button', { name: '重启这个 agent' }).click()
   await expect.poll(() => calls.some((call) => call.method === 'restart-agent' && call.params.pane_id === 'w1:p1')).toBe(true)
   await expect(page.getByText('第一条回复')).toBeVisible()
   await page.screenshot({ path: `${screenshots}/parity-session.png` })
+
+  // A setting change restarts the service; open the maintenance menu again.
 
   // ── the keep-alive default is the self-limiting one ────────────────────
   await page.getByRole('button', { name: '返回会话' }).click()

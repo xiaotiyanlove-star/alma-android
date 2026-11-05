@@ -5,6 +5,7 @@ import { localeStore as store } from './locale.ts'
 
 const { loadDraft, saveDraft, clearDraft } = await import('../client/drafts.ts')
 const { parseSessionInfo } = await import('../client/session-info.ts')
+const { detailInfo, mergedHeaderInfo } = await import('../client/session-info.ts')
 const { t } = await import('../client/i18n.ts')
 const { setLocaleChoice } = await import('../client/prefs.ts')
 
@@ -41,6 +42,28 @@ test('model and context are read from the status line', () => {
   assert.equal(info.contextLabel, '74%')
 })
 
+test('pi footer model on the right is recognised', () => {
+  const info = parseSessionInfo([
+    '~/Personal/alma-android (review/important-fixes)',
+    '↑12k ↓3.4k 41.2%/200k (auto)                 agent2api/hy3 • high',
+  ].join('\n'))
+  assert.equal(info.model, 'agent2api/hy3')
+  assert.equal(info.thinking, 'high')
+  assert.equal(info.contextLabel, '41.2%')
+  assert.ok(Math.abs((info.contextRatio ?? 0) - 0.412) < 0.001)
+})
+
+test('codex model without a label and an explicit provider are recognised', () => {
+  assert.equal(parseSessionInfo('> input           gpt-5.2-codex / high').model, 'gpt-5.2-codex')
+  assert.equal(parseSessionInfo('> input           gpt-5.2-codex / high').thinking, 'high')
+  assert.equal(parseSessionInfo('(openai) gpt-5.2-codex').model, 'gpt-5.2-codex')
+})
+
+test('pi does not mistake a whole path for a model', () => {
+  const info = parseSessionInfo('/Users/me/projects/demo • session-name')
+  assert.equal(info.model, undefined)
+})
+
 test('token-style context is understood', () => {
   const info = parseSessionInfo('上下文 45% · 120k/200k tokens')
   assert.equal(info.contextRatio !== undefined, true)
@@ -53,6 +76,22 @@ test('no status line yields no values instead of guesses', () => {
   const emptyModel = parseSessionInfo('model:  context: 400%')
   assert.equal(emptyModel.model, undefined, 'an empty model must not borrow the next label')
   assert.equal(emptyModel.contextRatio, undefined, 'an impossible percentage is rejected')
+})
+
+test('a detail read can recover a right-aligned provider model', () => {
+  const info = detailInfo('↑12k ↓3.4k 41.2%/200k        agent2api/hy3 • high')
+  assert.equal(info.model, 'agent2api/hy3')
+  assert.equal(info.effort, undefined)
+  assert.equal(info.contextLabel, '41.2%')
+})
+
+test('a long terminal cannot push the narrow detail model out of reach', () => {
+  const detail = '↑12k ↓3.4k 41.2%/200k        agent2api/hy3 • high'
+  const screen = Array.from({ length: 20 }, (_, index) => `line ${index}`).join('\n')
+  const info = mergedHeaderInfo(detail, screen)
+  assert.equal(info.model, 'agent2api/hy3')
+  assert.equal(info.effort, 'high')
+  assert.equal(info.contextLabel, '41.2%')
 })
 
 test('language switch changes translated UI copy', () => {
@@ -69,9 +108,14 @@ test('an untranslated string falls back to the source, never a key', () => {
 })
 
 test('every Chinese UI string used in the app has an English entry', async () => {
-  const { readFileSync } = await import('node:fs')
-  const source = readFileSync('client/App.tsx', 'utf8') + readFileSync('client/controller.ts', 'utf8') + readFileSync('client/transport.ts', 'utf8')
-  const used = new Set([...source.matchAll(/t\('([^']*[一-鿿][^']*)'\)/g)].map((m) => m[1]))
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const source = readdirSync('client', { recursive: true })
+    .filter((name): name is string => typeof name === 'string' && /\.(?:ts|tsx)$/.test(name) && name !== 'i18n.ts')
+    .map((name) => readFileSync(`client/${name}`, 'utf8'))
+    .join('\n')
+  const used = new Set([
+    ...[...source.matchAll(/(?:t|tWith)\('([^']*[一-鿿][^']*)'/g)].map((m) => m[1]),
+  ])
   const dict = readFileSync('client/i18n.ts', 'utf8')
   const missing = [...used].filter((key) => !dict.includes(`'${key}':`))
   assert.deepEqual(missing, [], 'add these to the English dictionary')

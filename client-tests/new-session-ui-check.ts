@@ -46,7 +46,8 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
         // answer from a desktop that does not serve it.
         if (frame.path === '/__alma_lan__') { await reply(frame.id, null); return }
         // A bodyless GET is not an RPC; decoding it unconditionally throws.
-        const rpc = JSON.parse(new TextDecoder().decode(fromBase64url(frame.b)))
+        if (!frame.b) { await reply(frame.id, { result: {} }); return }
+        const rpc = JSON.parse(new TextDecoder().decode(typeof frame.b === 'string' ? fromBase64url(frame.b) : frame.b))
         calls.push({ method: rpc.method, params: rpc.params, headers: frame.headers })
         if (rpc.method === 'layout.apply') {
           // Exactly what Alma's phone bridge answers: a method outside its
@@ -88,7 +89,10 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
         if (frame.path === '/ws/herdr') await send({ t: 'wmsg', id: frame.id, s: JSON.stringify({ type: 'snapshot', snapshot: {
           workspaces: [{ workspace_id: 'w1', label: 'tmp' }],
           tabs: [{ tab_id: 'w1:t1', workspace_id: 'w1', label: 'old' }],
-          panes: [{ pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'claude', agent_status: 'idle', terminal_title_stripped: 'Claude Code', cwd: '/private/tmp' }],
+          panes: [
+            { pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'claude', agent_status: 'idle', terminal_title_stripped: 'Claude Code', cwd: '/private/tmp' },
+            { pane_id: 'w1:p2', workspace_id: 'w1', tab_id: 'w1:t2', agent: 'claude', agent_status: 'idle', terminal_title_stripped: 'Current project', cwd: '/private/current-project' },
+          ],
         } }) })
         if (frame.path.startsWith('/ws/herdr/screen')) await send({ t: 'wmsg', id: frame.id, s: JSON.stringify({ type: 'screen', read: { text: '' } }) })
       }
@@ -103,7 +107,20 @@ try {
 
   await page.getByRole('button', { name: '新建会话' }).first().click()
   await page.getByLabel('会话名称', { exact: true }).waitFor()
-  const defaultCwd = await page.getByLabel('目录', { exact: true }).inputValue()
+  const directoryPicker = page.getByLabel('选择已有目录', { exact: true })
+  const defaultCwd = await directoryPicker.inputValue()
+  const directoryOptions = await directoryPicker.locator('option').allTextContents()
+  const pickerBox = await directoryPicker.boundingBox()
+  const pickerPadding = await directoryPicker.evaluate((element) => {
+    const style = getComputedStyle(element)
+    return { right: parseFloat(style.paddingRight), backgroundImage: style.backgroundImage }
+  })
+  await page.getByRole('button', { name: '手动输入', exact: true }).click()
+  const manualCwd = page.getByLabel('工作目录', { exact: true })
+  const manualPath = await manualCwd.inputValue()
+  const modeSwitch = page.getByRole('button', { name: '选择已有目录', exact: true })
+  const modeSwitchHeight = await modeSwitch.evaluate((element) => element.getBoundingClientRect().height)
+  await modeSwitch.click()
   await page.getByLabel('会话名称', { exact: true }).fill('发布流程')
   await page.getByRole('button', { name: '创建' }).click()
 
@@ -119,6 +136,11 @@ try {
   const start = calls.find((call) => call.method === 'agent.start')
   console.log(JSON.stringify({
     defaultCwd,
+    directoryOptions,
+    pickerBox,
+    pickerPadding,
+    manualPath,
+    modeSwitchHeight,
     triedLayoutApply: Boolean(apply),
     usedTabCreate: Boolean(create),
     createCwd: create?.params?.cwd,
@@ -130,6 +152,7 @@ try {
     failure,
     pageErrors: errors,
   }))
+  if (modeSwitchHeight < 44 || !inSession) process.exitCode = 1
 } finally {
   await browser.close()
 }

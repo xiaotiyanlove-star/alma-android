@@ -33,8 +33,16 @@ const about = await page.locator('.about-list').first().innerText()
 const thanks = await page.locator('.about-thanks').innerText()
 await page.screenshot({ path: 'test-artifacts/settings-grouped.png', fullPage: true })
 
+const selectRows = await page.locator('.select-row').count()
+const selectGeometry = await page.locator('.select-row select').evaluateAll((selects) => selects.map((select) => {
+  const box = select.getBoundingClientRect()
+  const style = getComputedStyle(select)
+  return { width: box.width, height: box.height, paddingRight: parseFloat(style.paddingRight), paddingLeft: parseFloat(style.paddingLeft), visual: style.appearance }
+}))
 console.log(JSON.stringify({
   groups,
+  selectRows,
+  selectGeometry,
   about: about.split('\n').join(' | '),
   mentionsYetone: thanks.includes('yetone'),
   mentionsAuthor: about.includes('xiaotiyan'),

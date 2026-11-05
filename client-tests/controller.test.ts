@@ -232,6 +232,33 @@ test('renaming a session writes the label to its Herdr tab', async () => {
   } finally { controller.dispose() }
 })
 
+test('deleting a session closes its tab and the matching open pane', async () => {
+  const { controller, transports } = setup()
+  try {
+    await controller.initialize(); await wait()
+    const transport = transports.get('A')!
+    controller.selectHost('A')
+    transport.subscriptions.find((sub) => sub.path === '/ws/herdr')?.receive({
+      type: 'snapshot',
+      snapshot: {
+        workspaces: [{ workspace_id: 'w1' }],
+        tabs: [{ tab_id: 'w1:t7', workspace_id: 'w1', label: 'deploy' }],
+        panes: [
+          { pane_id: 'w1:p7', workspace_id: 'w1', tab_id: 'w1:t7', cwd: '/tmp' },
+          { pane_id: 'w1:p8', workspace_id: 'w1', tab_id: 'w1:t8', cwd: '/tmp' },
+        ],
+      },
+    })
+    ;(controller as any).patchHost('A', { status: 'online', herdrOnline: true })
+    await controller.selectPane('w1:p7')
+    await controller.closeSession('A', 'w1:p7')
+    const close = transport.calls.find((call) => (call.body as any)?.method === 'tab.close')!.body as any
+    assert.deepEqual(close.params, { tab_id: 'w1:t7' })
+    assert.equal(controller.getState().session, undefined, 'an open deleted pane cannot remain a mutation target')
+    assert.deepEqual(controller.getState().hosts[0].snapshot?.panes.map((pane) => pane.pane_id), ['w1:p8'])
+  } finally { controller.dispose() }
+})
+
 test('a desktop without the layout API still creates a session', async () => {
   const { controller, transports } = setup()
   try {

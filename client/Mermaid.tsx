@@ -18,29 +18,27 @@ import { CopyButton } from './CodeBlock'
  */
 
 let loading: Promise<typeof import('mermaid').default> | null = null
+let configuredTheme = ''
 
 /** Loads and configures Mermaid once per process. */
-function loadMermaid(): Promise<typeof import('mermaid').default> {
-  loading ??= import('mermaid').then((module) => {
-    const mermaid = module.default
-    mermaid.initialize({
-      startOnLoad: false,
-      // Agent output is untrusted; strict refuses script and click handlers.
-      securityLevel: 'strict',
-      theme: document.documentElement.dataset.theme === 'light' ? 'default' : 'dark',
-      fontFamily: 'inherit',
-      // The phone is narrow: let Mermaid use it rather than a fixed 800px.
-      flowchart: { useMaxWidth: true, htmlLabels: false },
-      // Mermaid injects its own red error bubble into the body; this component
-      // already renders a failed diagram as a readable figure, so the bubble
-      // would be a second, unclosable copy of the same news.
-      suppressErrorRendering: true,
-      sequence: { useMaxWidth: true },
-      gantt: { useMaxWidth: true },
-    })
+function loadMermaid(theme: string): Promise<typeof import('mermaid').default> {
+  loading ??= import('mermaid').then((module) => module.default)
+  return loading.then((mermaid) => {
+    if (configuredTheme !== theme) {
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: theme === 'light' ? 'default' : 'dark',
+        fontFamily: 'inherit',
+        flowchart: { useMaxWidth: true, htmlLabels: false },
+        suppressErrorRendering: true,
+        sequence: { useMaxWidth: true },
+        gantt: { useMaxWidth: true },
+      })
+      configuredTheme = theme
+    }
     return mermaid
   })
-  return loading
 }
 
 export function isMermaid(language: string | undefined, source: string): boolean {
@@ -52,12 +50,21 @@ export function isMermaid(language: string | undefined, source: string): boolean
 /** A diagram, or the source with a reason why it could not be drawn. */
 export function Mermaid({ source, label }: { source: string; label?: string }) {
   const [svg, setSvg] = useState('')
+  const [dimensions, setDimensions] = useState<{ width: number; height: number }>()
   const [error, setError] = useState('')
   const [drawing, setDrawing] = useState(true)
+  const [theme, setTheme] = useState(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark')
   const host = useRef<HTMLDivElement>(null)
   // Mermaid ids must be unique per render and valid as an id; a counter is the
   // only way to guarantee that across re-renders.
   const id = useRef(`mermaid-${Math.random().toString(36).slice(2, 9)}`)
+  useEffect(() => {
+    const root = document.documentElement
+    const update = () => setTheme(root.dataset.theme === 'light' ? 'light' : 'dark')
+    const observer = new MutationObserver(update)
+    observer.observe(root, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     let alive = true
@@ -65,11 +72,17 @@ export function Mermaid({ source, label }: { source: string; label?: string }) {
     setError('')
     void (async () => {
       try {
-        const mermaid = await loadMermaid()
+        const mermaid = await loadMermaid(theme)
         // `parse` must run first: `render` throws on bad input, and a thrown
         // error leaves Mermaid's DOM bookkeeping dirty for the next diagram.
         const result = await mermaid.render(id.current, source)
         if (!alive) return
+        const probe = document.createElement('div')
+        probe.innerHTML = result.svg
+        const viewBox = probe.querySelector('svg')?.getAttribute('viewBox')?.split(/[\s,]+/).map(Number)
+        if (viewBox && viewBox[2] > 0 && viewBox[3] > 0) {
+          setDimensions({ width: viewBox[2], height: viewBox[3] })
+        }
         setSvg(result.svg)
         setError('')
       } catch (failure) {
@@ -80,7 +93,7 @@ export function Mermaid({ source, label }: { source: string; label?: string }) {
       }
     })()
     return () => { alive = false }
-  }, [source])
+  }, [source, theme])
 
   if (error) {
     // A broken diagram still has to be readable: show the source, and say why
@@ -92,17 +105,13 @@ export function Mermaid({ source, label }: { source: string; label?: string }) {
     </figure>
   }
 
-  if (drawing || !svg) {
-    return <figure className="mermaid-figure is-drawing" role="status" aria-label={t('正在绘制图表')}>
-      <div className="mermaid-placeholder" ref={host} />
-    </figure>
-  }
-
-  return <figure className="mermaid-figure">
+  const aspect = dimensions ? dimensions.width / dimensions.height : undefined
+  return <figure className="mermaid-figure" style={aspect ? { aspectRatio: aspect } : undefined}>
+    {(drawing || !svg) && <div className="mermaid-placeholder" ref={host} role="status" aria-label={t('正在绘制图表')} />}
     <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />
-    <div className="mermaid-bar">
+    {!drawing && svg && <div className="mermaid-bar">
       {label && <span className="mermaid-label">{label}</span>}
       <CopyButton text={source} />
-    </div>
+    </div>}
   </figure>
 }

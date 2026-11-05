@@ -112,12 +112,21 @@ try {
     return svg.getBoundingClientRect().width <= column.getBoundingClientRect().width + 1
   })()`)
   result.diagramFitsColumn = fits
+  // A diagram loading into an empty 90px placeholder used to move the reader.
+  // Its reserved ratio must already account for the final diagram.
+  result.noJumpAfterRender = await page.evaluate(`(() => {
+    const figure = document.querySelector('.mermaid-figure')
+    const diagram = figure?.querySelector('.mermaid-diagram svg')
+    if (!figure || !diagram) return false
+    return figure.querySelector('.mermaid-placeholder') === null
+      && Math.abs(figure.getBoundingClientRect().height - diagram.getBoundingClientRect().height) < 60
+  })()`)
 
   const failures: string[] = []
   if (result.drawnCount !== 2) failures.push(`drawnCount: ${result.drawnCount}`)
   if (result.codeCards !== 0) failures.push(`codeCards: ${result.codeCards}`)
   if (result.failedCount !== 1) failures.push(`failedCount: ${result.failedCount}`)
-  for (const key of ['untaggedDrawn', 'failedShowsSource', 'diagramFitsColumn']) {
+  for (const key of ['untaggedDrawn', 'failedShowsSource', 'diagramFitsColumn', 'noJumpAfterRender']) {
     if (result[key] !== true) failures.push(`${key}: ${result[key]}`)
   }
   failures.push(...errors.map((error) => `pageError: ${error}`))

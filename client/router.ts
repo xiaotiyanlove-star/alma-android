@@ -35,6 +35,8 @@ type Overlay =
   | { kind: 'newSession' }
   /** The rename-session form. */
   | { kind: 'renamePane' }
+  /** Confirmation for closing a session's tab. */
+  | { kind: 'deletePane' }
 
 let route: Route = { name: 'sessions' }
 /** Screens the user came from, so Back retraces their path. */

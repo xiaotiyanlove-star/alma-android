@@ -53,6 +53,7 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
         else if (f.path === '/__alma_lan__') await reply(f.id, null)
         else {
           // A bodyless GET is not an RPC; decoding it unconditionally throws.
+          if (!f.b) { await reply(f.id, { result: {} }); return }
           const rpc = JSON.parse(new TextDecoder().decode(fromBase64url(f.b)))
           if (rpc.method === 'pane.send_text') sentText.push(rpc.params.text)
           await reply(f.id, { result: rpc.method === 'pane.read' ? { read: { text: '' } } : {} })

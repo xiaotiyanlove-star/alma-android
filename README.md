@@ -203,7 +203,13 @@ client/                The app
   transport.ts         E2E tunnel: P-256 + HKDF + AES-GCM, HTTP/WS multiplexing
   frames.ts            Inner frame codec (JSON/base64 and optional binary form)
   crypto.ts            Crypto primitives (adapted from lazyeo/alma-android, MIT)
-  controller.ts        Per-desktop state, subscriptions, sending, approvals
+  controller.ts        Per-desktop routing, mutations and host lifecycle
+  session-loader.ts    Session identity, subscriptions, history and warmup
+  session-rules.ts     Settings narrowing and transcript-gap classification
+  transcript-cache.ts  Bounded transcript paint cache
+  media-cache.ts       Host-scoped, bounded remote image cache
+  protocol.ts          Strict parsers for long-lived desktop responses
+  operations.ts        Terminal key and menu-answer encodings
   prompt.ts            Terminal menu parsing and drift detection
   router.ts            Navigation stack shared by the UI and the Back button
   lifecycle.ts         Foreground/background connection policy
@@ -251,16 +257,17 @@ scan a generated QR code and toggle Markdown. They use synthetic pairing codes o
 never contact a real desktop. The `client-tests/live-*.ts` probes are the exception: they talk
 to a real desktop, are read-only where they can be, and are never part of the suite.
 
-A guard test fails the suite if a Chinese UI string used through `t()` has no English
-entry. It currently scans `App.tsx`, `controller.ts` and `transport.ts` only, so strings
-in `ScanPairs.tsx`, `notify.ts` and `attachments.ts` are not covered by it.
+A guard test fails the suite if a Chinese UI string used through `t()` or `tWith()`
+has no English entry. It scans every `.ts` and `.tsx` file under `client/`.
 
 ## Security
 
 - A pairing link grants full access to that desktop. It is masked in the UI, cleared
   after saving, never logged, and stored only in Keystore-encrypted storage under
   `noBackupFilesDir`; `allowBackup` is off.
-- Only HTTPS relays are accepted, and cleartext traffic is disabled.
+- Only HTTPS relays are accepted. Android permits cleartext solely for the
+  E2E-sealed `ws://` LAN path, which is gated by the phone's current subnet and a
+  full pairing handshake. Relay remains the fallback.
 - Markdown from the model is rendered without raw HTML; images in the transcript are
   fetched through the tunnel, never by a plain URL load, so a message cannot make the app
   reach the network on its own.

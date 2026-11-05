@@ -24,6 +24,14 @@ export interface Pane {
   cwd?: string
   /** Directory the pane's foreground process actually runs in, when reported. */
   foreground_cwd?: string
+  /**
+   * Git branch when the desktop includes it in its workspace snapshot.
+   *
+   * Herdr versions that do not expose Git leave both fields absent; the branch
+   * chip is hidden rather than inventing a value from the terminal title.
+   */
+  git_branch?: string
+  branch?: string
   agent_session?: { value?: string; agent?: string }
 }
 export interface Workspace { workspace_id: string; label?: string; name?: string; cwd?: string }
@@ -77,7 +85,7 @@ export type TranscriptGap = 'terminal' | 'waiting' | 'integration' | 'transcript
  * does not record them, or a desktop too old to send them at all.
  */
 export interface AgentSettings { model: string | null; effort: string | null }
-export interface SessionState { hostId: string; paneId: string; sessionId?: string; items: ChatItem[]; start: number; end: number; queued: { id: string; text: string }[]; loading: boolean; loadingOlder: boolean; screen: string; error?: string; unsupported: boolean; gap?: TranscriptGap; sentMessage: boolean; sending: boolean; uncertain?: string; settings?: AgentSettings }
+export interface SessionState { hostId: string; paneId: string; sessionId?: string; items: ChatItem[]; start: number; end: number; queued: { id: string; text: string }[]; loading: boolean; loadingOlder: boolean; screen: string; details?: string; error?: string; unsupported: boolean; gap?: TranscriptGap; sentMessage: boolean; sending: boolean; uncertain?: string; settings?: AgentSettings }
 /**
  * Tabs and workspaces the desktop is not alerting for.
  *

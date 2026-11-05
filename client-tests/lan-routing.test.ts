@@ -162,6 +162,66 @@ test('a desktop that connects is asked even though a scan already ran', async ()
   } finally { controller.dispose() }
 })
 
+test('a connected desktop is asked immediately instead of waiting for the startup scan', async () => {
+  // The attach-time scan runs before the relay is online. Once connected, the
+  // cheap candidate request must not be blocked behind a /24 scan: on a slow
+  // network that delay is exactly what kept a fresh install on relay.
+  const hostOne = host('A', 'A'.repeat(43))
+  const asked: string[] = []
+  const storage: HostStorage = { persistent: true, async load() { return [hostOne] }, async save() {} }
+  const controller = new Controller(storage, () => ({
+    async connect() {},
+    async request<T>(path: string): Promise<T> {
+      asked.push(path)
+      if (path === '/api/herdr/info') return { online: true } as T
+      if (path === '/__alma_lan__') return { port: 23019, hosts: ['192.168.50.147'] } as T
+      if (path === '/api/herdr/mutes') return { tabs: [], workspaces: [] } as T
+      return {} as T
+    },
+    subscribe() { return { close() {} } },
+    lastInboundAt() { return Date.now() },
+    close() {},
+  } as Transport))
+  try {
+    await controller.initialize()
+    // Keep an attach-time scan alive without touching the platform scanner.
+    const state = controller as any
+    state.discovering.add('A')
+    state.scans.add({ aborted: false })
+    state.scanOwners.set('A', { aborted: false })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.ok(asked.includes('/__alma_lan__'), 'the connected desktop was asked despite a scan in flight')
+  } finally { controller.dispose() }
+})
+
+test('a scan displaced by relay connectivity is stopped and its lock is released', async () => {
+  const hostOne = host('A', 'A'.repeat(43))
+  const storage: HostStorage = { persistent: true, async load() { return [hostOne] }, async save() {} }
+  const controller = new Controller(storage, () => ({
+    async connect() {},
+    async request<T>(path: string): Promise<T> {
+      if (path === '/api/herdr/info') return { online: true } as T
+      if (path === '/__alma_lan__') throw new Error('HTTP 404')
+      return {} as T
+    },
+    subscribe() { return { close() {} } },
+    lastInboundAt() { return Date.now() },
+    close() {},
+  } as Transport))
+  const state = controller as any
+  try {
+    await controller.initialize()
+    const oldScan = { aborted: false }
+    state.patchHost('A', { status: 'online', herdrOnline: true })
+    state.discovering.add('A')
+    state.scans.add(oldScan)
+    state.scanOwners.set('A', oldScan)
+    state.maybeDiscover('A')
+    assert.equal(oldScan.aborted, true, 'the old scan stops at its next candidate')
+    assert.notEqual(state.scanOwners.get('A'), oldScan, 'the replacement owns the slot or has already released it')
+  } finally { controller.dispose() }
+})
+
 test('asking is throttled per desktop, not per scan', async () => {
   const { controller, transports } = setup([host('A', 'A'.repeat(43))], { A: { port: 23019, hosts: ['192.168.50.20'] } })
   try {
@@ -224,5 +284,102 @@ test('the direct address is offered again on every dial, not only at build time'
     await (controller as any).connectHost('A', runtime)
     assert.ok(offers.length > before, 'the address was offered to the transport again')
     assert.equal(offers[offers.length - 1], '192.168.50.20')
+  } finally { controller.dispose() }
+})
+
+test('a failed relay still leaves LAN discovery running', async () => {
+  const hostOne = host('A', 'A'.repeat(43))
+  let searches = 0
+  const storage: HostStorage = { persistent: true, async load() { return [hostOne] }, async save() {} }
+  const controller = new Controller(storage, () => ({
+    async connect() {},
+    async request<T>(path: string): Promise<T> {
+      if (path === '/__alma_lan__') throw new Error('offline')
+      return {} as T
+    },
+    subscribe() { return { close() {} } },
+    lastInboundAt() { return Date.now() },
+    close() {},
+  } as Transport))
+  try {
+    await controller.initialize()
+    const state = controller as any
+    state.lastDiscover.clear()
+    state.maybeDiscover = () => { searches++ }
+    state.maybeDiscover('A')
+    assert.ok(searches > 0, 'the local path is searched independently of the relay')
+  } finally { controller.dispose() }
+})
+
+test('the production scheduler starts LAN discovery after a relay failure', async () => {
+  const hostOne = host('A', 'A'.repeat(43))
+  const storage: HostStorage = { persistent: true, async load() { return [hostOne] }, async save() {} }
+  const controller = new Controller(storage, () => ({
+    async connect() {},
+    async request<T>(): Promise<T> { return {} as T },
+    subscribe() { return { close() {} } },
+    lastInboundAt() { return Date.now() },
+    close() {},
+  } as Transport))
+  try {
+    await controller.initialize()
+    const state = controller as any
+    state.lastDiscover.clear()
+    state.lastAsk.clear()
+    state.lastMiss.clear()
+    const runtime = [...state.runtimes.values()][0]
+    state.patchHost('A', { status: 'error', herdrOnline: false })
+    state.scheduleHost('A', runtime)
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    assert.equal(state.discovering.has('A'), false, 'the scheduler started and completed the LAN search')
+    assert.equal(typeof state.lastDiscover.get('A'), 'number', 'the failing relay did not leave discovery idle')
+  } finally { controller.dispose() }
+})
+
+test('a retry after an error does not wait out the normal ten-minute discovery interval', async () => {
+  const hostOne = host('A', 'A'.repeat(43))
+  const storage: HostStorage = { persistent: true, async load() { return [hostOne] }, async save() {} }
+  const controller = new Controller(storage, () => ({
+    async connect() {},
+    async request<T>(path: string): Promise<T> {
+      if (path === '/__alma_lan__') throw new Error('offline')
+      return {} as T
+    },
+    subscribe() { return { close() {} } },
+    lastInboundAt() { return Date.now() },
+    close() {},
+  } as Transport))
+  try {
+    await controller.initialize()
+    const state = controller as any
+    state.lastDiscover.set('A', Date.now())
+    state.lastMiss.clear()
+    state.patchHost('A', { status: 'error', herdrOnline: false })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    assert.equal(typeof state.lastDiscover.get('A'), 'number')
+    assert.equal(state.discovering.has('A'), false)
+  } finally { controller.dispose() }
+})
+
+test('the retry ladder continues while a LAN discovery may replace the dead relay', async () => {
+  const hostOne = host('A', 'A'.repeat(43))
+  let searches = 0
+  const storage: HostStorage = { persistent: true, async load() { return [hostOne] }, async save() {} }
+  const controller = new Controller(storage, () => {
+    return {
+      async connect() {},
+      async request<T>(): Promise<T> { return {} as T },
+      subscribe() { return { close() {} } },
+      lastInboundAt() { return Date.now() },
+      close() {},
+    } as Transport
+  })
+  try {
+    await controller.initialize()
+    const state = controller as any
+    state.maybeDiscover = () => { searches++ }
+    state.lastDiscover.clear()
+    state.maybeDiscover('A')
+    assert.ok(searches > 0, 'LAN discovery is active alongside relay retries')
   } finally { controller.dispose() }
 })
