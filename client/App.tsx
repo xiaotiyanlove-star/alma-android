@@ -802,12 +802,25 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
   }, [state.hosts]);
   const [opening, setOpening] = useState<string>();
   const [openError, setOpenError] = useState('');
-  const [picking, setPicking] = useState(false);
-  const [creating, setCreating] = useState(false);
+  // Every sheet on this screen is an overlay in the router, so the hardware
+  // Back closes it. The local state below only records *what* it is about
+  // (which host to rename, and so on); whether it is open is the overlay.
+  const overlay = useOverlay();
+  const picking = overlay?.kind === 'pickHost';
+  const creating = overlay?.kind === 'newSession';
+  const setName = (value: boolean) => { if (value) openOverlay({ kind: 'newSession' }); else closeOverlay(); };
+  const setPicking = (value: boolean) => { if (value) openOverlay({ kind: 'pickHost' }); else closeOverlay(); };
+  const setCreating = setName;
   const [newKind, setNewKind] = useState('claude');
   const [newCwd, setNewCwd] = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [renamingPane, setRenamingPane] = useState<string>();
+  // The pane being renamed is local; whether the form is up is the overlay.
+  const renameOpen = overlay?.kind === 'renamePane';
+  const openRename = (paneId: string) => { setRenamingPane(paneId); openOverlay({ kind: 'renamePane' }); };
+  const closeRename = () => { setRenamingPane(undefined); closeOverlay(); };
+  // Same reason as the subagent sheet: Back can clear the overlay directly.
+  useEffect(() => { if (!renameOpen && renamingPane) setRenamingPane(undefined); }, [renameOpen]);
   const [renameValue, setRenameValue] = useState('');
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState('');
@@ -846,12 +859,11 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
   }
 
   function startRename(pane: Pane, current: string | undefined) {
-    setRenamingPane(pane.pane_id)
+    openRename(pane.pane_id)
     // Prefill with the name already there, so a stray tap edits rather than
     // wipes it. An unnamed session starts empty and shows the placeholder.
     setRenameValue(current ?? '')
     setRenameError('')
-    openOverlay({ kind: 'rename' })
   }
 
   async function renameSession(event: FormEvent) {
@@ -861,8 +873,7 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
     setRenameError('')
     try {
       await controller.renameSession(host.host.id, renamingPane, renameValue)
-      setRenamingPane(undefined)
-      closeOverlay()
+      closeRename()
     } catch (error) {
       setRenameError(error instanceof Error ? error.message : t('重命名失败'))
     } finally { setRenameBusy(false) }
@@ -885,7 +896,7 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
   return <section className="sessions-view">
     <header className="page-header"><div className="brand-mark" aria-hidden="true"><Terminal size={23} /></div><div className="header-copy"><h1>Herdr</h1><p>{t('会话')}</p></div><button className="icon-button" title={t('新建会话')} aria-label={t('新建会话')} disabled={!ready} onClick={() => { setNewCwd(currentCwd); setCreating(true) }}><PlusCircle size={21} /></button><button className="icon-button" title={t('节点设置')} aria-label={t('节点设置')} onClick={onSettings}><Settings size={21} /></button></header>
     {host && <div className="host-selector-bar">
-      <button type="button" className="host-picker" aria-label={t('当前节点')} aria-haspopup="dialog" aria-expanded={picking} disabled={state.hosts.length < 2} onClick={() => { setPicking(true); openOverlay({ kind: 'hostPicker' }) }}>
+      <button type="button" className="host-picker" aria-label={t('当前节点')} aria-haspopup="dialog" aria-expanded={picking} disabled={state.hosts.length < 2} onClick={() => setPicking(true)}>
         <Server size={18} aria-hidden="true" /><span className="host-picker-name">{host.host.name}</span>
         {state.hosts.length > 1 && <ChevronDown size={16} aria-hidden="true" />}
       </button>
@@ -997,7 +1008,7 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
         </section>)}
       </> : ready && host.snapshot ? <EmptyState icon={<MessageSquare size={30} />} title={t('暂无会话')}><p>{t('此节点还没有打开的终端会话。')}</p></EmptyState> : <EmptyState icon={<Server size={30} />} title={host.error ? t('无法读取会话') : t('等待节点连接')} />}
     </div>
-    {renamingPane && <div className="sheet-backdrop" role="presentation" onClick={() => { setRenamingPane(undefined); closeOverlay() }}>
+    {renamingPane && renameOpen && <div className="sheet-backdrop" role="presentation" onClick={closeRename}>
       <form className="host-sheet rename-form" role="dialog" aria-modal="true" aria-label={t('重命名会话')}
         onClick={(event) => event.stopPropagation()}
         onSubmit={(event) => void renameSession(event)}>
@@ -1007,7 +1018,7 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
         <p className="field-hint">{t('名称只影响这项会话的显示，桌面端会同步显示。')}</p>
         {renameError && <Notice error>{renameError}</Notice>}
         <div className="dialog-actions">
-          <button type="button" className="secondary-button" onClick={() => { setRenamingPane(undefined); closeOverlay() }}>{t('取消')}</button>
+          <button type="button" className="secondary-button" onClick={closeRename}>{t('取消')}</button>
           <button type="submit" className="primary-button" disabled={renameBusy}>{renameBusy ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{t('保存')}</button>
         </div>
       </form>
@@ -1068,6 +1079,13 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
   const viewingImage = overlay?.kind === 'image' ? overlay.src : undefined;
   /** The picture shown full-screen, if any. */
   const [subagent, setSubagent] = useState<{ id: string; title: string; kind?: string; finished: boolean; loading: boolean; error?: string; items: ChatItem[] }>();
+  // Same rule as the other sheets: the overlay owns "is it open", so Back
+  // closes the transcript instead of leaving the app.
+  const subagentOpen = overlay?.kind === 'subagent';
+  const closeSubagent = () => { setSubagent(undefined); closeOverlay(); };
+  // Back may clear the overlay without going through closeSubagent, so the
+  // local copy is dropped whenever the overlay is gone.
+  useEffect(() => { if (!subagentOpen && subagent) setSubagent(undefined); }, [subagentOpen]);
   const sentAtCount = useRef(-1);
   const composing = useRef(false);
   const actionLock = useRef(false);
@@ -1366,6 +1384,7 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
 
   async function openSubagent(toolId: string, title: string) {
     setSubagent({ id: toolId, title, finished: false, loading: true, items: [] })
+    openOverlay({ kind: 'subagent' })
     try {
       const result = await controller.loadSubagent(session.hostId, session.paneId, toolId)
       setSubagent({
@@ -1493,7 +1512,7 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
         <button type="button" className="secondary-button sheet-cancel" onClick={closeOverlay}>{t('关闭')}</button>
       </div>
     </div>}
-    {subagent && <div className="sheet-backdrop" role="presentation" onClick={() => setSubagent(undefined)}>
+    {subagent && subagentOpen && <div className="sheet-backdrop" role="presentation" onClick={closeSubagent}>
       <div className="host-sheet subagent-sheet" role="dialog" aria-modal="true" aria-label={t('子 agent 记录')} onClick={(event) => event.stopPropagation()}>
         <h2>{subagent.title}</h2>
         <p className="field-hint">{subagent.kind ? `${subagent.kind} · ` : ''}{subagent.finished ? t('已结束') : t('仍在运行')}</p>
@@ -1506,7 +1525,7 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
               : <div className="subagent-transcript">{timeline(subagent.items).map(entry => entry.kind === 'work'
                   ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} key={entry.key} />
                   : <Message item={entry.item} markdown={markdown} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} key={entry.key} />)}</div>}
-        <button type="button" className="secondary-button sheet-cancel" onClick={() => setSubagent(undefined)}>{t('关闭')}</button>
+        <button type="button" className="secondary-button sheet-cancel" onClick={closeSubagent}>{t('关闭')}</button>
       </div>
     </div>}
     <div className="transcript-shell">

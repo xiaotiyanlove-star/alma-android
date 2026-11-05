@@ -21,12 +21,19 @@ type Overlay =
   | { kind: 'scan' }
   | { kind: 'rename' }
   | { kind: 'forget' }
-  | { kind: 'hostPicker' }
   | { kind: 'share' }
   /** A picture opened full-screen from the transcript. */
   | { kind: 'image'; src: string }
   /** The sheet listing agents still running in this session. */
   | { kind: 'agents' }
+  /** A dispatched subagent's own transcript. */
+  | { kind: 'subagent' }
+  /** The desktop chooser on the session list. */
+  | { kind: 'pickHost' }
+  /** The new-session form. */
+  | { kind: 'newSession' }
+  /** The rename-session form. */
+  | { kind: 'renamePane' }
 
 let route: Route = { name: 'sessions' }
 /** Screens the user came from, so Back retraces their path. */
@@ -67,7 +74,11 @@ export function push(next: Route) {
  */
 export function replace(next: Route) {
   route = next
-  overlay = null
+  // The overlay is deliberately left alone: opening a session from a sheet
+  // closes that sheet itself, while a swipe between a tab's panes must not
+  // dismiss a picture the user is looking at. Anything that truly belongs to
+  // the old screen is cleared by the screen that owned it.
+  if (next.name === 'sessions') overlay = null
   history = history.filter((item) => {
     if (next.name === 'sessions') return false
     if (next.name === 'session' && item.name === 'session' && item.hostId === next.hostId) return false

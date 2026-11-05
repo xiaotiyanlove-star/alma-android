@@ -33,6 +33,7 @@ const UI_CHECKS = [
   'agents-commands-ui-check',
   'session-flow-ui-check',
   'pane-swipe-ui-check',
+  'back-ui-check',
   'fixes-ui-check',
   'nodes-ux-check',
   'settings-nodes-check',

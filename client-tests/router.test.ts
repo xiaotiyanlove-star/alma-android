@@ -50,11 +50,17 @@ test('overlays are dismissed before the screen changes', () => {
 })
 
 test('every overlay kind is dismissible', () => {
-  for (const kind of ['scan', 'rename', 'forget', 'hostPicker'] as const) {
+  const kinds = [
+    { kind: 'scan' }, { kind: 'rename' }, { kind: 'forget' }, { kind: 'share' },
+    { kind: 'pickHost' }, { kind: 'newSession' }, { kind: 'renamePane' },
+    { kind: 'agents' }, { kind: 'subagent' }, { kind: 'image', src: 'data:,' },
+  ] as const
+  for (const overlay of kinds) {
+    const label = overlay.kind
     resetForTests()
-    openOverlay({ kind })
+    openOverlay(overlay)
     assert.equal(back(), true)
-    assert.equal(getOverlay(), null, `${kind} closed`)
+    assert.equal(getOverlay(), null, `${label} closed`)
   }
 })
 
@@ -77,7 +83,7 @@ test('history is bounded', () => {
 test('closing an overlay directly leaves the route alone', () => {
   resetForTests()
   push(session())
-  openOverlay({ kind: 'hostPicker' })
+  openOverlay({ kind: 'pickHost' })
   closeOverlay()
   assert.equal(getOverlay(), null)
   assert.equal(getRoute().name, 'session')
