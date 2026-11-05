@@ -254,19 +254,34 @@ pre { max-width: 100%; }
 .session-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 11.5px; color: var(--muted); }
 .session-row-meta { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
 
-.host-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 16px 0; border-bottom: 1px solid var(--line); }
-.host-row > svg { margin-right: 6px; flex-shrink: 0; }
-.host-open { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; flex: 1; min-width: 0; background: transparent; padding: 4px 0; text-align: left; }
-/* Never wraps: the three actions are one target strip, and a wrap turns them
-   into a stray button on the next line. */
-.host-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
-.host-actions .icon-button { width: 38px; height: 38px; flex-basis: 38px; }
-/* Slightly smaller than the settings switches: three icons share this row. */
+/* ── one node ───────────────────────────────────────────────────────────
+   A grid, not a wrapping flex row. The old row packed a name, a status and
+   five controls onto one line; on a phone the name ran underneath the QR
+   button. Now the name and status share the first column, and the switch plus
+   the edit button own the second — nothing can overlap because nothing is
+   allowed to move. */
+.host-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 6px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.host-open { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; background: transparent; padding: 2px 0; text-align: left; }
+.host-open-main { display: flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; }
+.host-open-main > svg { flex: 0 0 auto; }
+.host-open strong { min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The switch and the pencil are the whole right-hand side. */
+.host-row > .switch { justify-self: end; }
+.host-edit { flex: 0 0 auto; }
 .host-switch .switch-track { width: 42px; height: 25px; }
 .host-switch .switch-track::after { top: 3px; left: 3px; width: 19px; height: 19px; }
 .host-switch input[type='checkbox']:checked + .switch-track::after { transform: translateX(17px); }
-.host-actions .host-switch { margin-right: 2px; }
-.host-open strong { max-width: 100%; font-weight: 600; overflow-wrap: anywhere; }
+.host-row-error,
+.host-row > .host-stopped,
+.host-row > .host-retries { grid-column: 1 / -1; min-width: 0; }
 .host-row-error { flex: 0 0 100%; min-width: 0; }
 .add-host-form { display: flex; flex-direction: column; gap: 8px; max-width: 540px; padding: 24px 0; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
@@ -537,6 +552,11 @@ pre { max-width: 100%; }
 .send-button.is-stop::before { content: none; }
 .send-button.is-stop .stop-glyph { display: block; width: 14px; height: 14px; border-radius: 3px; background: currentColor; }
 .send-button.is-stop .stop-ring { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 999px; border: 1.5px solid var(--line-strong); }
+/* Send and stop side by side while the agent works and something is typed:
+   the stop key gives up some width so the send key stays the primary target. */
+.send-button.is-stop.is-inline { width: 40px; flex: 0 0 40px; }
+.send-button.is-stop.is-inline .stop-ring { width: 18px; height: 18px; }
+.send-button.is-stop.is-inline .stop-glyph { width: 11px; height: 11px; }
 @media (hover: hover) { .send-button.is-stop:hover:not(:disabled) { background: var(--surface-2); } }
 .composer-status > svg { flex-shrink: 0; }
 
@@ -569,12 +589,6 @@ pre { max-width: 100%; }
   .host-selector-bar { gap: 8px; padding-right: 14px; padding-left: 14px; }
   .transcript-scroll:not(.terminal-scroll) { padding-right: 14px; padding-left: 14px; }
   .conversation-header .connection-status { max-width: 80px; font-size: 10px; }
-  .host-row { gap: 2px; }
-  /* The three actions plus the switch do not fit next to a name on a small
-     phone; they move under it rather than squeezing the name to nothing. */
-  .host-row { flex-wrap: wrap; }
-  .host-actions { margin-left: auto; }
-  .host-actions .icon-button { width: 34px; flex-basis: 34px; }
   .agent-badge.is-md { width: 30px; height: 30px; flex-basis: 30px; font-size: 14px; }
   .session-row { gap: 9px; }
   /* The facts row scrolls here; a hard cut at the edge reads as a broken
@@ -878,3 +892,18 @@ button.transcript-image:focus-visible { outline: 2px solid var(--green); outline
 
 /* How many panes this tab holds, beside its name in the list. */
 .session-pane-count { margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: 10.5px; font-weight: 500; }
+
+/* ── one desktop's settings sheet ───────────────────────────────────────── */
+.host-edit-sheet .confirm-host { margin: 0 8px 12px; font-size: 12.5px; color: var(--muted); }
+.host-edit-sheet .rename-form { display: flex; flex-direction: column; gap: 6px; padding: 0 8px; }
+.host-edit-sheet .rename-form label { font-size: 12px; color: var(--text-2); }
+.host-edit-sheet .rename-form input { min-height: 40px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-2); font-size: 15px; }
+.host-edit-sheet .rename-form .field-hint { margin: 2px 0 8px; }
+.host-edit-sheet .rename-form .dialog-actions { display: flex; gap: 8px; padding: 0 0 14px; }
+.host-edit-sheet .rename-form .dialog-actions > button { flex: 1; justify-content: center; }
+.host-edit-actions { display: flex; gap: 8px; padding: 0 8px 12px; }
+/* Deleting is the last thing on the sheet and looks like it: a full-width
+   button under a rule, with the reassurance directly beneath it. */
+.host-edit-delete { display: flex; width: calc(100% - 16px); margin: 4px 8px 6px; justify-content: center; gap: 6px; min-height: 44px; border-radius: 8px; }
+.host-edit-sheet > .field-hint { margin: 0 8px 12px; }
+.host-edit-sheet > .sheet-cancel { margin-top: 4px; }

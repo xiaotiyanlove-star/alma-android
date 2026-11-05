@@ -152,6 +152,16 @@ try {
   result.subagentHandled = await hardwareBack()
   result.subagentClosed = await page.getByRole('dialog', { name: '子 agent 记录' }).count() === 0
 
+  // ── composer: stop, and send alongside it when something is typed ────
+  result.stopOnlyWhenEmpty = await page.locator('.send-button.is-stop').count() === 1
+    && await page.locator('.send-button:not(.is-stop)').count() === 0
+  await page.locator('#message-input').fill('顺便看一下日志')
+  await page.waitForTimeout(250)
+  result.sendOfferedWithDraft = await page.locator('.send-button:not(.is-stop)').count() === 1
+  result.stopStillOfferedWithDraft = await page.locator('.send-button.is-stop').count() === 1
+  await page.locator('#message-input').fill('')
+  await page.waitForTimeout(200)
+
   // Back on the session screen with nothing open still has to reach the list,
   // not exit — that is the behaviour these sheets had been stealing.
   result.sessionBackHandled = await hardwareBack()

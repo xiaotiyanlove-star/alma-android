@@ -51,7 +51,7 @@ test('overlays are dismissed before the screen changes', () => {
 
 test('every overlay kind is dismissible', () => {
   const kinds = [
-    { kind: 'scan' }, { kind: 'rename' }, { kind: 'forget' }, { kind: 'share' },
+    { kind: 'scan' }, { kind: 'forget' }, { kind: 'share' },
     { kind: 'pickHost' }, { kind: 'newSession' }, { kind: 'renamePane' },
     { kind: 'agents' }, { kind: 'subagent' }, { kind: 'image', src: 'data:,' },
   ] as const

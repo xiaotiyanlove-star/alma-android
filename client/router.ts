@@ -19,7 +19,8 @@ export type Route =
 
 type Overlay =
   | { kind: 'scan' }
-  | { kind: 'rename' }
+  /** A desktop's own sheet: rename, pairing link, delete, reconnect. */
+  | { kind: 'editHost' }
   | { kind: 'forget' }
   | { kind: 'share' }
   /** A picture opened full-screen from the transcript. */

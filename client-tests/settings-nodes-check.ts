@@ -42,10 +42,10 @@ const collapseLabel = (await page.locator('.host-toggle').textContent())?.trim()
 await page.screenshot({ path: 'test-artifacts/nodes-expanded.png' })
 
 // Rename the first desktop.
-await page.getByRole('button', { name: /重命名 工作电脑/ }).click()
-await page.getByRole('dialog', { name: '重命名节点' }).waitFor()
+await page.getByRole('button', { name: /设置 工作电脑/ }).click()
+await page.getByRole('dialog', { name: '节点设置' }).waitFor()
 await page.locator('#rename-input').fill('办公室 Mac')
-await page.getByRole('button', { name: '保存' }).click()
+await page.getByRole('button', { name: '保存名称' }).click()
 await page.waitForTimeout(300)
 const renamed = await page.locator('.host-open strong').first().textContent()
 await page.screenshot({ path: 'test-artifacts/nodes-renamed.png' })

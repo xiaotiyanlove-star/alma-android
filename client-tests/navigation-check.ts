@@ -37,7 +37,9 @@ const exitsAfterSettings = await page.evaluate(() => (window as any).__exitCount
 // 2. Overlay first: the forget dialog closes on the first Back.
 await page.getByRole('button', { name: '节点设置' }).click()
 await page.waitForTimeout(200)
-await page.getByRole('button', { name: /忘记 节点一/ }).click()
+await page.getByRole('button', { name: /设置 节点一/ }).click()
+await page.waitForTimeout(200)
+await page.getByRole('button', { name: '删除这个节点' }).click()
 await page.waitForTimeout(200)
 const dialogOpen = await page.getByRole('dialog', { name: '忘记此节点？' }).isVisible()
 await back()

@@ -270,7 +270,7 @@ function stepDetail(item: ChatItem): string | undefined {
  * While the burst is still going the line breathes and counts up, so a long
  * stretch of work does not look like a frozen screen.
  */
-function WorkGroup({ items, running, counts, hostId, onOpenImage }: { items: ChatItem[]; running: boolean; counts: WorkCount[]; hostId: string; onOpenImage(src: string): void }) {
+function WorkGroup({ items, running, counts, hostId, onOpenImage, localImages }: { items: ChatItem[]; running: boolean; counts: WorkCount[]; hostId: string; onOpenImage(src: string): void; localImages?: Record<string, string> }) {
   const active = running ? [...items].reverse().find((item) => item.tool && item.tool.done !== true) : undefined;
   // Pictures are results, not process: they sit below the folded line, visible
   // without opening it. A run that produced a screenshot is exactly the case
@@ -291,7 +291,7 @@ function WorkGroup({ items, running, counts, hostId, onOpenImage }: { items: Cha
     <div className="work-body">{items.map((item) => <WorkStep item={item} hostId={hostId} key={item.id} />)}</div>
   </details>
   {images.length > 0 && <div className="transcript-images is-run">
-    {images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} thumbnail />)}
+    {images.map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} thumbnail local={localImages?.[image.url]} />)}
   </div>}
   </>;
 }
@@ -327,12 +327,15 @@ function WorkStep({ item, hostId }: { item: ChatItem; hostId: string }) {
  * URL is owned by this component and revoked when it unmounts or the source
  * changes, so opening a long conversation cannot leak every picture it showed.
  */
-function TranscriptImage({ hostId, url, mediaType, onOpen, thumbnail = false }: { hostId: string; url: string; mediaType?: string; onOpen(src: string): void; thumbnail?: boolean }) {
-  const [src, setSrc] = useState<string>();
+function TranscriptImage({ hostId, url, mediaType, onOpen, thumbnail = false, local }: { hostId: string; url: string; mediaType?: string; onOpen(src: string): void; thumbnail?: boolean; local?: string }) {
+  const [src, setSrc] = useState<string | undefined>(local);
   const [error, setError] = useState(false);
   useEffect(() => {
     let alive = true;
     let objectUrl: string | undefined;
+    // A picture this phone attached is already decoded here; the desktop keeps
+    // it as a generic file and will not hand it back through the image route.
+    if (local) { setSrc(local); setError(false); return () => { alive = false } }
     setSrc(undefined);
     setError(false);
     void controller.fetchImage(hostId, url).then(({ bytes, contentType }) => {
@@ -350,7 +353,7 @@ function TranscriptImage({ hostId, url, mediaType, onOpen, thumbnail = false }: 
       setSrc(objectUrl);
     }).catch(() => { if (alive) setError(true) });
     return () => { alive = false; if (objectUrl) URL.revokeObjectURL(objectUrl) };
-  }, [hostId, url, mediaType]);
+  }, [hostId, url, mediaType, local]);
   if (error) return <div className="transcript-image is-blocked">{t('图片无法显示')}</div>;
   if (!src) return <div className="transcript-image is-loading" role="status" aria-label={t('正在读取图片')}><Loader2 size={16} className="spin" /></div>;
   // A button, not an anchor: the tap target used to navigate the WebView to the
@@ -361,7 +364,7 @@ function TranscriptImage({ hostId, url, mediaType, onOpen, thumbnail = false }: 
   </button>;
 }
 
-function Message({ item, markdown, hostId, onOpenImage }: { item: ChatItem; markdown: boolean; hostId: string; onOpenImage(src: string): void }) {
+function Message({ item, markdown, hostId, onOpenImage, localImages }: { item: ChatItem; markdown: boolean; hostId: string; onOpenImage(src: string): void; localImages?: Record<string, string> }) {
   const isUser = item.kind === 'user' || item.from === 'user' || item.from === 'human';
   const role = isUser ? t('你') : item.kind === 'system' ? t('系统') : item.kind === 'error' ? t('错误') : t('助手');
   // Pictures written as paths in the body are shown as pictures. The desktop's
@@ -382,7 +385,7 @@ function Message({ item, markdown, hostId, onOpenImage }: { item: ChatItem; mark
     </div>
     {text && <RichText text={text} markdown={markdown} />}
     {(item.images?.length || inlineImages.length) ? <div className="transcript-images">
-      {[...(item.images ?? []), ...inlineImages.map((url): ImageRef => ({ url }))].map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} />)}
+      {[...(item.images ?? []), ...inlineImages.map((url): ImageRef => ({ url }))].map((image, index) => <TranscriptImage key={`${image.url}:${index}`} hostId={hostId} url={image.url} mediaType={image.mediaType} onOpen={onOpenImage} local={localImages?.[image.url]} />)}
     </div> : null}
     {!text && !item.tool && <p className="muted">{t('此条记录没有文本内容')}</p>}
   </article>;
@@ -494,11 +497,14 @@ function keepAliveHint(): string {
 function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostState[]; onClose: () => void; onOpen: (id: string) => void; onLocaleChange(): void }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const overlay = useOverlay();
   const [forgetting, setForgetting] = useState<string>();
   const [removing, setRemoving] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [collapsed, setCollapsed] = useState(true);
-  const [renaming, setRenaming] = useState<string>();
+  /** The desktop whose edit sheet is up (what it is about; the overlay says open). */
+  const [editing, setEditing] = useState<string>();
+  const editOpen = overlay?.kind === 'editHost';
   /** Host whose pairing link is on screen; the value is only built on request. */
   const [sharing, setSharing] = useState<string>();
   const [shareLink, setShareLink] = useState('');
@@ -508,13 +514,12 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
   const visibleHosts = collapsed && hosts.length > COLLAPSE_AFTER ? hosts.slice(0, COLLAPSE_AFTER) : hosts;
   // Re-render so the resolved locale/zone shown under each control refreshes.
   const [, setTick] = useState(0);
-  const overlay = useOverlay();
   // Back on the physical button clears the overlay; mirror that into local state
   // so the dialog/sheet disappears instead of lingering invisibly.
   useEffect(() => {
     if (overlay) return
     if (forgetting) setForgetting(undefined)
-    if (renaming) setRenaming(undefined)
+    if (editing) setEditing(undefined)
     if (sharing) { setSharing(undefined); setShareLink('') }
     if (scanning) setScanning(false)
   }, [overlay]);
@@ -540,14 +545,13 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
 
   async function rename(event: FormEvent) {
     event.preventDefault();
-    if (!renaming) return;
+    if (!editing) return;
     const value = renameValue.trim();
     if (!value) { setError(t('名称不能为空')); return; }
     setSaving(true);
     setError('');
     try {
-      await controller.renameHost(renaming, value);
-      setRenaming(undefined);
+      await controller.renameHost(editing, value);
     } catch {
       setError(t('未能重命名，请重试。'));
     } finally { setSaving(false); }
@@ -578,27 +582,28 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
         <h2 className="group-title">{t('节点')}</h2>
         <p className="group-hint">{t('每台桌面单独配对。点名称切换，右侧可重连或移除。')}</p>
         {hosts.length > 0 ? <ul className={`host-list${collapsed ? ' is-collapsed' : ''}`}>
-          {visibleHosts.map(host => <li className="host-row" key={host.host.id}>
-            <Server size={21} className="muted" aria-hidden="true" />
-            <button className="host-open" onClick={() => onOpen(host.host.id)}><strong>{host.host.name}</strong><Status host={host} />{host.snapshot && unreadPanes([host]).length > 0 && <span className="news-dot" role="img" aria-label={t('有新消息')} />}</button>
-            {/* The three actions stay one unit: split across two lines they
-                stopped looking like a row and one button drifted left. */}
-            <div className="host-actions">
-              {/* Turning a desktop off releases its tunnel and stops retries:
-                  that is the point of the switch, so it lives with the node
-                  rather than in a submenu. */}
-              <button className="icon-button" title={tWith('连接链接 {name}', { name: host.host.name })} aria-label={tWith('连接链接 {name}', { name: host.host.name })} onClick={() => { setSharing(host.host.id); setShareLink(pairingLink(host.host)); setShareCopied(false); openOverlay({ kind: 'share' }) }}><QrCode size={17} /></button>
-              <button className="icon-button" title={tWith('重命名 {name}', { name: host.host.name })} aria-label={tWith('重命名 {name}', { name: host.host.name })} onClick={() => { setRenaming(host.host.id); setRenameValue(host.host.name); setError(''); openOverlay({ kind: 'rename' }) }}><Pencil size={17} /></button>
-              <button className="icon-button" title={tWith('重新连接 {name}', { name: host.host.name })} aria-label={tWith('重新连接 {name}', { name: host.host.name })} disabled={host.status === 'connecting' || host.host.enabled === false} onClick={() => controller.retryHost(host.host.id)}><RefreshCw size={18} className={host.status === 'connecting' ? 'spin' : ''} /></button>
-              <button className="icon-button danger-button" title={tWith('忘记 {name}', { name: host.host.name })} aria-label={tWith('忘记 {name}', { name: host.host.name })} onClick={() => { setForgetting(host.host.id); openOverlay({ kind: 'forget' }) }}><Trash2 size={18} /></button>
-              <span className="switch host-switch">
-                <input type="checkbox" role="switch" checked={host.host.enabled !== false} aria-label={tWith('启用 {name}', { name: host.host.name })} onChange={(event) => { void controller.setHostEnabled(host.host.id, event.target.checked).catch(() => setError(t('未能切换节点状态，请重试。'))) }} />
-                <span className="switch-track" aria-hidden="true" />
+          {visibleHosts.map(host => <li className={`host-row${host.host.enabled === false ? ' is-off' : ''}`} key={host.host.id}>
+            {/* One line per node: the identity, one state, and the switch.
+                Four icon buttons and a switch on the same line is what made the
+                name collide with the QR button on a phone; everything except
+                the switch now lives in the edit sheet. */}
+            <button className="host-open" onClick={() => onOpen(host.host.id)}>
+              <span className="host-open-main">
+                <Server size={17} className="muted" aria-hidden="true" />
+                <strong>{host.host.name}</strong>
+                {/* The only dot on this line is news. Connection state is the
+                    text below it, so the two can no longer be confused. */}
+                {host.snapshot && unreadPanes([host]).length > 0 && <span className="news-dot" role="img" aria-label={t('有新消息')} title={t('有新消息')} />}
               </span>
-            </div>
-            {/* Full-width rows come after every button: a 100%-wide item in a
-                wrapping flex row pushes whatever follows it onto a new line,
-                which is how the delete button ended up below the icons. */}
+              <Status host={host} />
+            </button>
+            {/* The switch stays on the row: turning a desktop off releases its
+                tunnel, which is the one thing worth doing without opening it. */}
+            <span className="switch host-switch">
+              <input type="checkbox" role="switch" checked={host.host.enabled !== false} aria-label={tWith('启用 {name}', { name: host.host.name })} onChange={(event) => { void controller.setHostEnabled(host.host.id, event.target.checked).catch(() => setError(t('未能切换节点状态，请重试。'))) }} />
+              <span className="switch-track" aria-hidden="true" />
+            </span>
+            <button type="button" className="icon-button host-edit" title={tWith('设置 {name}', { name: host.host.name })} aria-label={tWith('设置 {name}', { name: host.host.name })} onClick={() => { setEditing(host.host.id); setError(''); openOverlay({ kind: 'editHost' }) }}><Pencil size={17} /></button>
             {host.stopReason && <span className="host-stopped">
               {stopMessage(host.stopReason)}
               <button type="button" className="inline-button" onClick={() => controller.retryHost(host.host.id)}>{t('立即重试')}</button>
@@ -687,26 +692,42 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
         </dl>
       </section>
     </div>
-    {renaming && <dialog className="confirm-dialog" open aria-labelledby="rename-title">
-      <form onSubmit={rename} className="rename-form">
-        <h2 id="rename-title">{t('重命名节点')}</h2>
-        <label htmlFor="rename-input" className="sr-only">{t('节点名称')}</label>
-        <input
-          id="rename-input"
-          value={renameValue}
-          onChange={event => setRenameValue(event.target.value)}
-          maxLength={80}
-          autoComplete="off"
-          autoFocus
-          disabled={saving}
-        />
-        <p className="field-hint">{t('只改本机显示的名称，连接与会话不受影响。')}</p>
-        <div className="dialog-actions">
-          <button type="button" className="secondary-button" disabled={saving} onClick={() => { setRenaming(undefined); closeOverlay() }}>{t('取消')}</button>
-          <button type="submit" className="primary-button" disabled={saving || !renameValue.trim()}>{saving ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{t('保存')}</button>
+    {editing && editOpen && <div className="sheet-backdrop" role="presentation" onClick={() => { closeOverlay(); setEditing(undefined) }}>
+      <div className="host-sheet host-edit-sheet" role="dialog" aria-modal="true" aria-labelledby="host-edit-title" onClick={(event) => event.stopPropagation()}>
+        <h2 id="host-edit-title">{t('节点设置')}</h2>
+        <p className="confirm-host">{hosts.find(item => item.host.id === editing)?.host.name}</p>
+
+        {/* Rename: the only field on the sheet, so it saves from the keyboard. */}
+        <form onSubmit={rename} className="rename-form">
+          <label htmlFor="rename-input">{t('名称')}</label>
+          <input
+            id="rename-input"
+            value={renameValue}
+            onChange={event => setRenameValue(event.target.value)}
+            maxLength={80}
+            autoComplete="off"
+            disabled={saving}
+          />
+          <p className="field-hint">{t('只改本机显示的名称，连接与会话不受影响。')}</p>
+          <div className="dialog-actions">
+            <button type="submit" className="secondary-button" disabled={saving || !renameValue.trim()}>{saving ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{t('保存名称')}</button>
+            <button type="button" className="secondary-button" disabled={!editing} onClick={() => { setSharing(editing); setShareLink(pairingLink(hosts.find(item => item.host.id === editing)!.host)); setShareCopied(false); setEditing(undefined); openOverlay({ kind: 'share' }) }}><QrCode size={16} />{t('连接链接')}</button>
+          </div>
+        </form>
+
+        {/* Actions that used to sit as icons on the row, where four of them and
+            a switch left no room for the name. */}
+        <div className="host-edit-actions">
+          <button type="button" className="secondary-button" disabled={removing || hosts.find(item => item.host.id === editing)?.status === 'connecting'} onClick={() => { const id = editing; setEditing(undefined); closeOverlay(); if (id) controller.retryHost(id) }}><RefreshCw size={16} />{t('重新连接')}</button>
         </div>
-      </form>
-    </dialog>}
+
+        {error && <Notice error>{error}</Notice>}
+
+        <button type="button" className="destructive-button host-edit-delete" disabled={removing} onClick={() => { setForgetting(editing); openOverlay({ kind: 'forget' }) }}><Trash2 size={16} />{t('删除这个节点')}</button>
+        <p className="field-hint">{t('只移除这台手机上的连接凭据，不会删除桌面上的会话。')}</p>
+        <button type="button" className="secondary-button sheet-cancel" onClick={() => { closeOverlay(); setEditing(undefined) }}>{t('关闭')}</button>
+      </div>
+    </div>}
     {sharing && <dialog className="confirm-dialog share-dialog" open aria-labelledby="share-title">
       <h2 id="share-title">{t('在另一台设备上连接')}</h2>
       <p className="confirm-host">{hosts.find(item => item.host.id === sharing)?.host.name}</p>
@@ -1071,6 +1092,15 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
   // so the empty tail can show a "thinking" indicator instead of nothing.
   const [awaitingReply, setAwaitingReply] = useState(false);
   const [attachments, setAttachments] = useState<{ id: string; file: File; state: 'pending' | 'uploading' | 'done' | 'failed'; path?: string; error?: string }[]>([]);
+  /**
+   * Locally readable copies of pictures the user attached, by desktop path.
+   *
+   * An attachment is uploaded as a generic file, and the desktop will not serve
+   * it back through its image route — so the transcript shows "图片无法显示" for
+   * a picture the phone already has in memory. These are read while the file is
+   * still in hand and painted straight from the blob.
+   */
+  const [localImages, setLocalImages] = useState<Record<string, string>>({});
   const fileInput = useRef<HTMLInputElement>(null);
   // Both of these are overlays in the router rather than local state, so the
   // hardware Back button closes them instead of leaving the app.
@@ -1195,6 +1225,7 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
   );
   const commandOpen = query !== null && availableCommands.length > 0 && !terminal;
   const disabled = !ready || busy || session.sending || session.loading || switching || Boolean(session.uncertain);
+  const hasDraft = Boolean(draft.trim()) || attachments.length > 0;
   // The agent itself is busy: that is the only moment "stop" means anything.
   const working = pane?.agent_status === 'working';
   const [restarting, setRestarting] = useState(false);
@@ -1273,16 +1304,18 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
     if (accepted.length) setAttachments((current) => [...current, ...accepted]);
   }
 
-  async function uploadPending(): Promise<string[]> {
+  /** Returns each attachment with the desktop path it was stored under, so a
+   *  picture can be matched back to the file the phone still has in memory. */
+  async function uploadPending(): Promise<{ item: typeof attachments[number]; path: string }[]> {
     const pending = attachments.filter((item) => item.state !== 'done');
-    const paths: string[] = []
-    for (const item of attachments) if (item.state === 'done' && item.path) paths.push(item.path)
+    const paths: { item: typeof attachments[number]; path: string }[] = []
+    for (const item of attachments) if (item.state === 'done' && item.path) paths.push({ item, path: item.path })
     for (const item of pending) {
       setAttachments((current) => current.map((entry) => entry.id === item.id ? { ...entry, state: 'uploading' } : entry));
       try {
         const bytes = new Uint8Array(await item.file.arrayBuffer());
         const uploaded = await controller.uploadAttachment(session.hostId, { name: item.file.name, type: item.file.type, bytes });
-        paths.push(uploaded.path);
+        paths.push({ item, path: uploaded.path });
         setAttachments((current) => current.map((entry) => entry.id === item.id ? { ...entry, state: 'done', path: uploaded.path } : entry));
       } catch (error) {
         setAttachments((current) => current.map((entry) => entry.id === item.id ? { ...entry, state: 'failed', error: error instanceof Error ? error.message : String(error) } : entry));
@@ -1303,9 +1336,18 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
       if (terminal) {
         await controller.sendTerminalText(text);
       } else {
-        const paths = await uploadPending();
-        const message = buildMessage(text, paths.map((path) => ({ path, name: path, size: 0, renamed: false })));
-        await controller.sendMessage(message);
+        const uploaded = await uploadPending();
+        await controller.sendMessage(buildMessage(text, uploaded.map((entry) => ({ path: entry.path, name: entry.path, size: 0, renamed: false }))));
+        // Remember what each picture looks like before its File goes away: the
+        // transcript only ever gets the path back.
+        const pictures = uploaded.filter((entry) => /^image\//i.test(entry.item.file.type));
+        if (pictures.length) {
+          setLocalImages((current) => {
+            const next = { ...current };
+            for (const entry of pictures) next[entry.path] = URL.createObjectURL(entry.item.file);
+            return next;
+          });
+        }
         setAttachments([]);
       }
       // Both modes clear the composer on success; only messages keep a draft.
@@ -1523,8 +1565,8 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
             : subagent.items.length === 0
               ? <p className="muted">{t('这个子 agent 还没有可读的记录')}</p>
               : <div className="subagent-transcript">{timeline(subagent.items).map(entry => entry.kind === 'work'
-                  ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} key={entry.key} />
-                  : <Message item={entry.item} markdown={markdown} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} key={entry.key} />)}</div>}
+                  ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />
+                  : <Message item={entry.item} markdown={markdown} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />)}</div>}
         <button type="button" className="secondary-button sheet-cancel" onClick={closeSubagent}>{t('关闭')}</button>
       </div>
     </div>}
@@ -1546,8 +1588,8 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
                 : <span className="older-status">{t('继续上滑加载更早的记录')}</span>}
           </div>}
           {session.loading && !session.items.length ? <Loading label={t('正在读取消息…')} /> : !session.items.length ? <EmptyState icon={<MessageSquare size={28} />} title={session.error ? t('消息暂不可用') : t('暂无消息记录')} /> : <div className="messages">{timeline(session.items).map(entry => entry.kind === 'work'
-                ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} key={entry.key} />
-                : <Message item={entry.item} markdown={markdown} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} key={entry.key} />)}
+                ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />
+                : <Message item={entry.item} markdown={markdown} hostId={session.hostId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />)}
               {awaitingReply && !session.uncertain && <div className="thinking" role="status" aria-live="polite">
                 <span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span>
                 <span className="thinking-label">{t('正在等待回复…')}</span>
@@ -1598,11 +1640,19 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
           becomes a stop, which is the action a user actually wants then. A
           separate stop button beside a permanently-visible send button reads as
           two ways to do the same thing. */}
-      {working && !terminal
+      {/* While the agent works the key can be either send or stop, and which
+          one depends on what the user has typed: with something in the box they
+          are almost certainly trying to queue it, with an empty box they are
+          trying to interrupt. Both are one tap away, and neither hides the
+          other. */}
+      {working && !terminal && !hasDraft
         ? <button type="button" className="send-button is-stop" title={t('停止')} aria-label={t('停止')} disabled={!ready || stopping || switching} onClick={() => void stopAgent()}>
             {stopping ? <Loader2 size={18} className="spin" /> : <span className="stop-ring" aria-hidden="true"><span className="stop-glyph" /></span>}
           </button>
         : <button type="submit" className="send-button" title={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} aria-label={t(busy || session.sending ? '正在发送' : terminal ? '发送并回车' : '发送')} disabled={disabled || (!draft.trim() && attachments.length === 0)}>{busy || session.sending ? <Loader2 size={20} className="spin" /> : <Send size={20} />}</button>}
+      {working && !terminal && hasDraft && <button type="button" className="send-button is-stop is-inline" title={t('停止')} aria-label={t('停止')} disabled={!ready || stopping || switching} onClick={() => void stopAgent()}>
+        {stopping ? <Loader2 size={16} className="spin" /> : <span className="stop-ring" aria-hidden="true"><span className="stop-glyph" /></span>}
+      </button>}
     </form>
     <div className="composer-foot">
       {/* The model, the effort and the context figure belong with the box you

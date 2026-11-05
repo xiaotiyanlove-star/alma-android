@@ -19,7 +19,10 @@ try {
   await page.getByRole('button', { name: '节点设置' }).click().catch(() => undefined)
   await page.waitForTimeout(400)
 
-  await page.getByRole('button', { name: '连接链接 家里的 Mac' }).click()
+  // The pairing link now lives inside the desktop's own sheet.
+  await page.getByRole('button', { name: '设置 家里的 Mac' }).click()
+  await page.getByRole('dialog', { name: '节点设置' }).waitFor()
+  await page.getByRole('button', { name: '连接链接' }).click()
   await page.getByRole('dialog', { name: '在另一台设备上连接' }).waitFor()
   const shown = await page.getByRole('textbox', { name: '连接链接' }).inputValue()
   await page.screenshot({ path: 'test-artifacts/share-link.png' })

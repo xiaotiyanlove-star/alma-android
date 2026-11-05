@@ -104,3 +104,4 @@ export function buildMessage(text: string, files: UploadedFile[]): string {
   const body = text.trim()
   return body ? `${body}\n\n附件：\n\n${listing}` : `附件：\n\n${listing}`
 }
+
