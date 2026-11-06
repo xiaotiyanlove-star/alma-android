@@ -6,6 +6,11 @@ on:
     tags: ['v*']   # a tag push is what publishes a Release
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to publish (without leading v)
+        required: true
+        type: string
 
 # Read-only by default; only the publishing job widens it, and only for itself.
 permissions:
@@ -53,6 +58,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve release tag
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          test -n "$tag" || { echo "release tag missing" >&2; exit 1; }
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -99,19 +111,22 @@ jobs:
   # only; the build jobs above stay read-only.
   android-release:
     name: Publish APK (tags only)
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     needs: check
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      # Stable fallback signing material. A configured keystore is used when
-      # it unlocks; otherwise this cached keystore lets the first release ship
-      # and is reused for every later in-place upgrade.
-      RELEASE_KEY_CACHE: alma-android-release-signing-v1
-      RELEASE_KEY_PASSWORD: alma-ci-release-2026-v1
+      # Only tag pushes can create a Release. A manual run is available for
+      # debugging a tag without accidentally replacing the Release asset.
+      RELEASE_TAG: v${{ inputs.release_tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.release_tag) || github.ref }}
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -139,7 +154,7 @@ jobs:
       - name: Check the tag matches the build version
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${RELEASE_TAG#v}"
           pkg="$(node -p "require('./package.json').version")"
           gradle="$(sed -n 's/.*versionName "\([^"]*\)".*/\1/p' android/app/build.gradle | head -1)"
           echo "tag=$tag package.json=$pkg build.gradle=$gradle"
@@ -151,12 +166,6 @@ jobs:
 
       - name: Sync Capacitor Android project
         run: npx cap sync android
-
-      - name: Restore fallback signing key
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}/keystore
-          key: ${{ env.RELEASE_KEY_CACHE }}
 
       - name: Prepare signing key
         id: signing
@@ -178,14 +187,8 @@ jobs:
             fi
           fi
           if [ ! -s "$store" ]; then
-            keytool -genkeypair -keystore "$store" -storetype PKCS12 \
-              -storepass "$RELEASE_KEY_PASSWORD" -keypass "$RELEASE_KEY_PASSWORD" \
-              -alias alma-release -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=Alma Android, O=Alma Android, C=CN"
-            echo "::warning::Configured Android keystore is unavailable; using the stable CI fallback key."
-            echo "key_source=fallback" >> "$GITHUB_OUTPUT"
-          else
-            echo "key_source=configured" >> "$GITHUB_OUTPUT"
+            echo "No release keystore was provided." >&2
+            exit 1
           fi
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -195,9 +198,9 @@ jobs:
       - name: Build signed release APK
         env:
           ALMA_RELEASE_STORE_FILE: ${{ runner.temp }}/keystore/release.jks
-          ALMA_RELEASE_STORE_PASSWORD: ${{ steps.signing.outputs.key_source == 'configured' && secrets.ANDROID_KEYSTORE_PASSWORD || env.RELEASE_KEY_PASSWORD }}
-          ALMA_RELEASE_KEY_ALIAS: ${{ steps.signing.outputs.key_source == 'configured' && secrets.ANDROID_KEY_ALIAS || 'alma-release' }}
-          ALMA_RELEASE_KEY_PASSWORD: ${{ steps.signing.outputs.key_source == 'configured' && secrets.ANDROID_KEY_PASSWORD || env.RELEASE_KEY_PASSWORD }}
+          ALMA_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ALMA_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ALMA_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./android/gradlew -p android assembleRelease
 
       # Android refuses to install an APK with no signature at all, so this
@@ -213,7 +216,7 @@ jobs:
       - name: Collect APK
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${RELEASE_TAG}"
           src=$(find android/app/build/outputs/apk/release -name 'app-release.apk' | head -1)
           name="alma-android-${tag}.apk"
           mkdir -p dist
@@ -221,21 +224,15 @@ jobs:
           ( cd dist && sha256sum "$name" > "$name.sha256" )
           echo "APK_NAME=$name" >> "$GITHUB_ENV"
 
-      - name: Save fallback signing key
-        if: steps.signing.outputs.key_source == 'fallback'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/keystore
-          key: ${{ env.RELEASE_KEY_CACHE }}
-
       # A public Release asset: no login, no expiry, unlike an Actions artifact.
       - name: Create release
+        if: github.event_name != 'workflow_dispatch'
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" \
             "dist/${APK_NAME}#Android APK" \
             "dist/${APK_NAME}.sha256#SHA-256 checksum" \
-            --title "$GITHUB_REF_NAME" \
+            --title "$RELEASE_TAG" \
             --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
