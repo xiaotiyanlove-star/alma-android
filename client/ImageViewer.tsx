@@ -26,6 +26,10 @@ const SWIPE_MIN_PX = 50
 /** A flick shorter than this is still a swipe if it is fast enough. */
 const SWIPE_MIN_PX_QUICK = 24
 const SWIPE_MAX_MS = 700
+/** How far a vertical drag has to travel before it puts the picture away. */
+const DISMISS_MIN_PX = 120
+/** A short downward flick is still a dismissal, because that is the gesture. */
+const DISMISS_MIN_PX_QUICK = 40
 
 export function ImageViewer({ src, alt, gallery, resolve, onClose }: {
   /** The picture that was tapped, as a transcript reference. */
@@ -168,18 +172,34 @@ export function ImageViewer({ src, alt, gallery, resolve, onClose }: {
     gesture.current = null
     if (start?.mode === 'swipe') {
       const touch = event.changedTouches[0]
-      if (touch && sources.length > 1) {
-        const dx = touch.clientX - start.startX
-        const dy = touch.clientY - start.startY
-        const quick = Date.now() - start.startedAt < SWIPE_MAX_MS
-        // Horizontal only, by a clear margin: a diagonal drag is the user
-        // trying to dismiss or scroll, and turning it into a picture change
-        // would be a surprise.
-        if (Math.abs(dx) > Math.abs(dy) * 1.5) {
-          const threshold = quick ? SWIPE_MIN_PX_QUICK : SWIPE_MIN_PX
-          const moved = dx <= -threshold ? 1 : dx >= threshold ? -1 : 0
-          if (moved) { lastSwipe.current = Date.now(); go(moved) }
-        }
+      if (!touch) return
+      const dx = touch.clientX - start.startX
+      const dy = touch.clientY - start.startY
+      const quick = Date.now() - start.startedAt < SWIPE_MAX_MS
+      const sideways = Math.abs(dx) > Math.abs(dy) * 1.5
+      const downward = Math.abs(dy) > Math.abs(dx) * 1.5
+
+      if (sideways) {
+        // Horizontal only, by a clear margin. A diagonal drag is the user
+        // trying to put the picture away or scroll, and turning it into a
+        // change of picture would be a surprise.
+        if (sources.length <= 1) return
+        const threshold = quick ? SWIPE_MIN_PX_QUICK : SWIPE_MIN_PX
+        const moved = dx <= -threshold ? 1 : dx >= threshold ? -1 : 0
+        if (moved) { lastSwipe.current = Date.now(); go(moved) }
+        return
+      }
+      // A vertical drag puts the picture away, the gesture a photo album taught
+      // everyone. Both directions, because there is nothing above or below a
+      // picture to scroll to — the drag has no other meaning here, and picking
+      // one direction would make the other feel broken.
+      //
+      // Only while the picture is at fit-to-screen. Zoomed in, a vertical drag
+      // is how the user reaches the top and bottom of what they just enlarged,
+      // and taking that away — or worse, closing on it — would break the zoom.
+      if (downward && view.scale <= 1) {
+        const threshold = quick ? DISMISS_MIN_PX_QUICK : DISMISS_MIN_PX
+        if (Math.abs(dy) >= threshold) { lastSwipe.current = Date.now(); onClose() }
       }
       return
     }
@@ -227,7 +247,7 @@ export function ImageViewer({ src, alt, gallery, resolve, onClose }: {
           onDoubleClick={(event) => { event.stopPropagation(); apply(view.scale > 1 ? IDENTITY : { scale: 2.5, x: 0, y: 0 }) }}
         />}
     <p className="image-viewer-hint">{sources.length > 1
-      ? tWith('{index}/{count} · 左右滑动切换，双击放大', { index: String(index + 1), count: String(sources.length) })
-      : t('双指缩放，双击放大')}</p>
+      ? tWith('{index}/{count} · 左右滑动切换，上下滑动关闭', { index: String(index + 1), count: String(sources.length) })
+      : t('双指缩放，双击放大，上下滑动关闭')}</p>
   </div>
 }

@@ -133,6 +133,39 @@ try {
   await page.locator('.image-viewer-close').click()
   result.viewerClosed = await page.locator('.image-viewer').count() === 0
 
+  // ── a vertical drag puts the picture away ─────────────────────────────
+  // Only at fit-to-screen: zoomed in, the same drag is how the user reaches
+  // the part of the picture they just enlarged.
+  await page.locator('button.transcript-image').first().click()
+  await page.locator('.image-viewer').waitFor({ timeout: 8000 })
+  const drag = async (fromY: number, toY: number) => {
+    const viewerBox = await page.locator('.image-viewer').boundingBox()
+    if (!viewerBox) throw new Error('no viewer box')
+    const cx = viewerBox.x + viewerBox.width / 2
+    await page.evaluate(`(() => {
+      const element = document.querySelector('.image-viewer')
+      const y1 = ${viewerBox.y} + ${viewerBox.height} * ${fromY}, y2 = ${viewerBox.y} + ${viewerBox.height} * ${toY}, xx = ${cx}
+      const touch = (y) => new Touch({ identifier: 1, target: element, clientX: xx, clientY: y })
+      element.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, touches: [touch(y1)], changedTouches: [touch(y1)] }))
+      element.dispatchEvent(new TouchEvent('touchend', { bubbles: true, touches: [], changedTouches: [touch(y2)] }))
+    })()`)
+    await page.waitForTimeout(400)
+  }
+  // Zoom in first: the drag must pan, not dismiss.
+  await page.locator('.image-viewer-image').dblclick()
+  await page.waitForTimeout(250)
+  result.zoomScale = await page.locator('.image-viewer-image').evaluate((node) => {
+    const match = /scale\(([\d.]+)\)/.exec((node as HTMLElement).style.transform)
+    return match ? Number(match[1]) : 1
+  })
+  await drag(0.45, 0.8)
+  result.staysOpenWhileZoomed = await page.locator('.image-viewer').count() === 1
+  // Back to fit, then the same gesture closes it.
+  await page.locator('.image-viewer-image').dblclick()
+  await page.waitForTimeout(250)
+  await drag(0.45, 0.85)
+  result.closedByVerticalDrag = await page.locator('.image-viewer').count() === 0
+
   // ── the menu closes on an outside tap ─────────────────────────────────
   const menu = page.locator('.view-maintenance')
   const isOpen = () => menu.evaluate((node) => (node as HTMLDetailsElement).open)
@@ -155,17 +188,22 @@ try {
     if (result[key] !== wanted) failures.push(`${key}: want ${JSON.stringify(wanted)}, got ${JSON.stringify(result[key])}`)
   }
   must('thumbnails', 3)
-  must('hintAtFirst', '1/3 · 左右滑动切换，双击放大')
+  must('hintAtFirst', '1/3 · 左右滑动切换，上下滑动关闭')
   must('prevHiddenAtFirst', true)
   must('nextVisibleAtFirst', true)
-  must('hintAfterSwipe', '2/3 · 左右滑动切换，双击放大')
+  must('hintAfterSwipe', '2/3 · 左右滑动切换，上下滑动关闭')
   must('prevVisibleAfterSwipe', true)
   must('viewerStillOpen', true)
-  must('hintAtThird', '3/3 · 左右滑动切换，双击放大')
-  must('hintPastEnd', '3/3 · 左右滑动切换，双击放大')
+  must('hintAtThird', '3/3 · 左右滑动切换，上下滑动关闭')
+  must('hintPastEnd', '3/3 · 左右滑动切换，上下滑动关闭')
   must('nextHiddenAtEnd', true)
-  must('hintAfterSwipeBack', '2/3 · 左右滑动切换，双击放大')
+  must('hintAfterSwipeBack', '2/3 · 左右滑动切换，上下滑动关闭')
   must('viewerClosed', true)
+  // 2.5x is the double-tap zoom; anything above 1 proves the drag had a zoom to
+  // pan rather than being read as a dismissal.
+  must('zoomScale', 2.5)
+  must('staysOpenWhileZoomed', true)
+  must('closedByVerticalDrag', true)
   must('menuOpens', true)
   must('menuClosedByOutsideTap', true)
   must('menuCollapsesOnSummary', true)
