@@ -1,11 +1,15 @@
 // Drives the shipped scanner with a real MediaStream produced by
 // canvas.captureStream(), so the app's own video/canvas/jsQR path is used.
 import { launchBrowser } from './browser.ts'
-import { execFileSync } from 'node:child_process'
+import { writeFile } from 'node:fs/promises'
+import { screenshotDir } from './artifacts.ts'
 
 const link = 'alma://connect?u=https%3A%2F%2Frelay.example.workers.dev&k=TESTONLY_fake_key_for_camera_check_000000&e2e=1'
-execFileSync('qrencode', ['-o', 'test-artifacts/scan-fixture.png', '-s', '10', '-m', '2', link])
-const base64 = execFileSync('base64', ['-i', 'test-artifacts/scan-fixture.png']).toString()
+// A fixed QR fixture generated from the link above. Keeping the bytes in the
+// test removes the macOS-only `qrencode` and BSD `base64` command dependency.
+const base64 = 'iVBORw0KGgoAAAANSUhEUgAAAZoAAAGaAQMAAAAMyBcgAAAABlBMVEUAAAD///+l2Z/dAAAAAnRSTlP//8i138cAAAAJcEhZcwAACxIAAAsSAdLdfvwAAAJdSURBVHic7ZpBjuwwCESRfIAcKVfPkXyASJ42FJh09KU/s8TFImo7PK9KFLgj4w8hhAgR2gjqgjjH/Xkec7u3gc2vpTRC9aEGcZzdt6/jzi8m+TkSOKENIE3F9kCCHpCWeuRJaCtItyP/ir30ltBW0LjhPPMd8r3EENoKQv3wLNfN//sToVKQICCefzwQhOpDKe5UZ3SJXy4oBKHaULQXMz4tx4xpMJeOKmtpD0L1oamW6TLY0YhGQ/cuwVv4DaHaUBcnx8ha0iXIOy8JFYdmfN9jmcHE3DrQrEJkhMpDPoLcsh5eSbQDEas9qRoRqgtp/7lkpGrpuLXwmuJnyEFoA8htRWL7igFFdaPOY0pL/kSoKrQm0+HbX00oxpfmpxGqDUWPYduH/4+OfK8u8BtCG0BoONFtJL9B/rD7LnsMQuWh4S5zJkFJeBBUhUdUI0LFoagp51KVstp/Wsc6sj8Rqgv5jliPYVbzHFnDauwMQsUh3GyOdeGNX56lb3EGoQ2gkFHyG0l33Vlk78JCqByUYn1k5T1pVBe4TCdUH1q6sb7jtppiCfpCvEV9Ww2hmhAc5TmlPEuMxsOfCJWFWlxhRWqMJZoFMi5ECZWHMJGk6jKG32g5hMaU0CbQ6jU7bMXbEMlxdkL1oRWRlZqPJZ7QF6HiUF8akVi2mFJaPm1ZDaHCUDMR2WSKBIysdpMRFQdBqDz00k3EJc84CO0ILauxPlUTVUvvdpTQDtD6lMLmlfi3jNAukAkFnehqOSSgp98QKg65jawbLZORNR/+Afd4XmsRqgv9PggRIrQN9AP/eRNFjyo9MAAAAABJRU5ErkJggg=='
+const fixtures = await screenshotDir('scan')
+await writeFile(`${fixtures}/scan-fixture.png`, Buffer.from(base64, 'base64'))
 
 const browser = await launchBrowser()
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
