@@ -201,6 +201,7 @@ jobs:
       - name: Verify the APK is signed
         run: |
           set -euo pipefail
+          export PATH="$ANDROID_HOME/build-tools/36.0.0:$PATH"
           apk=$(find android/app/build/outputs/apk/release -name 'app-release.apk' | head -1)
           test -n "$apk" || { echo "no release APK produced" >&2; exit 1; }
           apksigner verify --verbose --print-certs "$apk"
