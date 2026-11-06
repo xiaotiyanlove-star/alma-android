@@ -104,7 +104,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-          env:
+    env:
       # Stable fallback signing material. A configured keystore is used when
       # it unlocks; otherwise this cached keystore lets the first release ship
       # and is reused for every later in-place upgrade.
