@@ -7,7 +7,7 @@
  * quits behind it. Each sheet here is opened the way a user opens it, then Back
  * is called through the same bridge the shell uses.
  */
-import { chromium } from '@playwright/test'
+import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/crypto.ts'
 
@@ -18,7 +18,7 @@ const codeB = base64url(new Uint8Array(32).fill(45))
 const CWD = '/Users/dev/projects/alma-android'
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
-const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
+const browser = await launchBrowser()
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
 await context.addInitScript({ content: `try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch (e) {}` })
 const page = await context.newPage()

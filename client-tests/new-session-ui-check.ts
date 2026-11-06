@@ -1,11 +1,11 @@
 // The create-session flow, driven through the real dialog: open it, name the
 // session, create it, and land in the new pane's conversation.
-import { chromium } from '@playwright/test'
+import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/crypto.ts'
 
 const code = base64url(new Uint8Array(32).fill(71))
-const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
+const browser = await launchBrowser()
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
 await context.addInitScript({ content: `try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch (e) {}` })
 const page = await context.newPage()

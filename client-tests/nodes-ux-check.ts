@@ -1,7 +1,7 @@
-import { chromium } from '@playwright/test'
+import { launchBrowser } from './browser.ts'
 import { base64url } from '../client/crypto.ts'
 const link = (n: number) => `alma://connect?u=https://relay.invalid&k=${base64url(new Uint8Array(32).fill(n))}&e2e=1`
-const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
+const browser = await launchBrowser()
 
 async function run(locale: 'zh-CN' | 'en') {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale })

@@ -5,13 +5,13 @@
  * left a dark diagram on a light card until the app restarted. This drives the
  * real Markdown path and checks the delivered SVG colours after a live switch.
  */
-import { chromium } from '@playwright/test'
+import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/crypto.ts'
 
 const code = base64url(new Uint8Array(32).fill(74))
 const DIAGRAM = ['flowchart LR', '  A["开始"] --> B["完成"]'].join('\n')
-const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
+const browser = await launchBrowser()
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN', colorScheme: 'dark' })
 await context.addInitScript({ content: `try { localStorage.setItem('herdr.prefs.locale','zh-CN'); localStorage.setItem('herdr.prefs.theme','dark') } catch (e) {}` })
 const page = await context.newPage()

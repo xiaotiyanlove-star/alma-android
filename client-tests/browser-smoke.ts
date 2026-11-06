@@ -1,4 +1,5 @@
-import { chromium, expect } from '@playwright/test'
+import { expect } from '@playwright/test'
+import { launchBrowser } from './browser.ts'
 import { mkdir } from 'node:fs/promises'
 import { addDesktop } from './helpers.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, routingId, sealFrame } from '../client/crypto.ts'
@@ -7,7 +8,7 @@ const names = ['工作电脑 · 中文长名称与会话测试', '家用电脑']
 const ids = await Promise.all(codes.map(routingId))
 const messages = ['测试历史：中文长路径 /Users/example/Projects/a-very-long-project-name-without-spaces-and-with-code，用于检查窄屏换行。\n```ts\nconst example = "long-code-line-without-wrapping";\n```', '来自第二台电脑的会话内容']
 const calls: { host: number; method: string; params: any }[] = []
-const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
+const browser = await launchBrowser()
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, locale: 'zh-CN' })
 await context.addInitScript(() => { try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch {} })
 const page = await context.newPage()

@@ -5,7 +5,8 @@
  * chat page, the mute list, `restart-agent`, `subagent`, and an image — so the
  * checks exercise the actual screens rather than the helpers behind them.
  */
-import { chromium, expect } from '@playwright/test'
+import { expect } from '@playwright/test'
+import { launchBrowser } from './browser.ts'
 import { mkdir } from 'node:fs/promises'
 import { addDesktop } from './helpers.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, routingId, sealFrame } from '../client/crypto.ts'
@@ -25,7 +26,7 @@ const PNG = Uint8Array.from([
   0x42, 0x60, 0x82,
 ])
 
-const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
+const browser = await launchBrowser()
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
 await context.addInitScript(() => { try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch {} })
 const page = await context.newPage()

@@ -6,14 +6,14 @@
  * One file rather than three: they all need the same synthetic desktop, and
  * three browsers for one snapshot would only make the suite slower.
  */
-import { chromium } from '@playwright/test'
+import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/crypto.ts'
 
 const code = base64url(new Uint8Array(32).fill(77))
 const CWD = '/Users/dev/projects/alma-android'
 
-const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
+const browser = await launchBrowser()
 const context = await browser.newContext({ viewport: { width: 360, height: 800 }, locale: 'zh-CN' })
 await context.addInitScript({ content: `try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch (e) {}` })
 const page = await context.newPage()

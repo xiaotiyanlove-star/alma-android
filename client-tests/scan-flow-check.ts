@@ -1,13 +1,13 @@
 // Drives the shipped scanner with a real MediaStream produced by
 // canvas.captureStream(), so the app's own video/canvas/jsQR path is used.
-import { chromium } from '@playwright/test'
+import { launchBrowser } from './browser.ts'
 import { execFileSync } from 'node:child_process'
 
 const link = 'alma://connect?u=https%3A%2F%2Frelay.example.workers.dev&k=TESTONLY_fake_key_for_camera_check_000000&e2e=1'
 execFileSync('qrencode', ['-o', 'test-artifacts/scan-fixture.png', '-s', '10', '-m', '2', link])
 const base64 = execFileSync('base64', ['-i', 'test-artifacts/scan-fixture.png']).toString()
 
-const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
+const browser = await launchBrowser()
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
 await context.addInitScript(() => { try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch {} })
 await context.addInitScript(({ data }) => {

@@ -6,7 +6,7 @@
  * broken diagram has to stay readable — showing the source and the reason —
  * rather than turning into an empty box or a crash.
  */
-import { chromium } from '@playwright/test'
+import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/crypto.ts'
 
@@ -35,7 +35,7 @@ const REPLY = [
   '```',
 ].join('\n')
 
-const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
+const browser = await launchBrowser()
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN', colorScheme: 'dark' })
 await context.addInitScript({ content: `try { localStorage.setItem('herdr.prefs.locale','zh-CN'); localStorage.setItem('herdr.prefs.theme','dark') } catch (e) {}` })
 const page = await context.newPage()

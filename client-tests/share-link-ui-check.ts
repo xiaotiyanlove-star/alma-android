@@ -1,12 +1,12 @@
 // The "connect on another device" flow: open a saved desktop's link, copy it,
 // and prove the copied text re-pairs to the same desktop.
-import { chromium } from '@playwright/test'
+import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
 import { base64url } from '../client/crypto.ts'
 import { parsePairing } from '../client/pairing.ts'
 
 const code = base64url(new Uint8Array(32).fill(81))
-const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
+const browser = await launchBrowser()
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN', permissions: ['clipboard-read', 'clipboard-write'] })
 await context.addInitScript({ content: `try { localStorage.setItem('herdr.prefs.locale', 'zh-CN') } catch (e) {}` })
 const page = await context.newPage()

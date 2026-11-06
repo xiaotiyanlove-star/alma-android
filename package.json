@@ -1,6 +1,6 @@
 {
   "name": "alma-herdr-android",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "private": true,
   "type": "module",
   "description": "Independent multi-host Herdr client in the nanami Android shell",

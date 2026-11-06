@@ -1,5 +1,5 @@
-import { chromium } from '@playwright/test'
-const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
+import { launchBrowser } from './browser.ts'
+const browser = await launchBrowser()
 const context = await browser.newContext({ viewport: { width: 390, height: 844 } })
 // Simulate the "camera denied" path so the UI fallback is what gets verified.
 // Written as source text: the bundler gives functions a `__name` helper that
