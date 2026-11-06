@@ -230,7 +230,11 @@ try {
   must('groupTitle', 'alma-android')
   must('groupPath', CWD)
   must('rowPath', CWD)
-  if (Number((result.rowLayout as any)?.rowWidth) < 280) failures.push(`rowLayout: ${JSON.stringify(result.rowLayout)}`)
+  const rowGeometry = result.rowLayout as { rowWidth?: number; surfaceWidth?: number }
+  // The page gutters and rename column are fixed. Remaining content width
+  // differs a few pixels between macOS and Linux font metrics, so assert the
+  // structural budget rather than a macOS-specific pixel count.
+  if (Number(rowGeometry.rowWidth) < Number(rowGeometry.surfaceWidth) - 48 - 4) failures.push(`rowLayout: ${JSON.stringify(result.rowLayout)}`)
   if (Number((result.rowLayout as any)?.renameRight) < Number((result.rowLayout as any)?.rightEdge) - 60) failures.push(`rename position: ${JSON.stringify(result.rowLayout)}`)
   if (!String(result.agentIcon ?? '').includes('codex')) failures.push(`agentIcon: ${result.agentIcon}`)
   must('workspaceShown', true)
