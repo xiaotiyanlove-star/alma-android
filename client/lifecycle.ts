@@ -7,21 +7,10 @@
  * holding a relay connection (and its radio) open all night.
  */
 
-/** Stay connected this long after the app goes to the background. */
-export const KEEP_WARM_MS = 5 * 60_000
 /** After this absence, assume the user is gone and release the connection. */
 export const DROP_AFTER_MS = 30 * 60_000
 /**
- * After this absence, rebuild the tunnel when the app returns.
- *
- * Android freezes the WebView soon after it is hidden. A frozen page cannot
- * run timers or notice that its socket died, so a connection that was alive
- * when the screen turned off is not trustworthy after this long — even though
- * nothing told the page.
- */
-export const RECONNECT_AFTER_MS = 60_000
-/**
- * Below the rebuild threshold, a return still checks the connection.
+ * A return checks the connection rather than replacing it.
  *
  * A socket can be dead while the page believes it is open: the close event
  * never ran because the page was frozen. A short read proves the tunnel works
@@ -54,16 +43,19 @@ export function initialState(): LifecycleState {
  *
  * - visible again almost at once: nothing, the connection was never at risk
  * - visible again after VERIFY_AFTER_MS: check the socket still answers
- * - visible again after RECONNECT_AFTER_MS: resume, replacing the tunnel
- * - hidden past KEEP_WARM_MS: nothing to do yet, the socket stays
+ * - visible again after a suspend: resume, dialling from scratch
  * - hidden past DROP_AFTER_MS: suspend, releasing sockets
  *
- * The engine cannot observe Android freezing it, so `visible` reports how
- * long it was hidden and lets the caller decide whether the socket it still
- * holds is worth keeping. `awayMs` is 0 for anything but a return.
+ * The absence is measured by a read, not by the clock. A time threshold cannot
+ * tell "the socket died while the page was frozen" from "the socket is fine",
+ * and guessing in the safe direction — replace it — meant every return after a
+ * minute tore down a working connection: the route fell back to the relay, the
+ * session reloaded, and an in-flight reply could be missed. One short read
+ * answers the actual question, and only a read that fails rebuilds anything.
+ * `awayMs` is 0 for anything but a return.
  */
 export function returnAction(awayMs: number, suspended: boolean): BackgroundAction {
-  if (suspended || awayMs >= RECONNECT_AFTER_MS) return 'resume'
+  if (suspended) return 'resume'
   return awayMs >= VERIFY_AFTER_MS ? 'verify' : 'none'
 }
 
