@@ -7,8 +7,15 @@ disable or bypass the relay retry path.
 ## Required behavior
 
 - A desktop with a known, verified LAN address is tried before the relay.
+- A known address only suppresses the search while the tunnel is actually using
+  it. On the relay, the desktop is asked again — otherwise a stale address
+  (moved desktop, changed network, suspended path) pins the session to the
+  relay with nothing left to notice.
 - A LAN attempt that cannot open or complete the E2E handshake falls back to
   the configured relay.
+- The subnet gate is consulted with a deadline. A gate that never answers must
+  cost the relay nothing: the timeout is read as "not verified", the plain-text
+  dial is skipped, and the relay is dialled immediately.
 - A relay failure starts LAN discovery independently of the retry timer.
 - A relay failure while the app is visible continues the existing retry ladder;
   LAN discovery is an additional recovery path, not a replacement.
@@ -22,6 +29,50 @@ disable or bypass the relay retry path.
 - A network handover aborts old scans and clears stale addresses and breakers.
 - The relay address and pairing credential come from the pairing link. The LAN
   path never changes either.
+
+## Deadlines and verdicts
+
+Three rules exist because their absence each caused a permanent failure, and
+none of them widens what may be dialled:
+
+- **Every bridge wait has a ceiling.** `withDeadline` in `client/deadline.ts`
+  backs both `deviceSubnets()` and the transport's `allowDirect` gate. A native
+  callback lost while the page is frozen used to leave a promise pending
+  forever; because the gate is awaited before the relay is dialled, that became
+  "encrypted connection timed out" on every reconnect until the app restarted.
+- **A path suspension is short and in memory.** `client/breaker.ts` holds the
+  verdict for three minutes in a map, not in `localStorage`. A persisted
+  half-hour suspension, combined with a cached address, kept a session on the
+  relay for the rest of the day and survived a restart.
+- **One runtime, one dial.** `Runtime.connecting` makes `connectHost` single
+  flight. The return-to-foreground path used to dial twice — `resume` and then
+  `retryStopped` — which opened two sockets, sent two `/api/herdr/info`, and let
+  the losing subscription be closed under the winner.
+
+## Returning to the app
+
+`client/lifecycle.ts` no longer replaces the tunnel on a timer. A return asks the
+open socket a question (`verify`); only a release (`suspend`, after 30 minutes
+hidden) leads to `resume`. Guessing from elapsed time meant every return after a
+minute tore down a working connection, which cost a route transition to the
+relay and a session reload.
+
+## Changing route on an open session
+
+Adopting a discovered address does not rebuild the runtime. A second tunnel is
+dialled to the local address and must complete its handshake and answer
+`/api/herdr/info` **before** anything is published; only then is the relay
+runtime removed. Closing first — the old `rebuild` path — is what made the
+change visible as a disconnect.
+
+Two guards bound it:
+
+- a tunnel whose `currentRoute()` is not `direct` is never promoted, because the
+  transport falls back to the relay by itself and a relay swapped for a relay
+  would also score an address that never answered;
+- `Transport.busy()` (a queued send or an unsettled mutation) defers the move.
+  A read can be replayed on a new tunnel; a request that was sent and not
+  answered cannot, and moving the route under it invents an outcome.
 
 ## Do not change without a new security review
 
@@ -38,6 +89,13 @@ disable or bypass the relay retry path.
 address ownership, network changes, and the production failure scheduler.
 `client-tests/transport.test.ts` covers direct-first dialing, LAN-to-relay
 fallback, silent-LAN timeout, handshake rejection, and relay fallback.
+`client-tests/connection-recovery.test.ts` covers the three permanent failures
+above: an unanswered gate, a double dial on return, and a search suppressed by a
+stale address. `client-tests/deadline.test.ts` pins the deadline helper, and
+`client-tests/breaker.test.ts` pins the in-memory, short-lived suspension.
+`client-tests/lan-switch.test.ts` pins the order of a route change: the new
+tunnel answers before the old one closes, a failed local dial leaves the relay
+alone, and an in-flight mutation defers the whole move.
 
 ## User-visible states
 

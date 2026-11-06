@@ -37,11 +37,15 @@ const UI_CHECKS = [
   'branch-ui-check',
   'model-detail-ui-check',
   'pane-swipe-ui-check',
+  // Swiping through a transcript's pictures, and dismissing the actions menu.
+  'picture-gallery-ui-check',
   'back-ui-check',
   'fixes-ui-check',
   'nodes-ux-check',
   'settings-nodes-check',
   'settings-groups-check',
+  // What is waiting on each desktop, on the "choose a desktop" sheet.
+  'picker-news-ui-check',
   // Weak-network behaviour: detection time and background retry silence.
   'weaknet-check',
   // Features taken from the official client: settings, mutes, restart, subagents, images.

@@ -242,6 +242,13 @@ pre { max-width: 100%; }
 .sheet-option > svg { flex: 0 0 18px; color: var(--green); }
 .sheet-option-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .sheet-option-copy strong { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+/* What is waiting on a desktop, split by what the user would do about it.
+   Wraps rather than clipping: two counters plus the connection state have to
+   survive a 360 px row. */
+.sheet-option-news { display: flex; flex-wrap: wrap; gap: 6px; }
+.news-tag { display: inline-flex; align-items: center; min-height: 18px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1; white-space: nowrap; }
+.news-tag.is-waiting { border: 1px solid var(--amber-line); background: var(--tint-warm); color: var(--amber); }
+.news-tag.is-done { border: 1px solid var(--green-line); background: var(--tint); color: var(--green); }
 .sheet-cancel { width: 100%; margin-top: 12px; }
 .field-label-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .reveal-button { display: inline-flex; align-items: center; gap: 5px; min-height: 48px; padding: 0 8px; border-radius: 5px; background: transparent; color: var(--text-2); font-size: 13px; }
@@ -979,6 +986,11 @@ pre { max-width: 100%; }
 .image-viewer-image { max-width: 100vw; max-height: 100vh; object-fit: contain; transform-origin: center; will-change: transform; user-select: none; -webkit-user-select: none; }
 .image-viewer-close { position: absolute; top: calc(12px + env(safe-area-inset-top, 0px)); right: 12px; z-index: 1; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 999px; background: rgb(255 255 255 / 14%); color: #fff; }
 .image-viewer-hint { position: absolute; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); left: 0; right: 0; text-align: center; color: rgb(255 255 255 / 62%); font-size: 11.5px; pointer-events: none; }
+/* Swipe affordances, and a tap target for the same move on a device without a
+   touchscreen. Only rendered when there is a neighbouring picture. */
+.image-viewer-nav { position: absolute; top: 50%; transform: translateY(-50%); z-index: 1; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 999px; background: rgb(255 255 255 / 14%); color: #fff; }
+.image-viewer-nav.is-prev { left: 10px; }
+.image-viewer-nav.is-next { right: 10px; }
 
 /* A transcript picture is a button now: tapping it opens the viewer. */
 button.transcript-image { padding: 0; border: 0; cursor: zoom-in; }

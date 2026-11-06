@@ -22,6 +22,9 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 23
         versionName "0.1.23"
+        // The launcher label, as a placeholder so the development build can
+        // name itself without duplicating the whole manifest.
+        manifestPlaceholders = [almaLabel: "@string/app_name"]
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -40,6 +43,28 @@ android {
         }
     }
     buildTypes {
+        /**
+         * A build that sits beside the release instead of replacing it.
+         *
+         * Installing over an existing copy is the normal way an Android app
+         * works, so testing a change meant uninstalling first and losing every
+         * pairing. A distinct application id makes the two siblings: Android
+         * treats them as separate apps, keeps both installed, and never
+         * compares their signatures. The suffix also keeps the debug build from
+         * ever being offered as an update to the real one.
+         *
+         * The pairing link scheme is deliberately *not* changed. `alma://connect`
+         * is the credential's carrier and is validated in exactly one place
+         * (`parsePairing`); giving the development build its own scheme would
+         * mean a second place deciding what a valid pairing link looks like.
+         * The cost is that Android asks which app should open a pairing QR code
+         * when both are installed, which is the honest question to ask.
+         */
+        debug {
+            applicationIdSuffix ".dev"
+            versionNameSuffix "-dev"
+            manifestPlaceholders = [almaLabel: "@string/app_name_dev"]
+        }
         release {
             if (hasReleaseSigning) signingConfig signingConfigs.release
             minifyEnabled false

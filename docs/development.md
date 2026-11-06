@@ -30,6 +30,22 @@ Browser preview stores hosts in memory because it has no Android Keystore:
 npm run dev
 ```
 
+### Testing a build without disturbing the installed app
+
+`npm run android:dev` produces an APK that installs **beside** the release
+rather than replacing it. The debug build carries the `…herdr.dev` application
+id and the “Alma Dev” label, so Android treats the two as separate apps: neither
+can overwrite the other, and no pairing is lost when switching between them.
+
+The dev build reports its own package name in Settings → About and turns off
+in-app updates, because a release APK with a different id can never install over
+it. `ALMA_APP_ID` in `vite.config.ts` is what carries that id into the page; the
+Gradle suffix is invisible to the version regex.
+
+The pairing scheme stays `alma://connect`. With both builds installed, Android
+asks which app should open a pairing link — that choice is cheaper than a second
+scheme, which would mean validating the same credential in two places.
+
 ## Release contract
 
 The publishing workflow is `.github/workflows/ci.yml`. Pushing a `v*` tag starts:

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ChangeEvent, FormEvent, KeyboardEvent, ReactNode, TouchEvent } from 'react';
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown, ChevronRight, GitBranch,
@@ -19,7 +19,7 @@ import { parsePrompt, promptFingerprint, stripAnsi } from './prompt';
 import { buildMessage, checkFile, looksLikeImage, MAX_ATTACHMENTS, resolveMediaType } from './attachments';
 import { Markdown } from './Markdown';
 import { CopyButton } from './CodeBlock';
-import { APP_VERSION, APP_ID, BUILD_TIME } from './version';
+import { APP_VERSION, APP_ID, BUILD_TIME, IS_DEV_BUILD } from './version';
 import { checkForUpdate, installUpdate, updateProgress, type ReleaseInfo, type UpdateProgress } from './updates';
 import { t, tWith } from './i18n';
 import { loadDraft, saveDraft } from './drafts';
@@ -31,10 +31,10 @@ import { mergedHeaderInfo } from './session-info';
 import { agentLook, statusTone, statusWord } from './agents';
 import { paneTitle, tabLabelOf } from './session-title';
 import { sessionGroups, workspaceForDirectory } from './session-groups';
-import { imagePaths, isThinking, timeline, withoutImagePaths, workImageSources, workImages, type WorkCount } from './timeline';
+import { imagePaths, isThinking, timeline, transcriptImages, withoutImagePaths, workImageSources, workImages, type WorkCount } from './timeline';
 import { backgroundAgents, runningAgents } from './subagents';
 import { agentMark } from './agent-marks';
-import { acknowledge, pruneUnread, subscribeUnread, unreadPanes } from './unread';
+import { acknowledge, pruneUnread, subscribeUnread, unreadPanes, unreadSummary } from './unread';
 import { ImageViewer } from './ImageViewer';
 import { addLocalMedia, clearLocalMedia, evictOldestLocalMedia, localCopy, localMediaOwner, type LocalMediaEntry } from './local-media';
 import { defaultSessionCwd } from './session-directory';
@@ -304,7 +304,7 @@ function TranscriptImage({ hostId, url, mediaType, onOpen, thumbnail = false, lo
   // A button, not an anchor: the tap target used to navigate the WebView to the
   // blob, which is a same-origin document rather than a picture. It now opens
   // the in-app viewer, where the image can be zoomed.
-  return <button type="button" className={`transcript-image${thumbnail ? ' is-thumb' : ''}`} onClick={() => onOpen(src)} title={t('查看大图')} aria-label={t('查看大图')}>
+  return <button type="button" className={`transcript-image${thumbnail ? ' is-thumb' : ''}`} onClick={() => onOpen(url)} title={t('查看大图')} aria-label={t('查看大图')}>
     <img src={src} alt={t('对话中的图片')} loading="lazy" />
   </button>;
 }
@@ -677,13 +677,21 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
           <div><dt>{t('作者')}</dt><dd>xiaotiyan</dd></div>
         </dl>
         <div className="update-row">
-          <span><strong>{updateProgressState.phase === 'downloading' ? t('正在下载更新…') : updateProgressState.phase === 'installing' ? t('正在打开安装器…') : updateRelease ? tWith('有新版本 {version}', { version: updateRelease.version }) : t('检查更新')}</strong>
-            <small>{updateProgressState.phase === 'downloading'
+          <span><strong>{IS_DEV_BUILD ? t('开发版不通过应用内更新') : updateProgressState.phase === 'downloading' ? t('正在下载更新…') : updateProgressState.phase === 'installing' ? t('正在打开安装器…') : updateRelease ? tWith('有新版本 {version}', { version: updateRelease.version }) : t('检查更新')}</strong>
+            <small>{IS_DEV_BUILD
+              // A release APK has a different application id, and Android
+              // refuses to install it over this one whatever the signature
+              // says. Offering the download would only spend eight megabytes
+              // to fail at the last step.
+              ? t('这个包与正式版并存安装，包名不同，正式版的更新包无法覆盖它。')
+              : updateProgressState.phase === 'downloading'
               ? tWith('已完成 {percent}%', { percent: String(updateProgressState.progress) })
               : updateProgressState.phase === 'installing'
                 ? t('请在系统安装器中确认。')
                 : updateRelease ? t('下载完成后会打开系统安装器。') : updateChecked ? t('已是最新版本。') : t('从 GitHub Releases 获取新版本。')}</small></span>
-          {updateProgressState.phase === 'downloading' || updateProgressState.phase === 'installing'
+          {IS_DEV_BUILD
+            ? null
+            : updateProgressState.phase === 'downloading' || updateProgressState.phase === 'installing'
             ? <Loader2 size={18} className="spin" aria-label={t('正在下载更新…')} />
             : updateRelease
             ? <button type="button" className="primary-button" onClick={() => void startUpdate()}>{t('下载并安装')}</button>
@@ -1036,16 +1044,31 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
     {picking && <div className="sheet-backdrop" role="presentation" onClick={() => { setPicking(false); closeOverlay() }}>
       <div className="host-sheet sheet-standard picker-sheet" role="dialog" aria-modal="true" aria-labelledby="picker-title" onClick={event => event.stopPropagation()}>
         <header className="sheet-head"><div><p className="sheet-eyebrow">{t('连接')}</p><h2 id="picker-title">{t('选择桌面')}</h2><p className="sheet-context">{tWith('已配对 {count} 台桌面，选择要继续的那台。', { count: state.hosts.length })}</p></div><button type="button" className="icon-button sheet-close" aria-label={t('关闭')} title={t('关闭')} onClick={() => { setPicking(false); closeOverlay() }}><X size={20} /></button></header>
-        <div className="sheet-body picker-body">{state.hosts.map(item => <button
-          type="button"
-          key={item.host.id}
-          className={`sheet-option${item.host.id === host?.host.id ? ' is-current' : ''}`}
-          aria-current={item.host.id === host?.host.id}
-          onClick={() => { controller.selectHost(item.host.id); setPicking(false); closeOverlay(); }}
-        >
-          <span className="sheet-option-copy"><strong>{item.host.name}</strong><Status host={item} /></span>
-          {item.host.id === host?.host.id ? <Check size={18} aria-hidden="true" /> : null}
-        </button>)}
+        <div className="sheet-body picker-body">{state.hosts.map(item => {
+          // Which desktop to open is a different question from which session to
+          // open, and it is asked one screen earlier. A desktop with an agent
+          // blocked on an answer and one whose turn finished while the user was
+          // away lead to different next steps, so they are counted apart rather
+          // than folded into a single dot.
+          const pending = unreadSummary([item])
+          return <button
+            type="button"
+            key={item.host.id}
+            className={`sheet-option${item.host.id === host?.host.id ? ' is-current' : ''}`}
+            aria-current={item.host.id === host?.host.id}
+            onClick={() => { controller.selectHost(item.host.id); setPicking(false); closeOverlay(); }}
+          >
+            <span className="sheet-option-copy">
+              <strong>{item.host.name}</strong>
+              <Status host={item} />
+              {(pending.waiting > 0 || pending.done > 0) && <span className="sheet-option-news">
+                {pending.waiting > 0 && <span className="news-tag is-waiting">{tWith('{count} 个等待你处理', { count: pending.waiting })}</span>}
+                {pending.done > 0 && <span className="news-tag is-done">{tWith('{count} 项新结果', { count: pending.done })}</span>}
+              </span>}
+            </span>
+            {item.host.id === host?.host.id ? <Check size={18} aria-hidden="true" /> : null}
+          </button>
+        })}
         <button type="button" className="sheet-option sheet-add" onClick={() => { setPicking(false); push({ name: 'addHost' }) }}>
           <span className="sheet-option-copy"><strong>{t('添加桌面')}</strong></span>
           <Plus size={18} aria-hidden="true" />
@@ -1081,16 +1104,24 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
         : !host ? <div className="pick-host">
             <p className="pick-host-title">{t('选择一个节点')}</p>
             <p className="pick-host-hint">{tWith('已配对 {count} 台桌面，选择要继续的那台。', { count: state.hosts.length })}</p>
-            <ul className="pick-host-list">{state.hosts.map(item => <li key={item.host.id}>
+            <ul className="pick-host-list">{state.hosts.map(item => {
+              // A desktop is "new" when any of its sessions is: one mark on the
+              // row is enough to say where to look. The count says how much is
+              // waiting, so the list can be read without opening each one.
+              const pending = unreadSummary([item])
+              return <li key={item.host.id}>
               <button type="button" className="pick-host-row" disabled={item.host.enabled === false} onClick={() => controller.selectHost(item.host.id)}>
                 <Server size={19} aria-hidden="true" />
-                <span className="pick-host-copy"><strong>{item.host.name}</strong><Status host={item} /></span>
-                {/* A desktop is "new" when any of its sessions is: one mark on
-                    the row is enough to say where to look. */}
-                {item.snapshot && unreadPanes([item]).length > 0 && <span className="news-dot" role="img" aria-label={t('有新消息')} />}
+                <span className="pick-host-copy"><strong>{item.host.name}</strong><Status host={item} />
+                  {(pending.waiting > 0 || pending.done > 0) && <span className="sheet-option-news">
+                    {pending.waiting > 0 && <span className="news-tag is-waiting">{tWith('{count} 个等待你处理', { count: pending.waiting })}</span>}
+                    {pending.done > 0 && <span className="news-tag is-done">{tWith('{count} 项新结果', { count: pending.done })}</span>}
+                  </span>}
+                </span>
+                {item.snapshot && unreadPanes([item]).length > 0 && <span className="news-dot" role="img" aria-label={t('有新消息')} title={t('有新消息')} />}
                 <ArrowRight size={17} className="muted" aria-hidden="true" />
               </button>
-            </li>)}</ul>
+            </li>})}</ul>
             <button type="button" className="secondary-button" onClick={onSettings}>{t('管理节点')}</button>
           </div> : host.status === 'connecting' && !host.snapshot ? <Loading label={t('正在连接节点…')} /> : ready && !host.snapshot ? <Loading label={t('正在读取会话…')} /> : host.snapshot?.panes.length ? <>
         <div className="list-heading"><h2>{t('会话')}</h2><span>{host.snapshot.panes.length}</span></div>
@@ -1258,8 +1289,40 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
   const overlay = useOverlay();
   const agentsOpen = overlay?.kind === 'agents';
   const viewingImage = overlay?.kind === 'image' ? overlay.src : undefined;
+  /**
+   * Which picture was opened, and every picture in the same transcript.
+   *
+   * The overlay carries the reference (the desktop path, or a blob address for
+   * a file this phone attached); the bytes are resolved on demand by the
+   * viewer, so swiping to a picture that was never scrolled past still works.
+   * Both galleries are read at render time: the transcript keeps arriving while
+   * a picture is open, and a list captured once would miss a later screenshot.
+   */
+  const sessionGallery = useMemo(() => transcriptImages(session.items).map((image) => image.url), [session.items]);
   /** The picture shown full-screen, if any. */
   const [subagent, setSubagent] = useState<{ id: string; title: string; kind?: string; finished: boolean; loading: boolean; error?: string; items: ChatItem[] }>();
+  const subagentGallery = useMemo(() => transcriptImages(subagent?.items ?? []).map((image) => image.url), [subagent?.items]);
+  /**
+   * Which transcript the open picture belongs to.
+   *
+   * The subagent sheet draws its own pictures and sits over the session, so the
+   * gallery has to follow the list the tap came from rather than "whatever is
+   * on screen" — swiping inside a subagent's record into the session's
+   * screenshots would be a different conversation.
+   */
+  const openGallery = overlay?.kind === 'image' && overlay.scope === 'subagent' ? subagentGallery : sessionGallery;
+  /**
+   * Turns a transcript reference into something an <img> can paint.
+   *
+   * A picture this phone attached is a blob already in memory; everything else
+   * is a desktop path fetched through the tunnel. Resolving lazily is what lets
+   * the viewer show a picture that was never scrolled into view.
+   */
+  const resolvePicture = useCallback((reference: string): Promise<string> => {
+    const local = localCopy(localImages, localMediaOwnerId, reference);
+    if (local) return Promise.resolve(local);
+    return controller.fetchSessionImage(session.hostId, reference);
+  }, [localImages, localMediaOwnerId, session.hostId]);
   // Same rule as the other sheets: the overlay owns "is it open", so Back
   // closes the transcript instead of leaving the app.
   const subagentOpen = overlay?.kind === 'subagent';
@@ -1271,6 +1334,33 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
   const composing = useRef(false);
   const actionLock = useRef(false);
   const scroll = useRef<HTMLDivElement>(null);
+  /** The "more actions" menu, so a tap anywhere else can close it. */
+  const maintenance = useRef<HTMLDetailsElement>(null);
+  /**
+   * A `<details>` menu stays open until its summary is tapped again, which on a
+   * phone means the menu survives the tap that was meant to dismiss it — the
+   * next tap lands on a menu item instead of on what the user was looking at.
+   * So anything outside closes it: a tap elsewhere, or Back (handled by the
+   * router). Choosing an item deliberately does *not* close it, because the
+   * menu is where several related actions live and the second one should not
+   * need the menu reopened.
+   */
+  useEffect(() => {
+    const menu = maintenance.current;
+    if (!menu) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!menu.open) return;
+      if (event.target instanceof Node && menu.contains(event.target)) return;
+      menu.open = false;
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') menu.open = false; };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
   const followBottom = useRef(true);
   const olderAnchor = useRef<{ top: number; height: number } | null>(null);
   // Set after a failed fetch so scrolling cannot retry it in a loop.
@@ -1677,7 +1767,7 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
         <button role="tab" id="source-tab" aria-controls="session-content" aria-selected={source} disabled={noMessages} className={source ? 'is-active' : ''} onClick={() => switchMode('source')}><FileCode size={15} />{t('源码')}</button>
       </div>
       <div className="view-actions">
-        <details className="view-maintenance">
+        <details className="view-maintenance" ref={maintenance}>
           <summary className="icon-button" aria-label={t('更多操作')} title={t('更多操作')}><MoreHorizontal size={18} /></summary>
           <div className="view-maintenance-menu">
             {terminal && <>
@@ -1726,7 +1816,7 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
       </div>
       <p className="prompt-hint">{t('点击后会重新核对终端内容，若问题已变化将取消。也可以在终端里直接操作。')}</p>
     </div>}
-    {viewingImage && <ImageViewer src={viewingImage} onClose={closeOverlay} />}
+    {viewingImage && <ImageViewer src={viewingImage} gallery={openGallery} resolve={resolvePicture} onClose={closeOverlay} />}
     {agentsOpen && <div className="sheet-backdrop" role="presentation" onClick={closeOverlay}>
       <div className="host-sheet" role="dialog" aria-modal="true" aria-label={t('运行中的 agent')} onClick={(event) => event.stopPropagation()}>
         <h2>{agents.length} {t('个 agent 运行中')}</h2>
@@ -1751,8 +1841,8 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
             : subagent.items.length === 0
               ? <p className="muted">{t('这个子 agent 还没有可读的记录')}</p>
               : <div className="subagent-transcript">{timeline(subagent.items).map(entry => entry.kind === 'work'
-          ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} paneId={session.paneId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />
-                  : <Message item={entry.item} markdown={markdown} hostId={session.hostId} paneId={session.paneId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />)}</div>}
+          ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} paneId={session.paneId} onOpenImage={(src) => openOverlay({ kind: 'image', src, scope: 'subagent' })} localImages={localImages} key={entry.key} />
+                  : <Message item={entry.item} markdown={markdown} hostId={session.hostId} paneId={session.paneId} onOpenImage={(src) => openOverlay({ kind: 'image', src, scope: 'subagent' })} localImages={localImages} key={entry.key} />)}</div>}
         <button type="button" className="secondary-button sheet-cancel" onClick={closeSubagent}>{t('关闭')}</button>
       </div>
     </div>}
@@ -1968,7 +2058,11 @@ export function App() {
       if (result.action === 'resume') controller.resume(true)
       // Short of that, a read proves the existing tunnels still carry traffic.
       if (result.action === 'verify') void controller.verify()
-      if (event === 'visible') controller.retryStopped()
+      // `resume` has just dialled every desktop on a fresh ladder, so retrying
+      // here would knock on doors that were opened a moment ago — the second
+      // call used to redial each runtime mid-handshake. `retryStopped` is for
+      // the return that kept its sockets.
+      if (event === 'visible' && result.action !== 'resume') controller.retryStopped()
     }
     const onVisibility = () => {
       controller.setForeground(document.visibilityState !== 'hidden')

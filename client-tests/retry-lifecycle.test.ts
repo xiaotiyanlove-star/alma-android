@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { FAST_DELAYS, MAX_RETRIES, SLOW_DELAY_MS, SESSION_DELAYS, jitter, isPermanentFailure, nextDelay, retriesLeft, sessionDelay } from '../client/backoff.ts'
-import { DROP_AFTER_MS, KEEP_WARM_MS, RECONNECT_AFTER_MS, VERIFY_AFTER_MS, initialState, step } from '../client/lifecycle.ts'
+import { DROP_AFTER_MS, VERIFY_AFTER_MS, initialState, step } from '../client/lifecycle.ts'
 
 const fixed = (value: number) => () => value
 
@@ -71,7 +71,7 @@ test('a short absence keeps the connection warm', () => {
   s = r.state
   assert.equal(r.action, 'none')
   // Still hidden, but well under the drop threshold.
-  r = step(s, 'tick', 1000 + KEEP_WARM_MS)
+  r = step(s, 'tick', 1000 + DROP_AFTER_MS / 6)
   s = r.state
   assert.equal(r.action, 'none', 'no suspend while inside the warm window')
   assert.equal(s.suspended, false)
@@ -116,15 +116,18 @@ test('a switch long enough to freeze the page probes the existing socket', () =>
   assert.equal(r.awayMs, VERIFY_AFTER_MS + 5000)
 })
 
-test('returning after the page was frozen rebuilds the tunnel', () => {
-  // Android freezes the WebView while hidden: timers stop, and the relay has
-  // already closed the socket the page still believes in. Nothing reports the
-  // disconnection, so the length of the absence is the only signal.
+test('a long absence still only probes while nothing was released', () => {
+  // The absence used to be read as "the page was frozen, so the socket is
+  // dead" and rebuilt the tunnel after a minute. That cost a working
+  // connection on every return: the route fell back to the relay and the
+  // session reloaded. One read answers the same question without guessing, so
+  // a return that never released anything asks the socket instead of
+  // replacing it — however long the absence was.
   let s = step(initialState(), 'hidden', 0).state
-  s = step(s, 'tick', RECONNECT_AFTER_MS - 1000).state
-  const r = step(s, 'visible', RECONNECT_AFTER_MS + 5000)
-  assert.equal(r.action, 'resume')
-  assert.equal(s.suspended, false, 'this is not the suspend path; nothing was released')
+  s = step(s, 'tick', DROP_AFTER_MS - 1000).state
+  const r = step(s, 'visible', DROP_AFTER_MS + 5000)
+  assert.equal(r.action, 'verify', 'the live socket is checked, not rebuilt')
+  assert.equal(s.suspended, false, 'nothing was released, so nothing to dial')
 })
 
 test('a hidden page that was suspended resumes even after a short gap', () => {

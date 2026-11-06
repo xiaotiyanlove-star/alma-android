@@ -6,17 +6,30 @@
  * away from home — the normal case — that is two seconds added to every
  * reconnect, for a path that has not worked once today.
  *
- * So a few consecutive failures suspend the path for a while. The point is not
+ * So a few consecutive failures suspend the path briefly. The point is not
  * punishment: the address may become reachable again the moment the phone
- * comes home, which is why the suspension is short and why a network change
- * clears it immediately.
+ * comes home, the Wi-Fi finishes re-associating, or the router stops dropping
+ * client-to-client traffic. The suspension is therefore short, and it lives in
+ * memory only.
+ *
+ * Both of those are deliberate, and both were learned the hard way. A verdict
+ * that outlived the process meant a phone that failed to reach its own desk
+ * while the Wi-Fi was still waking up stayed on the relay after a restart; and
+ * a half-hour cooldown, combined with a cached address that suppressed every
+ * new search, is what kept a session on `relay` for the rest of the day.
  */
 
 /** Consecutive connection failures that suspend the path. */
 export const BREAKER_THRESHOLD = 2
 
-/** How long a suspended path stays suspended. */
-export const BREAKER_COOLDOWN_MS = 30 * 60_000
+/**
+ * How long a suspended path stays suspended.
+ *
+ * Short on purpose: a wrong verdict here costs latency, and the failures that
+ * cause it are usually transient (a handover, a busy Wi-Fi radio, a desktop
+ * whose listener had not come back yet).
+ */
+export const BREAKER_COOLDOWN_MS = 3 * 60_000
 
 interface BreakerState {
   failures: number
@@ -24,31 +37,31 @@ interface BreakerState {
   suspendedAt: number
 }
 
-const KEY_PREFIX = 'herdr.lan.breaker.'
+/**
+ * Per-desktop verdicts, for this process only.
+ *
+ * Not persisted: see the note at the top. A fresh launch is a fresh opinion,
+ * because the conditions that produced the old one may not exist any more and
+ * nothing outside this module can tell the difference.
+ */
+const states = new Map<string, BreakerState>()
 
 function read(key: string): BreakerState {
-  try {
-    const raw = localStorage.getItem(key)
-    if (!raw) return { failures: 0, suspendedAt: 0 }
-    const parsed = JSON.parse(raw) as Partial<BreakerState>
-    return {
-      failures: Number(parsed.failures) || 0,
-      suspendedAt: Number(parsed.suspendedAt) || 0,
-    }
-  } catch { return { failures: 0, suspendedAt: 0 } }
+  const state = states.get(key)
+  return state ? { ...state } : { failures: 0, suspendedAt: 0 }
 }
 
 function write(key: string, state: BreakerState) {
-  try { localStorage.setItem(key, JSON.stringify(state)) } catch { /* storage blocked */ }
+  states.set(key, state)
 }
 
 /** Whether the direct path for this host may be tried right now. */
 export function directAllowed(hostId: string, now = Date.now()): boolean {
-  const state = read(KEY_PREFIX + hostId)
+  const state = read(hostId)
   if (!state.suspendedAt) return true
   if (now - state.suspendedAt >= BREAKER_COOLDOWN_MS) {
     // The cooldown expired: forget the suspension and start clean.
-    write(KEY_PREFIX + hostId, { failures: 0, suspendedAt: 0 })
+    write(hostId, { failures: 0, suspendedAt: 0 })
     return true
   }
   return false
@@ -56,16 +69,15 @@ export function directAllowed(hostId: string, now = Date.now()): boolean {
 
 /** Records the outcome of using the direct path. */
 export function recordDirect(hostId: string, reached: boolean, now = Date.now()) {
-  const key = KEY_PREFIX + hostId
   if (reached) {
     // One success is enough: the address works, whatever happened before.
-    write(key, { failures: 0, suspendedAt: 0 })
+    write(hostId, { failures: 0, suspendedAt: 0 })
     return
   }
-  const state = read(key)
+  const state = read(hostId)
   const failures = state.failures + 1
-  if (failures >= BREAKER_THRESHOLD) write(key, { failures: 0, suspendedAt: now })
-  else write(key, { failures, suspendedAt: 0 })
+  if (failures >= BREAKER_THRESHOLD) write(hostId, { failures: 0, suspendedAt: now })
+  else write(hostId, { failures, suspendedAt: 0 })
 }
 
 /**
@@ -76,13 +88,6 @@ export function recordDirect(hostId: string, reached: boolean, now = Date.now())
  * another — that is how "it stopped working at home" happens.
  */
 export function clearAllBreakers() {
-  try {
-    const keys: string[] = []
-    for (let index = 0; index < localStorage.length; index++) {
-      const key = localStorage.key(index)
-      if (key?.startsWith(KEY_PREFIX)) keys.push(key)
-    }
-    for (const key of keys) localStorage.removeItem(key)
-  } catch { /* storage blocked */ }
+  states.clear()
 }
 
