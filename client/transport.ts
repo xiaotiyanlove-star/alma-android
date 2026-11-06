@@ -13,6 +13,19 @@ import { lanUrl, usableLanAddress, type LanAddress } from './lan'
 const DIRECT_DIAL_MS = 2_000
 /** Once the socket opens, the paired desktop must prove itself quickly too. */
 const DIRECT_HANDSHAKE_MS = 3_000
+/**
+ * How long the platform may take to vouch for a local address.
+ *
+ * The answer comes from a native bridge call, and a bridge call can stall or
+ * lose its callback — most easily while the page is being frozen or resumed.
+ * This wait sits in front of *both* dials, so an unanswered one used to stall
+ * the relay behind it and leave the desktop unreachable until the app was
+ * restarted. Timing out means "not verified", which refuses the plain-text
+ * dial and lets the relay proceed immediately; it never widens what may be
+ * dialled.
+ */
+const DIRECT_GATE_MS = 2_000
+import { withDeadline } from './deadline'
 import { t } from './i18n'
 
 type Frame = Record<string, any>
@@ -298,7 +311,7 @@ export class EncryptedTunnel implements Transport {
     // Plain text is only ever allowed once the platform has confirmed the
     // desktop shares a subnet with this phone. A configured address that fails
     // that check is not "tried and falls back" — it is never dialled.
-    const allowed = await this.allowDirect(direct).catch(() => false)
+    const allowed = await withDeadline(this.allowDirect(direct), DIRECT_GATE_MS, false)
     if (!allowed || epoch !== this.epoch || this.stopped) {
       this.attach(this.socketFactory(relayUrl), epoch, pair, 'relay')
       return
@@ -340,6 +353,7 @@ export class EncryptedTunnel implements Transport {
     socket.onerror = fallback
     socket.onclose = fallback
   }
+
 
   /**
    * Wires one socket up as the current connection generation.
