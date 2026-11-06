@@ -15,7 +15,7 @@ const store = new Map<string, string>()
   length: 0,
 } as unknown as Storage
 
-const { acknowledge, isPaneUnread, pruneUnread, unreadPanes } = await import('../client/unread.ts')
+const { acknowledge, isPaneUnread, pruneUnread, unreadPanes, unreadSummary } = await import('../client/unread.ts')
 
 const host = (panes: { pane_id: string; agent_status?: string }[]) => ({
   host: { id: 'h1', name: 'desktop', relayUrl: '', connectCode: '', addedAt: 0 },
@@ -69,4 +69,29 @@ test('pruning drops panes that no longer exist', () => {
   pruneUnread([{ hostId: 'h1', paneId: 'kept' }])
   const hosts = [host([{ pane_id: 'gone', agent_status: 'done' }, { pane_id: 'kept', agent_status: 'done' }])]
   assert.deepEqual(unreadPanes(hosts).map((pane) => pane.paneId), ['gone'])
+})
+
+test('the desktop summary separates "waiting for you" from "finished"', () => {
+  // Choosing a desktop is a different question from choosing a session, and
+  // the two kinds of news lead to different next steps: one is an agent
+  // stopped on a question, the other is a result to read. A merged count would
+  // answer neither.
+  const hosts = [host([
+    { pane_id: 'p1', agent_status: 'blocked' },
+    { pane_id: 'p2', agent_status: 'blocked' },
+    { pane_id: 'p3', agent_status: 'done' },
+    { pane_id: 'p4', agent_status: 'working' },
+  ])]
+  assert.deepEqual(unreadSummary(hosts), { waiting: 2, done: 1 })
+})
+
+test('a desktop with nothing new reports nothing', () => {
+  assert.deepEqual(unreadSummary([host([{ pane_id: 'p1', agent_status: 'idle' }])]), { waiting: 0, done: 0 })
+})
+
+test('acknowledging clears a desktop’s summary too', () => {
+  const hosts = [host([{ pane_id: 'p1', agent_status: 'blocked' }])]
+  assert.deepEqual(unreadSummary(hosts), { waiting: 1, done: 0 })
+  acknowledge('h1', 'p1', 'blocked')
+  assert.deepEqual(unreadSummary(hosts), { waiting: 0, done: 0 })
 })

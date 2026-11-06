@@ -242,6 +242,13 @@ pre { max-width: 100%; }
 .sheet-option > svg { flex: 0 0 18px; color: var(--green); }
 .sheet-option-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .sheet-option-copy strong { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+/* What is waiting on a desktop, split by what the user would do about it.
+   Wraps rather than clipping: two counters plus the connection state have to
+   survive a 360 px row. */
+.sheet-option-news { display: flex; flex-wrap: wrap; gap: 6px; }
+.news-tag { display: inline-flex; align-items: center; min-height: 18px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1; white-space: nowrap; }
+.news-tag.is-waiting { border: 1px solid var(--amber-line); background: var(--tint-warm); color: var(--amber); }
+.news-tag.is-done { border: 1px solid var(--green-line); background: var(--tint); color: var(--green); }
 .sheet-cancel { width: 100%; margin-top: 12px; }
 .field-label-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .reveal-button { display: inline-flex; align-items: center; gap: 5px; min-height: 48px; padding: 0 8px; border-radius: 5px; background: transparent; color: var(--text-2); font-size: 13px; }

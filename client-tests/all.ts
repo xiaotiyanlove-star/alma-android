@@ -42,6 +42,8 @@ const UI_CHECKS = [
   'nodes-ux-check',
   'settings-nodes-check',
   'settings-groups-check',
+  // What is waiting on each desktop, on the "choose a desktop" sheet.
+  'picker-news-ui-check',
   // Weak-network behaviour: detection time and background retry silence.
   'weaknet-check',
   // Features taken from the official client: settings, mutes, restart, subagents, images.

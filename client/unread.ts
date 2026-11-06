@@ -71,6 +71,31 @@ export function isPaneUnread(hostId: string, paneId: string, status?: string): b
 }
 
 /**
+ * How much is waiting on each desktop, split by what the user would do next.
+ *
+ * The single dot on a session row is right there, but a list of desktops is
+ * read one step earlier: the question is "which machine should I open", and
+ * "an agent is blocked on me" and "a turn finished while I was away" lead to
+ * different actions. Keeping them apart is the whole point of the summary —
+ * merging them into a count would answer a question nobody asked.
+ */
+export interface UnreadSummary {
+  /** Agents waiting for an answer. */
+  waiting: number
+  /** Turns that finished with something to read. */
+  done: number
+}
+
+export function unreadSummary(hosts: HostState[]): UnreadSummary {
+  const summary: UnreadSummary = { waiting: 0, done: 0 }
+  for (const pane of unreadPanes(hosts)) {
+    if (pane.status === 'blocked') summary.waiting++
+    else summary.done++
+  }
+  return summary
+}
+
+/**
  * Records that the user is looking at this pane right now.
  *
  * Only newsworthy states are stored: writing `working` would claim the user

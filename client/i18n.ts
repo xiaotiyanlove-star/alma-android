@@ -68,6 +68,8 @@ const en: Dict = {
   '继续上滑加载更早的记录': 'Scroll up for earlier messages',
   '更早的记录加载失败，点击重试': 'Could not load earlier messages — tap to retry',
   '有新消息': 'New activity',
+  '{count} 个等待你处理': '{count} waiting for you',
+  '{count} 项新结果': '{count} new results',
   '停止 agent': 'Stop the agent',
   '停止失败，请稍后重试。': 'Could not stop the agent; try again.',
   '其他': 'Other',
