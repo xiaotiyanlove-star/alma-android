@@ -57,6 +57,23 @@ hidden) leads to `resume`. Guessing from elapsed time meant every return after a
 minute tore down a working connection, which cost a route transition to the
 relay and a session reload.
 
+## Changing route on an open session
+
+Adopting a discovered address does not rebuild the runtime. A second tunnel is
+dialled to the local address and must complete its handshake and answer
+`/api/herdr/info` **before** anything is published; only then is the relay
+runtime removed. Closing first — the old `rebuild` path — is what made the
+change visible as a disconnect.
+
+Two guards bound it:
+
+- a tunnel whose `currentRoute()` is not `direct` is never promoted, because the
+  transport falls back to the relay by itself and a relay swapped for a relay
+  would also score an address that never answered;
+- `Transport.busy()` (a queued send or an unsettled mutation) defers the move.
+  A read can be replayed on a new tunnel; a request that was sent and not
+  answered cannot, and moving the route under it invents an outcome.
+
 ## Do not change without a new security review
 
 - The P-256/HKDF/AES-GCM handshake and pairing confirmation in `transport.ts`
@@ -76,6 +93,9 @@ fallback, silent-LAN timeout, handshake rejection, and relay fallback.
 above: an unanswered gate, a double dial on return, and a search suppressed by a
 stale address. `client-tests/deadline.test.ts` pins the deadline helper, and
 `client-tests/breaker.test.ts` pins the in-memory, short-lived suspension.
+`client-tests/lan-switch.test.ts` pins the order of a route change: the new
+tunnel answers before the old one closes, a failed local dial leaves the relay
+alone, and an in-flight mutation defers the whole move.
 
 ## User-visible states
 
