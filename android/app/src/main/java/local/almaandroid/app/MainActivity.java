@@ -46,7 +46,7 @@ import java.util.Locale;
  *       不随系统语言，需要原生权威值）。</li>
  * </ul>
  */
-public class MainActivity extends BridgeActivity {
+public class MainActivity extends BridgeActivity implements DownloaderPlugin.Installer {
 
     /**
      * 与 renderer 的 --surface 一致。
@@ -147,6 +147,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(HerdrVaultPlugin.class);
         registerPlugin(KeepAlivePlugin.class);
         registerPlugin(LocalNetworkPlugin.class);
+        registerPlugin(DownloaderPlugin.class);
         super.onCreate(savedInstanceState);
 
         webView = getBridge() != null ? getBridge().getWebView() : null;
@@ -197,6 +198,43 @@ public class MainActivity extends BridgeActivity {
         // DownloadManager 会把 200 的 HTML 错误页当 APK 落盘（实机
         // 「安装包已损坏」，SUCCESSFUL ≠ 文件有效）。改为应用内
         // HttpURLConnection 直下：写盘前校验状态码/Content-Type/zip 魔数。
+    }
+
+    /**
+     * Starts the system installer for a downloaded, verified release APK.
+     *
+     * The APK lives under this app's external files directory, which is the
+     * only path the FileProvider exposes. Android shows its own confirmation
+     * and applies the normal signature check, so a file that is not signed by
+     * this app's key cannot replace it.
+     */
+    @Override
+    public void installUpdate(File apk) {
+        runOnUiThread(() -> {
+            try {
+                // A fresh install needs this switch once. Send the user to the
+                // exact system page rather than failing with no explanation.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                        && !getPackageManager().canRequestPackageInstalls()) {
+                    DownloaderPlugin.State.set("failed", "permission", 0);
+                    Intent settings = new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            Uri.parse("package:" + getPackageName()))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(settings);
+                    return;
+                }
+                Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", apk);
+                Intent intent = new Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, "application/vnd.android.package-archive")
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (Exception error) {
+                // A missing installer on an oddly configured device must not
+                // crash the app, but it must not look like a successful start.
+                DownloaderPlugin.State.set("failed", "installer", 0);
+            }
+        });
     }
 
     /**

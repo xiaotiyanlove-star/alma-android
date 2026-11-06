@@ -93,6 +93,10 @@ agent 卡住时可以让桌面端重启它：桌面端退出整个进程树、�
 
 **显示。** Markdown 渲染，会话内可随时切回源码；语言与时区默认跟随系统，也可手动指定。
 
+**应用内更新。** 「设置 → 关于」会检查最新 GitHub Release；Android 壳负责下载，并在
+打开系统安装器前校验发布页的 SHA-256。所有版本使用同一签名密钥，因此可以直接覆盖安装，
+不会丢失已配对的桌面。下载器只接受本仓库的 Release 资产地址。
+
 ## 不做什么
 
 没有远程桌面、浏览器远控、Alma 自身对话的客户端、模型/供应商配置，也没有云端推送。
@@ -144,7 +148,7 @@ npm run android:build  # 构建前端并打包 debug APK
 产物在 `android/app/build/outputs/apk/debug/`。
 `versionName` 来自 `android/app/build.gradle`，构建时注入到「关于」页面，两者不会不一致。
 
-当前本 fork 的应用版本线是 `0.1.x`（本文撰写时为 `0.1.22`）。
+当前本 fork 的应用版本线是 `0.1.x`（本文撰写时为 `0.1.23`）。
 旧的 `v0.4.213-*` 是 Capacitor 底座项目的标签，`v1.x` 是仓库历史标签；
 新应用版本必须让 `package.json` 与 `android/app/build.gradle` 中的版本完全一致。
 
@@ -206,8 +210,8 @@ client-tests/          单元测试、Playwright 流程、设备探针（本地�
 [查看发布运行记录](https://github.com/xiaotiyanlove-star/alma-android/actions/workflows/ci.yml)。
 
 ```bash
-git tag -a v0.1.22 -m "Alma Android 0.1.22"
-git push origin v0.1.22
+git tag -a v0.1.23 -m "Alma Android 0.1.23"
+git push origin v0.1.23
 ```
 
 标签必须与 `package.json`、`android/app/build.gradle` 中的版本一致，CI 会在打包前拒绝不一致。

@@ -49,8 +49,8 @@ To publish the current app version:
 ```bash
 git switch main
 git pull --ff-only
-git tag -a v0.1.22 -m "Alma Android 0.1.22"
-git push origin v0.1.22
+git tag -a v0.1.23 -m "Alma Android 0.1.23"
+git push origin v0.1.23
 ```
 
 Release signing uses Android Keystore secrets available only to the workflow:
@@ -68,6 +68,15 @@ name says `-debug`. It does not publish an unsigned release artifact.
 Read [network-routing.md](./network-routing.md) before changing the LAN or relay
 path. In particular, do not change the encrypted handshake, relay URL
 construction, subnet gate, or pairing-identity proof to work around discovery.
+
+## In-app updates
+
+`client/updates.ts` reads the repository's latest GitHub Release and compares its
+tag with the version baked into the web bundle. `DownloaderPlugin.java` in the
+Android shell downloads only an asset URL from this repository, verifies the
+published SHA-256, and hands the APK to the system installer through the existing
+FileProvider. It never installs an unsigned or unverified file. Keeping the
+release signing key stable is what lets a new APK replace the installed one.
 
 ## UI conventions
 

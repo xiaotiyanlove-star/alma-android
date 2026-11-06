@@ -46,6 +46,7 @@ const UI_CHECKS = [
   'weaknet-check',
   // Features taken from the official client: settings, mutes, restart, subagents, images.
   'parity-ui-check',
+  'update-ui-check',
 ]
 
 /**

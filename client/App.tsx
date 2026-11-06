@@ -20,6 +20,7 @@ import { buildMessage, checkFile, looksLikeImage, MAX_ATTACHMENTS, resolveMediaT
 import { Markdown } from './Markdown';
 import { CopyButton } from './CodeBlock';
 import { APP_VERSION, APP_ID, BUILD_TIME } from './version';
+import { checkForUpdate, installUpdate, updateProgress, type ReleaseInfo, type UpdateProgress } from './updates';
 import { t, tWith } from './i18n';
 import { loadDraft, saveDraft } from './drafts';
 import { back, closeOverlay, openOverlay, push, replace, useOverlay, useRoute } from './router';
@@ -439,6 +440,11 @@ function keepAliveHint(): string {
 }
 
 function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostState[]; onClose: () => void; onOpen: (id: string) => void; onLocaleChange(): void }) {
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateError, setUpdateError] = useState('');
+  const [updateRelease, setUpdateRelease] = useState<ReleaseInfo>();
+  const [updateChecked, setUpdateChecked] = useState(false);
+  const [updateProgressState, setUpdateProgressState] = useState<UpdateProgress>({ phase: 'idle', reason: '', progress: 0 });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const overlay = useOverlay();
@@ -504,6 +510,56 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
       setError(t('未能移除此节点，请重试。'));
     } finally { setRemoving(false); }
   }
+
+  async function checkUpdate() {
+    if (updateChecking) return
+    setUpdateChecking(true)
+    setUpdateError('')
+    try {
+      const result = await checkForUpdate(APP_VERSION)
+      setUpdateRelease(result.release)
+      setUpdateChecked(true)
+    } catch {
+      setUpdateError(t('检查更新失败，请稍后重试。'))
+    } finally {
+      setUpdateChecking(false)
+    }
+  }
+
+  async function startUpdate() {
+    if (!updateRelease) return
+    setUpdateError('')
+    try {
+      await installUpdate(updateRelease)
+      setUpdateProgressState({ phase: 'downloading', reason: '', progress: 0 })
+    } catch {
+      setUpdateError(t('无法启动更新，请确认已允许安装未知应用。'))
+    }
+  }
+
+  // Poll only while the native download can still change. A failed or finished
+  // download stops the timer, so the settings screen costs nothing when idle.
+  useEffect(() => {
+    if (updateProgressState.phase !== 'downloading' && updateProgressState.phase !== 'installing') return
+    const timer = window.setInterval(() => {
+      void updateProgress().then((next) => {
+        setUpdateProgressState(next)
+        if (next.phase === 'failed') {
+          const reason = next.reason
+          setUpdateError(reason === 'permission'
+            ? t('请在系统设置中允许本应用安装未知应用，然后返回重试。')
+            : reason === 'checksum'
+              ? t('更新包校验失败，已删除，请重试。')
+              : reason === 'too_large' || reason === 'not_apk'
+                ? t('下载的更新包无效，请稍后重试。')
+                : reason === 'storage'
+                  ? t('无法保存更新包，请检查存储空间。')
+                  : t('更新下载失败，请检查网络后重试。'))
+        }
+      }).catch(() => undefined)
+    }, 800)
+    return () => window.clearInterval(timer)
+  }, [updateProgressState.phase]);
 
   return <section className="settings-view">
     <header className="page-header">
@@ -620,6 +676,20 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
           <div><dt>{t('包名')}</dt><dd>{APP_ID}</dd></div>
           <div><dt>{t('作者')}</dt><dd>xiaotiyan</dd></div>
         </dl>
+        <div className="update-row">
+          <span><strong>{updateProgressState.phase === 'downloading' ? t('正在下载更新…') : updateProgressState.phase === 'installing' ? t('正在打开安装器…') : updateRelease ? tWith('有新版本 {version}', { version: updateRelease.version }) : t('检查更新')}</strong>
+            <small>{updateProgressState.phase === 'downloading'
+              ? tWith('已完成 {percent}%', { percent: String(updateProgressState.progress) })
+              : updateProgressState.phase === 'installing'
+                ? t('请在系统安装器中确认。')
+                : updateRelease ? t('下载完成后会打开系统安装器。') : updateChecked ? t('已是最新版本。') : t('从 GitHub Releases 获取新版本。')}</small></span>
+          {updateProgressState.phase === 'downloading' || updateProgressState.phase === 'installing'
+            ? <Loader2 size={18} className="spin" aria-label={t('正在下载更新…')} />
+            : updateRelease
+            ? <button type="button" className="primary-button" onClick={() => void startUpdate()}>{t('下载并安装')}</button>
+            : <button type="button" className="secondary-button" disabled={updateChecking} onClick={() => void checkUpdate()}>{updateChecking ? <Loader2 size={16} className="spin" /> : null}{updateChecking ? t('正在检查…') : t('检查更新')}</button>}
+        </div>
+        {updateError && <Notice error>{updateError}</Notice>}
         <p className="about-thanks">{t('感谢')} <strong>yetone</strong> {t('创造')} <a href="https://alma.now" target="_blank" rel="noopener noreferrer">Alma</a>
           {t('，以及')} <a href="https://herdr.dev" target="_blank" rel="noopener noreferrer">Herdr</a> {t('让终端里的 coding agent 可以远程操作。')}
           {t('本应用为非官方客户端，与 Alma、Herdr 项目均无隶属关系。')}</p>

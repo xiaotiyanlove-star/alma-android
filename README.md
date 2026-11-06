@@ -125,6 +125,12 @@ network on its own.
 **Display.** Markdown rendering with a per-session switch back to source, and language
 and time zone that follow the system unless you override them.
 
+**In-app updates.** Settings → About checks the latest GitHub Release. A newer version
+is downloaded by the Android shell, its published SHA-256 is verified before the system
+installer opens, and because every release is signed with the same key it installs over
+the current app without losing paired desktops. The downloader only accepts this
+repository's release asset URLs.
+
 ## What it does not do
 
 No remote desktop, no browser control, no client for Alma's own threads, no model or
@@ -205,7 +211,7 @@ The APK lands in `android/app/build/outputs/apk/debug/`. Its `versionName` comes
 `android/app/build.gradle` and is injected into the About screen at build time, so the
 two can never disagree.
 
-The application release line in this fork is currently `0.1.x` (`0.1.22` at the time
+The application release line in this fork is currently `0.1.x` (`0.1.23` at the time
 of writing). Older `v0.4.213-*` tags belong to the Capacitor base project, and the
 `v1.x` tags are historical repository tags; a new app release must use the exact value
 present in both `package.json` and `android/app/build.gradle`.
@@ -273,8 +279,8 @@ debug-signed APK and labels the file accordingly.
 [View release runs](https://github.com/xiaotiyanlove-star/alma-android/actions/workflows/ci.yml).
 
 ```bash
-git tag -a v0.1.22 -m "Alma Android 0.1.22"
-git push origin v0.1.22
+git tag -a v0.1.23 -m "Alma Android 0.1.23"
+git push origin v0.1.23
 ```
 
 The tag must equal the version in `package.json` and `android/app/build.gradle`; CI
