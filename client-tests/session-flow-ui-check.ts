@@ -41,15 +41,24 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
     await send({ t: 'hchunk', id, b: base64url(new TextEncoder().encode(JSON.stringify(body))) })
     await send({ t: 'hend', id })
   }
+  // Workspace w2 exists but holds nothing: a tab that was created into the
+  // wrong workspace is the bug this list once shipped. What matters here is
+  // that every row is filed under the directory it prints, whatever workspace
+  // the desktop put it in.
   const snapshot = () => ({ type: 'snapshot', snapshot: {
-    workspaces: [{ workspace_id: 'w1', label: 'alma-android', cwd: CWD }],
+    workspaces: [
+      { workspace_id: 'w1', label: 'alma-android', cwd: CWD },
+      { workspace_id: 'w2', label: 'tmp' },
+    ],
     tabs: [
       { tab_id: 't1', workspace_id: 'w1', label: '主会话' },
       { tab_id: 't2', workspace_id: 'w1', label: '副会话' },
+      { tab_id: 't3', workspace_id: 'w2', label: '跑在 tmp 的会话' },
     ],
     panes: [
       { pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 't1', agent: 'codex', agent_status: state().working ? 'working' : 'done', cwd: CWD },
       { pane_id: 'w1:p2', workspace_id: 'w1', tab_id: 't2', agent: 'codex', agent_status: 'idle', cwd: CWD },
+      { pane_id: 'w2:p1', workspace_id: 'w2', tab_id: 't3', agent: 'codex', agent_status: 'idle', cwd: '/private/tmp' },
     ],
   } })
   socket.onMessage((data) => {
@@ -110,6 +119,12 @@ try {
   result.groupTitle = await page.locator('.session-group-name').first().innerText()
   result.groupPath = await page.locator('.session-group-path').first().innerText()
   result.rowPath = await page.locator('.session-row .session-path').first().innerText()
+  // Every row under a heading has to be in the directory that heading names.
+  result.groupRowsAgree = await page.$$eval('.session-group', (groups) => groups.map((group) => ({
+    path: group.querySelector('.session-group-path')?.textContent ?? '',
+    rows: [...group.querySelectorAll('.session-row .session-path')].map((row) => row.textContent ?? ''),
+  })).every((group) => group.rows.every((row) => row === group.path)))
+  result.groupCount = await page.locator('.session-group').count()
   result.agentIcon = await page.locator('.session-row .agent-badge img').first().getAttribute('src')
   await page.screenshot({ path: 'test-artifacts/session-row-style.png' })
   result.rowLayout = await page.locator('.session-row-wrap').first().evaluate((node) => {
@@ -189,10 +204,10 @@ try {
   await renameDialog.getByRole('button', { name: '删除会话' }).click()
   await page.getByRole('dialog', { name: '删除会话' }).waitFor()
   await page.getByRole('dialog', { name: '删除会话' }).getByRole('button', { name: '删除会话' }).click()
-  await page.waitForFunction(() => document.querySelectorAll('.session-item').length === 1, undefined, { timeout: 10000 })
+  await page.waitForFunction(() => document.querySelectorAll('.session-item').length === 2, undefined, { timeout: 10000 })
   result.sessionDeleteClosedTab = rpcCalls.some((call) => call.method === 'tab.close' && call.params.tab_id === 't1')
   result.deleteSheetClosed = await page.getByRole('dialog', { name: '删除会话' }).count() === 0
-  result.remainingSessionVisible = await page.locator('.session-item').count() === 1
+  result.remainingSessionVisible = await page.locator('.session-item').count() === 2
 
   // The delete flow already returned to the list. The push is what a desktop
   // does when a turn ends, so it is also the realistic path.
@@ -230,6 +245,9 @@ try {
   must('groupTitle', 'alma-android')
   must('groupPath', CWD)
   must('rowPath', CWD)
+  // The /tmp tab is its own group rather than a row under alma-android.
+  must('groupRowsAgree', true)
+  must('groupCount', 2)
   const rowGeometry = result.rowLayout as { rowWidth?: number; surfaceWidth?: number }
   // The page gutters and rename column are fixed. Remaining content width
   // differs a few pixels between macOS and Linux font metrics, so assert the

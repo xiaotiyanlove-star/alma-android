@@ -29,6 +29,7 @@ import { stopMessage } from './backoff';
 import { mergedHeaderInfo } from './session-info';
 import { agentLook, statusTone, statusWord } from './agents';
 import { paneTitle, tabLabelOf } from './session-title';
+import { sessionGroups, workspaceForDirectory } from './session-groups';
 import { imagePaths, isThinking, timeline, withoutImagePaths, workImageSources, workImages, type WorkCount } from './timeline';
 import { backgroundAgents, runningAgents } from './subagents';
 import { agentMark } from './agent-marks';
@@ -53,61 +54,6 @@ function initialize() {
   if (initialized) return;
   initialized = true;
   void controller.initialize().catch(() => {});
-}
-
-/**
- * Sessions, grouped by the workspace they belong to.
- *
- * The workspace is Herdr's own division of a desktop, so this keeps the phone
- * list in the same shape as the desktop's tabs. The group header carries the
- * path: a workspace name alone ("app") says little when three machines are
- * paired. Order is fixed rather than by recency, because a list that reorders
- * under the thumb is how the wrong session gets opened.
- */
-export interface SessionGroup {
-  id: string
-  title: string
-  path: string
-  /** One row per tab: the tab's first pane. The rest are reached by swiping. */
-  panes: Pane[]
-  /** Every pane behind the rows above, so unread and counts cover the tab. */
-  members: Pane[]
-}
-
-/**
- * Sessions, grouped by workspace, one row per tab.
- *
- * A split tab is one session to the user — the same work, shown in two panes —
- * so listing every pane would repeat the title and the path while offering no
- * way to tell the rows apart. The row stands for the tab; the panes themselves
- * are pages inside it.
- */
-export function sessionGroups(snapshot: Snapshot | undefined): SessionGroup[] {
-  if (!snapshot) return []
-  const groups = new Map<string, SessionGroup>()
-  const seenTab = new Set<string>()
-  for (const pane of snapshot.panes) {
-    const workspace = snapshot.workspaces.find(item => item.workspace_id === pane.workspace_id)
-    const id = workspace?.workspace_id ?? pane.workspace_id ?? 'other'
-    const path = workspace?.cwd || pane.cwd || ''
-    if (!groups.has(id)) {
-      groups.set(id, {
-        id,
-        title: workspace?.label || workspace?.name || path.split('/').filter(Boolean).pop() || t('其他'),
-        path,
-        panes: [],
-        members: [],
-      })
-    }
-    const group = groups.get(id)!
-    group.members.push(pane)
-    // A tab is represented once, by its first pane in the desktop's order.
-    const tab = pane.tab_id || pane.pane_id
-    if (seenTab.has(tab)) continue
-    seenTab.add(tab)
-    group.panes.push(pane)
-  }
-  return [...groups.values()]
 }
 
 function hostStatus(host: HostState): string {
@@ -901,6 +847,7 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
   }, [host?.snapshot]);
   useEffect(() => { setNewCwd((current) => current || currentCwd) }, [currentCwd]);
 
+
   /** Read the pane after an external picker or app switch, not from stale render closure. */
   function createWithCurrentDirectory() {
     const live = controller.getState();
@@ -922,7 +869,7 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
       const { paneId } = await controller.newSession(host.host.id, {
         kind: newKind,
         cwd: newCwd.trim(),
-        workspaceId: host.snapshot?.workspaces[0]?.workspace_id,
+        workspaceId: workspaceForDirectory(host.snapshot, newCwd),
         label: newLabel.trim() || undefined,
       })
       setNewLabel('')
@@ -1089,7 +1036,9 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
           <ul className="session-list">{group.panes.map(pane => {
             // A row stands for its tab, so it is unread when *any* pane in
             // that tab is: otherwise a second pane's finished turn would never
-            // show anywhere on this screen.
+            // show anywhere on this screen. Rows carry the directory too, and
+            // it has to be the one the group header names.
+            const path = pane.cwd || pane.foreground_cwd || group.path
             const tabPanes = group.members.filter(item => (item.tab_id || item.pane_id) === (pane.tab_id || pane.pane_id))
             const unread = tabPanes.some(item => news.some(entry => entry.hostId === host.host.id && entry.paneId === item.pane_id))
             return <li key={pane.pane_id} className="session-item">
@@ -1124,7 +1073,7 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
                 {/* The agent's own mark replaces the generic terminal glyph, so a
                     list of several sessions can be scanned without reading. */}
                 <AgentBadge agent={pane.agent ?? pane.agent_session?.agent} />
-                <span className="session-row-copy"><strong>{paneTitle(pane, tabLabelOf(host.snapshot, pane))}{tabPanes.length > 1 && <span className="session-pane-count" title={tWith('这个 tab 有 {count} 个面板，进会话后左右滑动切换', { count: String(tabPanes.length) })}>+{tabPanes.length - 1}</span>}</strong>{pane.cwd && <span className="session-path" title={pane.cwd}>{pane.cwd}</span>}
+                <span className="session-row-copy"><strong>{paneTitle(pane, tabLabelOf(host.snapshot, pane))}{tabPanes.length > 1 && <span className="session-pane-count" title={tWith('这个 tab 有 {count} 个面板，进会话后左右滑动切换', { count: String(tabPanes.length) })}>+{tabPanes.length - 1}</span>}</strong>{path && <span className="session-path" title={path}>{path}</span>}
                   <span className="session-row-meta">
                     <span className={`agent-status-dot is-${statusTone(pane.agent_status)}`} aria-hidden="true" />
                     {agentLook(pane.agent ?? pane.agent_session?.agent).label || t('终端')}
