@@ -20,8 +20,8 @@ android {
         applicationId "local.almaandroid.herdr"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 23
-        versionName "0.1.23"
+        versionCode 24
+        versionName "0.1.24"
         // The launcher label, as a placeholder so the development build can
         // name itself without duplicating the whole manifest.
         manifestPlaceholders = [almaLabel: "@string/app_name"]
