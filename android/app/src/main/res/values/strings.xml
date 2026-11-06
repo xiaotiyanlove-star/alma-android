@@ -1,6 +1,9 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="app_name">Alma Android</string>
+    <!-- The development build ships beside the release, so it must not look
+         identical in the launcher or in the recent-apps card. -->
+    <string name="app_name_dev">Alma Dev</string>
     <string name="title_activity_main">Alma Android</string>
     <string name="package_name">local.almaandroid.herdr</string>
     <string name="custom_url_scheme">local.almaandroid.herdr</string>

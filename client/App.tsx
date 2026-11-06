@@ -19,7 +19,7 @@ import { parsePrompt, promptFingerprint, stripAnsi } from './prompt';
 import { buildMessage, checkFile, looksLikeImage, MAX_ATTACHMENTS, resolveMediaType } from './attachments';
 import { Markdown } from './Markdown';
 import { CopyButton } from './CodeBlock';
-import { APP_VERSION, APP_ID, BUILD_TIME } from './version';
+import { APP_VERSION, APP_ID, BUILD_TIME, IS_DEV_BUILD } from './version';
 import { checkForUpdate, installUpdate, updateProgress, type ReleaseInfo, type UpdateProgress } from './updates';
 import { t, tWith } from './i18n';
 import { loadDraft, saveDraft } from './drafts';
@@ -677,13 +677,21 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
           <div><dt>{t('作者')}</dt><dd>xiaotiyan</dd></div>
         </dl>
         <div className="update-row">
-          <span><strong>{updateProgressState.phase === 'downloading' ? t('正在下载更新…') : updateProgressState.phase === 'installing' ? t('正在打开安装器…') : updateRelease ? tWith('有新版本 {version}', { version: updateRelease.version }) : t('检查更新')}</strong>
-            <small>{updateProgressState.phase === 'downloading'
+          <span><strong>{IS_DEV_BUILD ? t('开发版不通过应用内更新') : updateProgressState.phase === 'downloading' ? t('正在下载更新…') : updateProgressState.phase === 'installing' ? t('正在打开安装器…') : updateRelease ? tWith('有新版本 {version}', { version: updateRelease.version }) : t('检查更新')}</strong>
+            <small>{IS_DEV_BUILD
+              // A release APK has a different application id, and Android
+              // refuses to install it over this one whatever the signature
+              // says. Offering the download would only spend eight megabytes
+              // to fail at the last step.
+              ? t('这个包与正式版并存安装，包名不同，正式版的更新包无法覆盖它。')
+              : updateProgressState.phase === 'downloading'
               ? tWith('已完成 {percent}%', { percent: String(updateProgressState.progress) })
               : updateProgressState.phase === 'installing'
                 ? t('请在系统安装器中确认。')
                 : updateRelease ? t('下载完成后会打开系统安装器。') : updateChecked ? t('已是最新版本。') : t('从 GitHub Releases 获取新版本。')}</small></span>
-          {updateProgressState.phase === 'downloading' || updateProgressState.phase === 'installing'
+          {IS_DEV_BUILD
+            ? null
+            : updateProgressState.phase === 'downloading' || updateProgressState.phase === 'installing'
             ? <Loader2 size={18} className="spin" aria-label={t('正在下载更新…')} />
             : updateRelease
             ? <button type="button" className="primary-button" onClick={() => void startUpdate()}>{t('下载并安装')}</button>
