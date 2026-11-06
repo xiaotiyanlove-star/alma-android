@@ -177,9 +177,9 @@ jobs:
             printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$store"
             echo "configured keystore bytes: $(wc -c < "$store")"
             file "$store" || true
-            if keytool -list -keystore "$store" -storepass "$ANDROID_KEYSTORE_PASSWORD" \
-              -alias "$ANDROID_KEY_ALIAS" -v > "$RUNNER_TEMP/keytool.txt" 2>&1; then
-              echo "keytool: keystore and alias accepted"
+          if keytool -list -keystore "$store" -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -v > "$RUNNER_TEMP/keytool.txt" 2>&1; then
+            echo "keytool: keystore password accepted"
             else
               echo "keytool: configured keystore was rejected"
               sed -E 's/(password|密码)[^ ]*/[redacted]/Ig' "$RUNNER_TEMP/keytool.txt" | tail -12
@@ -190,10 +190,32 @@ jobs:
             echo "No release keystore was provided." >&2
             exit 1
           fi
+          # The alias must have a private key for an APK release, and a JKS key
+          # can have its own key password. Read the alias list without
+          # exposing it, then prove both passwords before Gradle runs.
+          echoes="$(keytool -list -keystore "$store" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" 2>/dev/null | tail -n +2)"
+          aliases="$(printf '%s\n' "$echoes" | sed -n 's/^\(.*\), [A-Za-z0-9 ]*,.*$/\1/p')"
+          count="$(printf '%s\n' "$aliases" | sed '/^$/d' | wc -l | tr -d ' ')"
+          if [ "$count" -ne 1 ]; then
+            echo "keystore contains $count aliases; expected exactly one" >&2
+            exit 1
+          fi
+          actual_alias="$(printf '%s\n' "$aliases" | sed -n '1p')"
+          echo "keystore alias: $actual_alias"
+          if keytool -list -keystore "$store" -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$actual_alias" -keypass "${ANDROID_KEY_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}" >/dev/null 2>&1; then
+            echo "key password accepted"
+          else
+            echo "key password rejected" >&2
+            exit 1
+          fi
+          echo "ANDROID_KEY_ALIAS=$actual_alias" >> "$GITHUB_ENV"
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
       - name: Build signed release APK
         env:
