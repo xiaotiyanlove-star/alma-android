@@ -272,9 +272,11 @@ client-tests/          Unit tests, Playwright flows, device probes
 ## Releases
 
 `.github/workflows/ci.yml` builds and checks every push to `main`. Pushing a matching
-`v*` tag creates the public GitHub Release and uploads the signed APK when the Android
-keystore secrets are configured; otherwise the workflow deliberately publishes the
-debug-signed APK and labels the file accordingly.
+`v*` tag creates the public GitHub Release and uploads the release-signed APK. The job
+fails rather than substituting a different key if the signing secrets cannot be used.
+
+The full runbook, including secret setup and post-release verification, is in
+[docs/releasing.md](docs/releasing.md).
 
 [View release runs](https://github.com/xiaotiyanlove-star/alma-android/actions/workflows/ci.yml).
 

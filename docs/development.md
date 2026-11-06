@@ -41,27 +41,12 @@ The publishing workflow is `.github/workflows/ci.yml`. Pushing a `v*` tag starts
 5. a SHA-256 checksum file;
 6. a public GitHub Release with the APK attached.
 
+The complete operational runbook — secret setup, version bump, tagging,
+post-publish verification, troubleshooting, and the Git-history check — is in
+[releasing.md](./releasing.md).
+
 The current application release line is `0.1.x`. Historical `v0.4.213-*` and
 `v1.x` tags do not describe the current application package version.
-
-To publish the current app version:
-
-```bash
-git switch main
-git pull --ff-only
-git tag -a v0.1.23 -m "Alma Android 0.1.23"
-git push origin v0.1.23
-```
-
-Release signing uses Android Keystore secrets available only to the workflow:
-
-- `ANDROID_KEYSTORE_BASE64`
-- `ANDROID_KEYSTORE_PASSWORD`
-- `ANDROID_KEY_ALIAS`
-- `ANDROID_KEY_PASSWORD`
-
-When those secrets are absent, the workflow publishes a debug-signed APK whose
-name says `-debug`. It does not publish an unsigned release artifact.
 
 ## Connection changes
 

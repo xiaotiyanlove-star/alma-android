@@ -204,8 +204,10 @@ client-tests/          单元测试、Playwright 流程、设备探针（本地�
 ## 发布
 
 `.github/workflows/ci.yml` 会在每次推送到 `main` 时完成检查和构建。推送与版本一致的
-`v*` 标签会创建公开 GitHub Release 并上传 APK；配置了 Android keystore secrets 时
-发布签名 release APK，否则工作流会明确发布 debug 签名包，并在文件名中标注。
+`v*` 标签会创建公开 GitHub Release 并上传正式签名 APK。若签名 secrets 不可用，
+工作流会直接失败，不会改用其他密钥发布。
+
+完整发包手册（含 secrets 配置与发布后核验）见 [docs/releasing.md](docs/releasing.md)。
 
 [查看发布运行记录](https://github.com/xiaotiyanlove-star/alma-android/actions/workflows/ci.yml)。
 
