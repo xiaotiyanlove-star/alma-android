@@ -113,6 +113,18 @@ interface Runtime {
   stopped?: 'exhausted' | 'auth' | 'unknown-host'
   /** Stops the idle probe when this runtime is replaced or closed. */
   stopHeartbeat?: () => void
+  /**
+   * A dial is currently in flight.
+   *
+   * More than one caller can ask for a connection within the same tick — the
+   * return-to-foreground path did exactly that (`resume` replaced the tunnel
+   * and then `retryStopped` dialled the same runtime again, because its status
+   * was still `connecting`). Each extra dial opened a second socket, sent a
+   * second `/api/herdr/info`, and could overwrite `hub` with a subscription
+   * belonging to the socket that lost. Nothing here is reentrant, so the flag
+   * is what makes one runtime one dial.
+   */
+  connecting?: boolean
 }
 export class Controller {
   private state: AppState = { hosts: [], loading: true, foreground: true }
@@ -556,12 +568,15 @@ export class Controller {
     const host = hostState?.host
     if (!host || host.enabled === false) return
 
-    // Once an address is known, the breaker decides whether to dial it. Do not
-    // rescan the same subnet just because that address is in its cooldown —
-    // the cooldown exists precisely to stop spending time on this path. A
-    // network change clears the discovered address and the breaker before the
-    // next scan.
-    if (hostState?.discoveredLan) return
+    // A known address normally means there is nothing to search for. It stops
+    // meaning that as soon as the tunnel is not using it: the address may be
+    // stale (the desktop moved, the phone changed network), or simply not
+    // dialled because the breaker suspended it. Either way the session is on
+    // the relay while the desktop is probably right here, and the only way to
+    // learn otherwise is to ask again — one round trip on the open tunnel, at
+    // the ordinary interval. Returning early here is what pinned a session to
+    // `relay` for the rest of the day after a single stale address.
+    if (hostState?.discoveredLan && hostState.route === 'direct') return
     const at = this.lastDiscover.get(id) ?? 0
     const now = Date.now()
     // A desktop that answered with a candidate list but did not answer on any
@@ -669,7 +684,15 @@ export class Controller {
   /** Resumes discovery only after the app is visible again. */
   private maybeDiscoverAll() {
     for (const [id, runtime] of [...this.runtimes]) {
-      if (runtime.stopped || this.state.hosts.find((item) => item.host.id === id)?.status !== 'online') this.maybeDiscover(id, true)
+      const state = this.state.hosts.find((item) => item.host.id === id)
+      // A desktop that is connected but on the relay is exactly the case worth
+      // asking about right now: returning to the app is when the user notices
+      // the latency, and one authenticated request on the open tunnel settles
+      // where the desktop actually is. The throttle is skipped here because
+      // this is a single question per return, not a scan.
+      if (runtime.stopped || state?.status !== 'online' || (state.discoveredLan !== undefined && state.route !== 'direct')) {
+        this.maybeDiscover(id, true)
+      }
     }
   }
 
@@ -722,6 +745,11 @@ export class Controller {
   }
 
   private async connectHost(id: string, runtime: Runtime) {
+    // One dial per runtime at a time. A call that arrives while a dial is in
+    // flight has nothing to add: the dial in progress already ends in `online`
+    // or in a scheduled retry, and both paths re-read the current state.
+    if (runtime.connecting) return
+    runtime.connecting = true
     const epoch = ++runtime.epoch
     runtime.hub?.close()
     // The address is offered before every dial, not only when the runtime is
@@ -784,6 +812,8 @@ export class Controller {
       if (this.runtimes.get(id) !== runtime || epoch !== runtime.epoch) return
       this.patchHost(id, { status: 'error', herdrOnline: false, error: message(error) })
       this.scheduleHost(id, runtime)
+    } finally {
+      runtime.connecting = false
     }
   }
   private storageQueue: Promise<unknown> = Promise.resolve()
@@ -1325,7 +1355,10 @@ export class Controller {
     this.closeRuntime(runtime)
     const fresh = this.makeRuntime(host)
     this.runtimes.set(id, fresh)
-    this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined, error: undefined })
+    // The route belongs to the transport that is being discarded; keeping it
+    // would show "lan" while the replacement is still dialling the relay, and
+    // it is also what the discovery early-return reads.
+    this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined, error: undefined, route: undefined })
     void this.connectHost(id, fresh)
   }
 
@@ -1387,6 +1420,12 @@ export class Controller {
    * keeps the live socket.
    */
   resume = (rebuild: boolean) => {
+    // The subnet cache outlives a trip to another app, and a phone that has
+    // just re-associated with Wi-Fi can answer with the empty list it had while
+    // the link was down. Re-read it once here, so the first dial after a return
+    // is judged on the network that exists now rather than the one that existed
+    // before the screen turned off.
+    forgetSubnets()
     for (const state of this.state.hosts) {
       // A switched-off desktop was never released, so there is nothing to
       // resume — and bringing it back would defeat the switch.
@@ -1404,7 +1443,7 @@ export class Controller {
       const runtime = this.makeRuntime(state.host)
       this.runtimes.set(id, runtime)
       this.discoveryRequestedForOutage.delete(id)
-      this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined, error: undefined })
+      this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined, error: undefined, route: undefined })
       void this.connectHost(id, runtime)
     }
   }

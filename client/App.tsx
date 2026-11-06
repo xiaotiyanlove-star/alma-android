@@ -34,7 +34,7 @@ import { sessionGroups, workspaceForDirectory } from './session-groups';
 import { imagePaths, isThinking, timeline, withoutImagePaths, workImageSources, workImages, type WorkCount } from './timeline';
 import { backgroundAgents, runningAgents } from './subagents';
 import { agentMark } from './agent-marks';
-import { acknowledge, pruneUnread, subscribeUnread, unreadPanes } from './unread';
+import { acknowledge, pruneUnread, subscribeUnread, unreadPanes, unreadSummary } from './unread';
 import { ImageViewer } from './ImageViewer';
 import { addLocalMedia, clearLocalMedia, evictOldestLocalMedia, localCopy, localMediaOwner, type LocalMediaEntry } from './local-media';
 import { defaultSessionCwd } from './session-directory';
@@ -1036,16 +1036,31 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
     {picking && <div className="sheet-backdrop" role="presentation" onClick={() => { setPicking(false); closeOverlay() }}>
       <div className="host-sheet sheet-standard picker-sheet" role="dialog" aria-modal="true" aria-labelledby="picker-title" onClick={event => event.stopPropagation()}>
         <header className="sheet-head"><div><p className="sheet-eyebrow">{t('连接')}</p><h2 id="picker-title">{t('选择桌面')}</h2><p className="sheet-context">{tWith('已配对 {count} 台桌面，选择要继续的那台。', { count: state.hosts.length })}</p></div><button type="button" className="icon-button sheet-close" aria-label={t('关闭')} title={t('关闭')} onClick={() => { setPicking(false); closeOverlay() }}><X size={20} /></button></header>
-        <div className="sheet-body picker-body">{state.hosts.map(item => <button
-          type="button"
-          key={item.host.id}
-          className={`sheet-option${item.host.id === host?.host.id ? ' is-current' : ''}`}
-          aria-current={item.host.id === host?.host.id}
-          onClick={() => { controller.selectHost(item.host.id); setPicking(false); closeOverlay(); }}
-        >
-          <span className="sheet-option-copy"><strong>{item.host.name}</strong><Status host={item} /></span>
-          {item.host.id === host?.host.id ? <Check size={18} aria-hidden="true" /> : null}
-        </button>)}
+        <div className="sheet-body picker-body">{state.hosts.map(item => {
+          // Which desktop to open is a different question from which session to
+          // open, and it is asked one screen earlier. A desktop with an agent
+          // blocked on an answer and one whose turn finished while the user was
+          // away lead to different next steps, so they are counted apart rather
+          // than folded into a single dot.
+          const pending = unreadSummary([item])
+          return <button
+            type="button"
+            key={item.host.id}
+            className={`sheet-option${item.host.id === host?.host.id ? ' is-current' : ''}`}
+            aria-current={item.host.id === host?.host.id}
+            onClick={() => { controller.selectHost(item.host.id); setPicking(false); closeOverlay(); }}
+          >
+            <span className="sheet-option-copy">
+              <strong>{item.host.name}</strong>
+              <Status host={item} />
+              {(pending.waiting > 0 || pending.done > 0) && <span className="sheet-option-news">
+                {pending.waiting > 0 && <span className="news-tag is-waiting">{tWith('{count} 个等待你处理', { count: pending.waiting })}</span>}
+                {pending.done > 0 && <span className="news-tag is-done">{tWith('{count} 项新结果', { count: pending.done })}</span>}
+              </span>}
+            </span>
+            {item.host.id === host?.host.id ? <Check size={18} aria-hidden="true" /> : null}
+          </button>
+        })}
         <button type="button" className="sheet-option sheet-add" onClick={() => { setPicking(false); push({ name: 'addHost' }) }}>
           <span className="sheet-option-copy"><strong>{t('添加桌面')}</strong></span>
           <Plus size={18} aria-hidden="true" />
@@ -1081,16 +1096,24 @@ function Sessions({ state, onSettings, onOpenSession }: { state: AppState; onSet
         : !host ? <div className="pick-host">
             <p className="pick-host-title">{t('选择一个节点')}</p>
             <p className="pick-host-hint">{tWith('已配对 {count} 台桌面，选择要继续的那台。', { count: state.hosts.length })}</p>
-            <ul className="pick-host-list">{state.hosts.map(item => <li key={item.host.id}>
+            <ul className="pick-host-list">{state.hosts.map(item => {
+              // A desktop is "new" when any of its sessions is: one mark on the
+              // row is enough to say where to look. The count says how much is
+              // waiting, so the list can be read without opening each one.
+              const pending = unreadSummary([item])
+              return <li key={item.host.id}>
               <button type="button" className="pick-host-row" disabled={item.host.enabled === false} onClick={() => controller.selectHost(item.host.id)}>
                 <Server size={19} aria-hidden="true" />
-                <span className="pick-host-copy"><strong>{item.host.name}</strong><Status host={item} /></span>
-                {/* A desktop is "new" when any of its sessions is: one mark on
-                    the row is enough to say where to look. */}
-                {item.snapshot && unreadPanes([item]).length > 0 && <span className="news-dot" role="img" aria-label={t('有新消息')} />}
+                <span className="pick-host-copy"><strong>{item.host.name}</strong><Status host={item} />
+                  {(pending.waiting > 0 || pending.done > 0) && <span className="sheet-option-news">
+                    {pending.waiting > 0 && <span className="news-tag is-waiting">{tWith('{count} 个等待你处理', { count: pending.waiting })}</span>}
+                    {pending.done > 0 && <span className="news-tag is-done">{tWith('{count} 项新结果', { count: pending.done })}</span>}
+                  </span>}
+                </span>
+                {item.snapshot && unreadPanes([item]).length > 0 && <span className="news-dot" role="img" aria-label={t('有新消息')} title={t('有新消息')} />}
                 <ArrowRight size={17} className="muted" aria-hidden="true" />
               </button>
-            </li>)}</ul>
+            </li>})}</ul>
             <button type="button" className="secondary-button" onClick={onSettings}>{t('管理节点')}</button>
           </div> : host.status === 'connecting' && !host.snapshot ? <Loading label={t('正在连接节点…')} /> : ready && !host.snapshot ? <Loading label={t('正在读取会话…')} /> : host.snapshot?.panes.length ? <>
         <div className="list-heading"><h2>{t('会话')}</h2><span>{host.snapshot.panes.length}</span></div>
@@ -1968,7 +1991,11 @@ export function App() {
       if (result.action === 'resume') controller.resume(true)
       // Short of that, a read proves the existing tunnels still carry traffic.
       if (result.action === 'verify') void controller.verify()
-      if (event === 'visible') controller.retryStopped()
+      // `resume` has just dialled every desktop on a fresh ladder, so retrying
+      // here would knock on doors that were opened a moment ago — the second
+      // call used to redial each runtime mid-handshake. `retryStopped` is for
+      // the return that kept its sockets.
+      if (event === 'visible' && result.action !== 'resume') controller.retryStopped()
     }
     const onVisibility = () => {
       controller.setForeground(document.visibilityState !== 'hidden')
