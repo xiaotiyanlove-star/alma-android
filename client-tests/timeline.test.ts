@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { countWork, imagePaths, isThinking, timeline, withoutImagePaths, workKind } from '../client/timeline.ts'
+import { countWork, imagePaths, isThinking, timeline, transcriptImages, withoutImagePaths, workKind } from '../client/timeline.ts'
 
 const tool = (id: string, name: string, done = true, text?: string, input?: Record<string, unknown>) =>
   ({ id, kind: 'tool', time: '2026-11-02T00:00:00Z', text, tool: { id, name, done, input } })
@@ -116,4 +116,34 @@ test('two paths on one line stay two', () => {
   // would be taken as one path and neither picture would be shown.
   assert.deepEqual(imagePaths('/tmp/a.png and /tmp/b.jpg'), ['/tmp/a.png', '/tmp/b.jpg'])
   assert.deepEqual(imagePaths('/tmp/a.png\n/tmp/b.png'), ['/tmp/a.png', '/tmp/b.png'])
+})
+
+test('the swipe gallery follows the order the page draws pictures in', () => {
+  // A run of tool calls draws its pictures under the folded line, then the next
+  // reply draws its own below that. Swiping has to follow what the thumb just
+  // saw, not "all tool pictures first".
+  const withImages = (id: string, urls: string[]) => ({ id, kind: 'tool', time: '2026-11-02T00:00:00Z', images: urls.map((url) => ({ url })) })
+  const items = [
+    say('m1', 'start'),
+    withImages('t1', ['/api/herdr/image/a.png']),
+    tool('t2', 'Read'),
+    say('m2', 'see /Users/me/shot.png'),
+    withImages('t3', ['/api/herdr/image/c.png', '/api/herdr/image/a.png']),
+  ]
+  assert.deepEqual(transcriptImages(items).map((image) => image.url), [
+    '/api/herdr/image/a.png',
+    '/Users/me/shot.png',
+    '/api/herdr/image/c.png',
+  ])
+})
+
+test('the same picture twice is one stop in the gallery', () => {
+  // The desktop often repeats a result as an image field and again as a path in
+  // the text; the page draws it once, so swiping must not stop twice.
+  const dup = [{ id: 'm1', kind: 'assistant', text: 'done /Users/me/shot.png', images: [{ url: '/Users/me/shot.png' }] }]
+  assert.deepEqual(transcriptImages(dup).map((image) => image.url), ['/Users/me/shot.png'])
+})
+
+test('a transcript with no pictures has an empty gallery', () => {
+  assert.deepEqual(transcriptImages([say('m1', 'nothing to see')]), [])
 })

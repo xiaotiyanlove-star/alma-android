@@ -81,6 +81,38 @@ export function workImageSources(items: ChatItem[]): Map<string, string> {
   return sources
 }
 
+/**
+ * Every picture in a transcript, in the order it is drawn on the page.
+ *
+ * The full-screen viewer swipes left and right through these, so the order has
+ * to be the reading order rather than "all pictures of one kind first": a run
+ * of tool calls draws its pictures under the folded line, and the next reply
+ * draws its own below that, and swiping has to follow what the thumb just saw.
+ *
+ * Deduplicated by address. The same screenshot is often repeated in the tool
+ * result and again as a path in the text, and the page shows it once.
+ */
+export function transcriptImages(items: ChatItem[]): ImageRef[] {
+  const seen = new Set<string>()
+  const out: ImageRef[] = []
+  const add = (image: ImageRef) => {
+    if (!image?.url || seen.has(image.url)) return
+    seen.add(image.url)
+    out.push(image)
+  }
+  for (const entry of timeline(items)) {
+    if (entry.kind === 'work') {
+      // `entry.images` is what the folded run draws below itself.
+      for (const image of entry.images) add(image)
+      continue
+    }
+    const item = entry.item
+    for (const image of item.images ?? []) add(image)
+    for (const url of imagePaths(item.text || item.summary)) add({ url })
+  }
+  return out
+}
+
 export function workKind(toolName: string | undefined): WorkKind {
   if (!toolName) return 'other'
   return TOOL_KIND[toolName.trim().toLowerCase()] ?? 'other'

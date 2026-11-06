@@ -23,8 +23,15 @@ type Overlay =
   | { kind: 'editHost' }
   | { kind: 'forget' }
   | { kind: 'share' }
-  /** A picture opened full-screen from the transcript. */
-  | { kind: 'image'; src: string }
+  /**
+   * A picture opened full-screen from the transcript.
+   *
+   * `scope` says which transcript it came from. The viewer swipes through that
+   * transcript's pictures in reading order, and the subagent sheet draws its
+   * own — so the list has to follow where the tap happened rather than
+   * "whatever is on screen".
+   */
+  | { kind: 'image'; src: string; scope?: 'session' | 'subagent' }
   /** The sheet listing agents still running in this session. */
   | { kind: 'agents' }
   /** A dispatched subagent's own transcript. */

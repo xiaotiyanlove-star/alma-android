@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ChangeEvent, FormEvent, KeyboardEvent, ReactNode, TouchEvent } from 'react';
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown, ChevronRight, GitBranch,
@@ -31,7 +31,7 @@ import { mergedHeaderInfo } from './session-info';
 import { agentLook, statusTone, statusWord } from './agents';
 import { paneTitle, tabLabelOf } from './session-title';
 import { sessionGroups, workspaceForDirectory } from './session-groups';
-import { imagePaths, isThinking, timeline, withoutImagePaths, workImageSources, workImages, type WorkCount } from './timeline';
+import { imagePaths, isThinking, timeline, transcriptImages, withoutImagePaths, workImageSources, workImages, type WorkCount } from './timeline';
 import { backgroundAgents, runningAgents } from './subagents';
 import { agentMark } from './agent-marks';
 import { acknowledge, pruneUnread, subscribeUnread, unreadPanes, unreadSummary } from './unread';
@@ -304,7 +304,7 @@ function TranscriptImage({ hostId, url, mediaType, onOpen, thumbnail = false, lo
   // A button, not an anchor: the tap target used to navigate the WebView to the
   // blob, which is a same-origin document rather than a picture. It now opens
   // the in-app viewer, where the image can be zoomed.
-  return <button type="button" className={`transcript-image${thumbnail ? ' is-thumb' : ''}`} onClick={() => onOpen(src)} title={t('查看大图')} aria-label={t('查看大图')}>
+  return <button type="button" className={`transcript-image${thumbnail ? ' is-thumb' : ''}`} onClick={() => onOpen(url)} title={t('查看大图')} aria-label={t('查看大图')}>
     <img src={src} alt={t('对话中的图片')} loading="lazy" />
   </button>;
 }
@@ -1289,8 +1289,40 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
   const overlay = useOverlay();
   const agentsOpen = overlay?.kind === 'agents';
   const viewingImage = overlay?.kind === 'image' ? overlay.src : undefined;
+  /**
+   * Which picture was opened, and every picture in the same transcript.
+   *
+   * The overlay carries the reference (the desktop path, or a blob address for
+   * a file this phone attached); the bytes are resolved on demand by the
+   * viewer, so swiping to a picture that was never scrolled past still works.
+   * Both galleries are read at render time: the transcript keeps arriving while
+   * a picture is open, and a list captured once would miss a later screenshot.
+   */
+  const sessionGallery = useMemo(() => transcriptImages(session.items).map((image) => image.url), [session.items]);
   /** The picture shown full-screen, if any. */
   const [subagent, setSubagent] = useState<{ id: string; title: string; kind?: string; finished: boolean; loading: boolean; error?: string; items: ChatItem[] }>();
+  const subagentGallery = useMemo(() => transcriptImages(subagent?.items ?? []).map((image) => image.url), [subagent?.items]);
+  /**
+   * Which transcript the open picture belongs to.
+   *
+   * The subagent sheet draws its own pictures and sits over the session, so the
+   * gallery has to follow the list the tap came from rather than "whatever is
+   * on screen" — swiping inside a subagent's record into the session's
+   * screenshots would be a different conversation.
+   */
+  const openGallery = overlay?.kind === 'image' && overlay.scope === 'subagent' ? subagentGallery : sessionGallery;
+  /**
+   * Turns a transcript reference into something an <img> can paint.
+   *
+   * A picture this phone attached is a blob already in memory; everything else
+   * is a desktop path fetched through the tunnel. Resolving lazily is what lets
+   * the viewer show a picture that was never scrolled into view.
+   */
+  const resolvePicture = useCallback((reference: string): Promise<string> => {
+    const local = localCopy(localImages, localMediaOwnerId, reference);
+    if (local) return Promise.resolve(local);
+    return controller.fetchSessionImage(session.hostId, reference);
+  }, [localImages, localMediaOwnerId, session.hostId]);
   // Same rule as the other sheets: the overlay owns "is it open", so Back
   // closes the transcript instead of leaving the app.
   const subagentOpen = overlay?.kind === 'subagent';
@@ -1302,6 +1334,33 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
   const composing = useRef(false);
   const actionLock = useRef(false);
   const scroll = useRef<HTMLDivElement>(null);
+  /** The "more actions" menu, so a tap anywhere else can close it. */
+  const maintenance = useRef<HTMLDetailsElement>(null);
+  /**
+   * A `<details>` menu stays open until its summary is tapped again, which on a
+   * phone means the menu survives the tap that was meant to dismiss it — the
+   * next tap lands on a menu item instead of on what the user was looking at.
+   * So anything outside closes it: a tap elsewhere, or Back (handled by the
+   * router). Choosing an item deliberately does *not* close it, because the
+   * menu is where several related actions live and the second one should not
+   * need the menu reopened.
+   */
+  useEffect(() => {
+    const menu = maintenance.current;
+    if (!menu) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!menu.open) return;
+      if (event.target instanceof Node && menu.contains(event.target)) return;
+      menu.open = false;
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') menu.open = false; };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
   const followBottom = useRef(true);
   const olderAnchor = useRef<{ top: number; height: number } | null>(null);
   // Set after a failed fetch so scrolling cannot retry it in a loop.
@@ -1708,7 +1767,7 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
         <button role="tab" id="source-tab" aria-controls="session-content" aria-selected={source} disabled={noMessages} className={source ? 'is-active' : ''} onClick={() => switchMode('source')}><FileCode size={15} />{t('源码')}</button>
       </div>
       <div className="view-actions">
-        <details className="view-maintenance">
+        <details className="view-maintenance" ref={maintenance}>
           <summary className="icon-button" aria-label={t('更多操作')} title={t('更多操作')}><MoreHorizontal size={18} /></summary>
           <div className="view-maintenance-menu">
             {terminal && <>
@@ -1757,7 +1816,7 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
       </div>
       <p className="prompt-hint">{t('点击后会重新核对终端内容，若问题已变化将取消。也可以在终端里直接操作。')}</p>
     </div>}
-    {viewingImage && <ImageViewer src={viewingImage} onClose={closeOverlay} />}
+    {viewingImage && <ImageViewer src={viewingImage} gallery={openGallery} resolve={resolvePicture} onClose={closeOverlay} />}
     {agentsOpen && <div className="sheet-backdrop" role="presentation" onClick={closeOverlay}>
       <div className="host-sheet" role="dialog" aria-modal="true" aria-label={t('运行中的 agent')} onClick={(event) => event.stopPropagation()}>
         <h2>{agents.length} {t('个 agent 运行中')}</h2>
@@ -1782,8 +1841,8 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
             : subagent.items.length === 0
               ? <p className="muted">{t('这个子 agent 还没有可读的记录')}</p>
               : <div className="subagent-transcript">{timeline(subagent.items).map(entry => entry.kind === 'work'
-          ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} paneId={session.paneId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />
-                  : <Message item={entry.item} markdown={markdown} hostId={session.hostId} paneId={session.paneId} onOpenImage={(src) => openOverlay({ kind: 'image', src })} localImages={localImages} key={entry.key} />)}</div>}
+          ? <WorkGroup items={entry.items} running={entry.running} counts={entry.counts} hostId={session.hostId} paneId={session.paneId} onOpenImage={(src) => openOverlay({ kind: 'image', src, scope: 'subagent' })} localImages={localImages} key={entry.key} />
+                  : <Message item={entry.item} markdown={markdown} hostId={session.hostId} paneId={session.paneId} onOpenImage={(src) => openOverlay({ kind: 'image', src, scope: 'subagent' })} localImages={localImages} key={entry.key} />)}</div>}
         <button type="button" className="secondary-button sheet-cancel" onClick={closeSubagent}>{t('关闭')}</button>
       </div>
     </div>}

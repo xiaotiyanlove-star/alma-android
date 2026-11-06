@@ -37,6 +37,8 @@ const UI_CHECKS = [
   'branch-ui-check',
   'model-detail-ui-check',
   'pane-swipe-ui-check',
+  // Swiping through a transcript's pictures, and dismissing the actions menu.
+  'picture-gallery-ui-check',
   'back-ui-check',
   'fixes-ui-check',
   'nodes-ux-check',
