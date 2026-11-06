@@ -144,7 +144,7 @@ npm run android:build  # 构建前端并打包 debug APK
 产物在 `android/app/build/outputs/apk/debug/`。
 `versionName` 来自 `android/app/build.gradle`，构建时注入到「关于」页面，两者不会不一致。
 
-当前本 fork 的应用版本线是 `0.1.x`（本文撰写时为 `0.1.20`）。
+当前本 fork 的应用版本线是 `0.1.x`（本文撰写时为 `0.1.21`）。
 旧的 `v0.4.213-*` 是 Capacitor 底座项目的标签，`v1.x` 是仓库历史标签；
 新应用版本必须让 `package.json` 与 `android/app/build.gradle` 中的版本完全一致。
 
@@ -206,8 +206,8 @@ client-tests/          单元测试、Playwright 流程、设备探针（本地�
 [查看发布运行记录](https://github.com/xiaotiyanlove-star/alma-android/actions/workflows/ci.yml)。
 
 ```bash
-git tag -a v0.1.20 -m "Alma Android 0.1.20"
-git push origin v0.1.20
+git tag -a v0.1.21 -m "Alma Android 0.1.21"
+git push origin v0.1.21
 ```
 
 标签必须与 `package.json`、`android/app/build.gradle` 中的版本一致，CI 会在打包前拒绝不一致。
