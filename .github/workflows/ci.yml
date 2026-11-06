@@ -165,11 +165,15 @@ jobs:
           mkdir -p "$RUNNER_TEMP/keystore"
           store="$RUNNER_TEMP/keystore/release.jks"
           if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$store"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$store"
+            echo "configured keystore bytes: $(wc -c < "$store")"
+            file "$store" || true
             if keytool -list -keystore "$store" -storepass "$ANDROID_KEYSTORE_PASSWORD" \
-              -alias "$ANDROID_KEY_ALIAS" >/dev/null 2>&1; then
-              echo "Using the configured release keystore."
+              -alias "$ANDROID_KEY_ALIAS" -v > "$RUNNER_TEMP/keytool.txt" 2>&1; then
+              echo "keytool: keystore and alias accepted"
             else
+              echo "keytool: configured keystore was rejected"
+              sed -E 's/(password|密码)[^ ]*/[redacted]/Ig' "$RUNNER_TEMP/keytool.txt" | tail -12
               rm -f "$store"
             fi
           fi
