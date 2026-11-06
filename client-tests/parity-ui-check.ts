@@ -7,9 +7,9 @@
  */
 import { expect } from '@playwright/test'
 import { launchBrowser } from './browser.ts'
-import { mkdir } from 'node:fs/promises'
 import { addDesktop } from './helpers.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, routingId, sealFrame } from '../client/crypto.ts'
+import { screenshotDir } from './artifacts.ts'
 
 const code = base64url(new Uint8Array(32).fill(11))
 const [id] = await Promise.all([routingId(code)])
@@ -135,8 +135,7 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
   })
 })
 
-const screenshots = process.env.SHOT_DIR ?? '/private/tmp/alma-android-parity/test-artifacts'
-await mkdir(screenshots, { recursive: true })
+const screenshots = process.env.SHOT_DIR ?? await screenshotDir('parity')
 try {
   await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await addDesktop(page, '工作电脑', `alma://connect?u=https://relay.invalid&k=${code}&e2e=1`)

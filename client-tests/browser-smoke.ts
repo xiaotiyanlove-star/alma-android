@@ -1,8 +1,8 @@
 import { expect } from '@playwright/test'
 import { launchBrowser } from './browser.ts'
-import { mkdir } from 'node:fs/promises'
 import { addDesktop } from './helpers.ts'
 import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, routingId, sealFrame } from '../client/crypto.ts'
+import { screenshotDir } from './artifacts.ts'
 const codes = [base64url(new Uint8Array(32).fill(2)), base64url(new Uint8Array(32).fill(3))]
 const names = ['工作电脑 · 中文长名称与会话测试', '家用电脑']
 const ids = await Promise.all(codes.map(routingId))
@@ -54,8 +54,7 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
     })
   })
 })
-const screenshots = '/private/tmp/alma-android-dev/test-artifacts'
-await mkdir(screenshots, { recursive: true })
+const screenshots = await screenshotDir('dev')
 try {
   await page.goto(`http://127.0.0.1:${process.env.APP_PORT ?? 5174}`)
   await expect(page.getByText('尚未添加节点').first()).toBeVisible()
