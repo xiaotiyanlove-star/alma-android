@@ -65,6 +65,8 @@ jobs:
           cache: gradle
 
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       # variables.gradle pins compileSdk/targetSdk to 36, so both the platform
       # and matching build-tools must be installed; the runner image does not
@@ -122,6 +124,8 @@ jobs:
           cache: gradle
 
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install SDK packages
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
