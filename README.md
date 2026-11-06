@@ -205,7 +205,7 @@ The APK lands in `android/app/build/outputs/apk/debug/`. Its `versionName` comes
 `android/app/build.gradle` and is injected into the About screen at build time, so the
 two can never disagree.
 
-The application release line in this fork is currently `0.1.x` (`0.1.21` at the time
+The application release line in this fork is currently `0.1.x` (`0.1.22` at the time
 of writing). Older `v0.4.213-*` tags belong to the Capacitor base project, and the
 `v1.x` tags are historical repository tags; a new app release must use the exact value
 present in both `package.json` and `android/app/build.gradle`.
@@ -273,8 +273,8 @@ debug-signed APK and labels the file accordingly.
 [View release runs](https://github.com/xiaotiyanlove-star/alma-android/actions/workflows/ci.yml).
 
 ```bash
-git tag -a v0.1.21 -m "Alma Android 0.1.21"
-git push origin v0.1.21
+git tag -a v0.1.22 -m "Alma Android 0.1.22"
+git push origin v0.1.22
 ```
 
 The tag must equal the version in `package.json` and `android/app/build.gradle`; CI

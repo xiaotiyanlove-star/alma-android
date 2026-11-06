@@ -49,8 +49,8 @@ To publish the current app version:
 ```bash
 git switch main
 git pull --ff-only
-git tag -a v0.1.21 -m "Alma Android 0.1.21"
-git push origin v0.1.21
+git tag -a v0.1.22 -m "Alma Android 0.1.22"
+git push origin v0.1.22
 ```
 
 Release signing uses Android Keystore secrets available only to the workflow:
