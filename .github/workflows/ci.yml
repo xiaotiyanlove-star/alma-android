@@ -58,13 +58,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve release tag
-        run: |
-          set -euo pipefail
-          tag="$GITHUB_REF_NAME"
-          test -n "$tag" || { echo "release tag missing" >&2; exit 1; }
-          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -118,14 +111,21 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      # Only tag pushes can create a Release. A manual run is available for
-      # debugging a tag without accidentally replacing the Release asset.
-      RELEASE_TAG: v${{ inputs.release_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Resolve release tag
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            tag="v${{ inputs.release_tag }}"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          test -n "$tag" && [ "$tag" != "v" ] || { echo "release tag missing" >&2; exit 1; }
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@v4
         with:
