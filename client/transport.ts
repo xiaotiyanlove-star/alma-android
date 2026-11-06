@@ -283,6 +283,19 @@ export class EncryptedTunnel implements Transport {
 
   currentRoute(): 'direct' | 'relay' | undefined { return this.route }
 
+  /**
+   * Whether a mutation or an upload has been handed to this tunnel.
+   *
+   * A route can be swapped underneath a session only while nothing is in
+   * flight: a read can be replayed on the new tunnel, but a mutation that was
+   * sent and never acknowledged is exactly the case the app reports as
+   * uncertain, and moving it would invent an answer nobody gave.
+   */
+  busy(): boolean {
+    if (this.queued > 0) return true
+    return [...this.pending.values()].some((item) => item.mutation)
+  }
+
   /** Called once per connection with the path that actually opened. */
   onRoute?: (route: 'direct' | 'relay') => void
 

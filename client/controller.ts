@@ -696,7 +696,15 @@ export class Controller {
     }
   }
 
-  /** Remembers a discovered address and lets the next connection use it. */
+  /**
+   * Remembers a discovered address, and moves an open session onto it.
+   *
+   * The move is made before the break: a second tunnel is dialled to the local
+   * address and must complete the handshake before the relay one is closed.
+   * Rebuilding instead — closing first and dialling second — is what made a
+   * route change visible as a disconnect: the session reloaded, the send button
+   * greyed out, and a reply that arrived in that second was missed.
+   */
   private async adoptLan(id: string, address: LanAddress) {
     // The desktop may have been forgotten or switched off while the scan ran;
     // writing the address onto it afterwards would leave state that nothing
@@ -713,13 +721,83 @@ export class Controller {
       return
     }
     // Cached, but not persisted as a user setting: it was found, not chosen.
-    // Store it before rebuilding so the new runtime receives it immediately;
-    // this switches an existing relay connection to LAN as soon as discovery
-    // succeeds, rather than making the user wait for the next reconnect.
+    // Stored first so the new runtime receives it immediately, and so a
+    // failure below still leaves the address for the next dial.
     this.patchHost(id, { discoveredLan: address })
-    this.media.clear(id)
     const runtime = this.runtimes.get(id)
-    if (runtime) this.rebuild(id, runtime)
+    // Nothing open: the address is all that was wanted, and the next dial uses
+    // it. This is the common case at launch, before the relay has answered.
+    if (!runtime || runtime.stopped) return
+    // Already there. A second tunnel to the same listener would prove nothing
+    // and cost a handshake.
+    if (this.routeOf(runtime) === 'direct') return
+    await this.switchToLan(id, runtime)
+  }
+
+  /** The path this runtime is on, when the transport can say. */
+  private routeOf(runtime: Runtime): 'direct' | 'relay' | undefined {
+    const transport = runtime.transport as Partial<{ currentRoute(): 'direct' | 'relay' | undefined }>
+    return typeof transport.currentRoute === 'function' ? transport.currentRoute() : undefined
+  }
+
+  /**
+   * Opens a second tunnel on the local address and promotes it in place.
+   *
+   * Two things make this safe rather than merely fast:
+   *
+   * - Nothing is published until the new tunnel has finished its handshake and
+   *   answered `info`. A direct attempt that fails leaves the relay tunnel
+   *   exactly as it was, so a bad address costs a handshake and no outage.
+   * - A mutation in flight defers the whole thing. A read can be replayed on a
+   *   new tunnel; a request that was sent and not yet answered cannot, and
+   *   moving the route under it would turn a definite outcome into "uncertain".
+   */
+  private async switchToLan(id: string, current: Runtime) {
+    const transport = current.transport as Partial<{ busy(): boolean }>
+    if (typeof transport.busy === 'function' && transport.busy()) return
+    const host = this.state.hosts.find((item) => item.host.id === id)?.host
+    if (!host) return
+    // `makeRuntime` already offers the address it finds in state, and the
+    // caller stored it just above — so this tunnel is dialled direct.
+    const fresh = this.makeRuntime(host)
+    fresh.epoch = 0
+    try {
+      const info = await fresh.transport.request<{ online: boolean; offline_reason?: string; herdr_error?: string }>('/api/herdr/info')
+      // The desktop may have been forgotten, switched off, or replaced by a
+      // reconnect while this dial ran. Then the new tunnel is simply closed.
+      const still = this.runtimes.get(id)
+      if (still !== current) { this.closeRuntime(fresh); return }
+      // The transport falls back to the relay on its own, so a successful
+      // `info` does not prove the local path opened. Promoting a relay tunnel
+      // would swap one relay for another and, worse, score the address as
+      // working when it never answered.
+      if (this.routeOf(fresh) !== 'direct') {
+        this.closeRuntime(fresh)
+        recordDirect(id, false)
+        return
+      }
+      const epoch = ++fresh.epoch
+      this.cancelRetry(current)
+      // Delete before closing: `close` reports offline synchronously, and the
+      // replaced runtime must not schedule a retry of its own.
+      this.runtimes.delete(id)
+      this.runtimes.set(id, fresh)
+      this.media.clear(id)
+      this.closeRuntime(current)
+      this.settleOnline(id, fresh, epoch, info)
+      // The transport's own `onRoute` hook cannot score this one: it fires
+      // during the handshake, before this runtime is in the map, and its guard
+      // correctly ignores an unknown runtime. So the success is recorded here.
+      this.patchHost(id, { route: 'direct' })
+      recordDirect(id, true)
+    } catch {
+      // The local path did not answer. The relay tunnel was never touched, so
+      // there is nothing to undo and nothing to tell the user. The failure is
+      // recorded here because this runtime was never in the map, so the
+      // transport's own `onDirectFailed` hook ignores it.
+      this.closeRuntime(fresh)
+      recordDirect(id, false)
+    }
   }
 
   /** Clears any pending retry so a manual reconnect happens immediately. */
@@ -759,55 +837,13 @@ export class Controller {
     // `lan` stayed on `relay` until the app restarted.
     this.applyLan(runtime, id, this.discoveredLanFor(id) ?? lastRoute(id))
     try {
+      // Explicit even though `request` dials on demand: the tunnel is the thing
+      // being established here, and a transport that fails to open must report
+      // through the same path as a failed read.
       await runtime.transport.connect()
-      const info = await this.request<{ online: boolean; offline_reason?: string; herdr_error?: string }>(id, '/api/herdr/info')
+      const info = await runtime.transport.request<{ online: boolean; offline_reason?: string; herdr_error?: string }>('/api/herdr/info')
       if (this.runtimes.get(id) !== runtime || epoch !== runtime.epoch) return
-      this.patchHost(id, {
-        status: 'online',
-        herdrOnline: info.online === true,
-        error: this.herdrOffline(info),
-        offlineReason: info.online === true ? undefined : (typeof info.offline_reason === 'string' ? info.offline_reason : undefined),
-      })
-      runtime.hub = runtime.transport.subscribe('/ws/herdr', (event) => {
-        if (epoch !== runtime.epoch || this.runtimes.get(id) !== runtime) return
-        if (event.type === 'snapshot') {
-          const snapshot = readSnapshot(event.snapshot)
-          if (snapshot) this.patchHost(id, { snapshot, herdrOnline: true, error: undefined, offlineReason: undefined })
-        }
-        if (event.type === 'herdr') {
-          const reason = typeof event.reason === 'string' && event.reason.trim() ? event.reason.trim() : undefined
-          this.patchHost(id, {
-            herdrOnline: event.online === true,
-            error: event.online === true ? undefined : (reason || t('Herdr 暂时不可用')),
-            offlineReason: event.online === true ? undefined : reason,
-          })
-        }
-        if (event.type === 'status' && event.change) {
-          const current = this.state.hosts.find((item) => item.host.id === id)?.snapshot
-          if (current) this.patchHost(id, { snapshot: { ...current, panes: current.panes.map((pane) => pane.pane_id === event.change.pane_id ? { ...pane, agent_status: event.change.to } : pane) } })
-        }
-      }, () => { if (epoch === runtime.epoch) this.scheduleHost(id, runtime) })
-      runtime.attempts = 0
-      runtime.stopped = undefined
-      this.discoveryRequestedForOutage.delete(id)
-      this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined })
-      // A tunnel that dies without delivering `close` — the page was frozen
-      // when the relay dropped it — would otherwise look healthy until the
-      // next request timed out. The probe turns that into a real reconnect.
-      runtime.stopHeartbeat?.()
-      // Only while the app is on screen: the probe is a round trip every few
-      // seconds, and a hidden page has nobody to show the result to.
-      const transport = runtime.transport as Partial<{ startHeartbeat(): () => void }>
-      runtime.stopHeartbeat = this.state.foreground !== false && typeof transport.startHeartbeat === 'function'
-        ? transport.startHeartbeat()
-        : undefined
-      // Muting is stored on the desktop, so it has to be read back rather than
-      // assumed; a failure here must not make the desktop look offline.
-      void this.refreshMutes(id).catch(() => undefined)
-      if (this.state.session?.hostId === id) void this.sessions.reload()
-      // The relay is up and working; that is the moment to look for the same
-      // desktop on the local network, so the next connection can skip it.
-      this.maybeDiscover(id)
+      this.settleOnline(id, runtime, epoch, info)
     } catch (error) {
       if (this.runtimes.get(id) !== runtime || epoch !== runtime.epoch) return
       this.patchHost(id, { status: 'error', herdrOnline: false, error: message(error) })
@@ -815,6 +851,64 @@ export class Controller {
     } finally {
       runtime.connecting = false
     }
+  }
+
+  /**
+   * Publishes a tunnel that has completed its handshake and answered `info`.
+   *
+   * Split out of `connectHost` because a route can now be adopted on a
+   * *second* tunnel while the first one is still up (see `adoptLan`). The two
+   * paths must end in exactly the same state — same snapshot subscription, same
+   * probe, same mute refresh, same discovery nudge — or a silky route change
+   * would quietly leave a desktop without its live snapshot.
+   */
+  private settleOnline(id: string, runtime: Runtime, epoch: number, info: { online?: boolean; offline_reason?: unknown; herdr_error?: unknown }) {
+    this.patchHost(id, {
+      status: 'online',
+      herdrOnline: info.online === true,
+      error: this.herdrOffline(info),
+      offlineReason: info.online === true ? undefined : (typeof info.offline_reason === 'string' ? info.offline_reason : undefined),
+    })
+    runtime.hub = runtime.transport.subscribe('/ws/herdr', (event) => {
+      if (epoch !== runtime.epoch || this.runtimes.get(id) !== runtime) return
+      if (event.type === 'snapshot') {
+        const snapshot = readSnapshot(event.snapshot)
+        if (snapshot) this.patchHost(id, { snapshot, herdrOnline: true, error: undefined, offlineReason: undefined })
+      }
+      if (event.type === 'herdr') {
+        const reason = typeof event.reason === 'string' && event.reason.trim() ? event.reason.trim() : undefined
+        this.patchHost(id, {
+          herdrOnline: event.online === true,
+          error: event.online === true ? undefined : (reason || t('Herdr 暂时不可用')),
+          offlineReason: event.online === true ? undefined : reason,
+        })
+      }
+      if (event.type === 'status' && event.change) {
+        const current = this.state.hosts.find((item) => item.host.id === id)?.snapshot
+        if (current) this.patchHost(id, { snapshot: { ...current, panes: current.panes.map((pane) => pane.pane_id === event.change.pane_id ? { ...pane, agent_status: event.change.to } : pane) } })
+      }
+    }, () => { if (epoch === runtime.epoch) this.scheduleHost(id, runtime) })
+    runtime.attempts = 0
+    runtime.stopped = undefined
+    this.discoveryRequestedForOutage.delete(id)
+    this.patchHost(id, { retriesLeft: MAX_RETRIES, stopReason: undefined })
+    // A tunnel that dies without delivering `close` — the page was frozen
+    // when the relay dropped it — would otherwise look healthy until the
+    // next request timed out. The probe turns that into a real reconnect.
+    runtime.stopHeartbeat?.()
+    // Only while the app is on screen: the probe is a round trip every few
+    // seconds, and a hidden page has nobody to show the result to.
+    const transport = runtime.transport as Partial<{ startHeartbeat(): () => void }>
+    runtime.stopHeartbeat = this.state.foreground !== false && typeof transport.startHeartbeat === 'function'
+      ? transport.startHeartbeat()
+      : undefined
+    // Muting is stored on the desktop, so it has to be read back rather than
+    // assumed; a failure here must not make the desktop look offline.
+    void this.refreshMutes(id).catch(() => undefined)
+    if (this.state.session?.hostId === id) void this.sessions.reload()
+    // The tunnel is up and working; that is the moment to look for the same
+    // desktop on the local network, so the next connection can skip it.
+    this.maybeDiscover(id)
   }
   private storageQueue: Promise<unknown> = Promise.resolve()
   /** Serialize pairing writes so two concurrent removes cannot resurrect a host. */
