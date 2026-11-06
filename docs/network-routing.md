@@ -38,3 +38,14 @@ disable or bypass the relay retry path.
 address ownership, network changes, and the production failure scheduler.
 `client-tests/transport.test.ts` covers direct-first dialing, LAN-to-relay
 fallback, silent-LAN timeout, handshake rejection, and relay fallback.
+
+## User-visible states
+
+- `lan` means the active tunnel reached the paired desktop directly.
+- `relay` means the tunnel is using the pairing link's HTTPS relay.
+- A route transition is a connection transition: in-flight reads can fail and
+  mutations that were sent but not acknowledged remain uncertain. The client
+  reconnects the same session rather than replaying a mutation.
+- LAN discovery is best effort. It does not promise that every private network
+  permits client-to-client traffic, and it never turns a failed direct probe
+  into a permanent relay outage.

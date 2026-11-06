@@ -24,8 +24,16 @@ Codex、pi 继续跑在各自终端里，同时让侧栏和手机都能看到它
 **多节点。** 每次配对是一台独立桌面，各自使用自己的中继和凭据。客户端为每台维持一条
 加密隧道；不同机器上的同名 pane 不会串内容，也不会串发送目标。下次启动会回到上次使用的桌面。
 
+**局域网优先，中继兜底。** 桌面可以通过中继访问，也可以在同一局域网内直连。经过验证的
+局域网地址会先于中继尝试；握手失败时自动回到中继，不会暴露配对密钥。中继失败时，
+应用可以询问桌面候选地址并扫描当前私有网段，同时继续原有重试流程。维护边界见
+[网络路由说明](docs/network-routing.md)。
+
 **会话与记录。** 工作区、agent 及其实时状态、带增量更新的聊天历史，以及带常用按键的终端视图。
 历史按游标分页，重连时从最后收到的位置继续，不会重放也不会跳过。
+
+会话行可以左滑，但不会在行下方展开删除按钮；删除入口位于会话编辑页，并需要再次确认。
+Mermaid 图表渲染期间保持预留高度，新消息也不会把用户从终端或源码视图拉回消息视图。
 
 **模型与上下文。** 模型和 reasoning effort 取自桌面端从转录里读出的 `settings`，
 这是权威来源；旧的桌面端不发这两项时，才回退到解析终端状态行。上下文用量没有别的来源，
@@ -63,6 +71,10 @@ agent 卡住时可以让桌面端重启它：桌面端退出整个进程树、�
 
 **扫码配对。** 扫描 Alma「远程访问」页的二维码，也可以粘贴链接。
 
+**统一移动端弹层。** 桌面设置、会话编辑与删除、新建会话、选择桌面和连接信息使用同一套
+底部弹层结构。连接信息页统一命名为「连接与中继」，同时显示中继地址、访问范围和可复制的
+配对凭据。
+
 **本地提醒。** agent 等待你处理或已完成时发出通知，基于实时连接的状态差分。
 不上传任何内容，也不依赖推送服务。
 
@@ -95,7 +107,7 @@ agent 卡住时可以让桌面端重启它：桌面端退出整个进程树、�
 - Alma 桌面已开启远程访问，中继可通过 HTTPS 访问
 - 该桌面上的 Herdr 正在运行
 - 要跟踪的 agent 已安装 Herdr integration
-- 构建需要 Node 22+、JDK 21、Android SDK 35
+- 构建需要 Node 22+、JDK 21、Android SDK 36
 
 ## 中继
 
@@ -121,7 +133,7 @@ TLS 和 `*.workers.dev` 域名一并带上。同一个仓库也支持 Docker 或
 ## 构建
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@21   # 或你自己的 JDK 21
+export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 export ANDROID_HOME=$HOME/Library/Android/sdk
 
 npm ci
@@ -131,6 +143,10 @@ npm run android:build  # 构建前端并打包 debug APK
 
 产物在 `android/app/build/outputs/apk/debug/`。
 `versionName` 来自 `android/app/build.gradle`，构建时注入到「关于」页面，两者不会不一致。
+
+当前本 fork 的应用版本线是 `0.1.x`（本文撰写时为 `0.1.19`）。
+旧的 `v0.4.213-*` 是 Capacitor 底座项目的标签，`v1.x` 是仓库历史标签；
+新应用版本必须让 `package.json` 与 `android/app/build.gradle` 中的版本完全一致。
 
 浏览器预览（无原生壳，节点只存在内存里，刷新即失效）：
 
@@ -167,12 +183,36 @@ client/                应用源码
   prefs.ts             语言、时区、Markdown
   i18n.ts              以中文原文为键的英文字典
   App.tsx              页面与组件
+  lan.ts               私有网段判断与局域网 WebSocket 端点
+  localnet.ts          Android 上报的 Wi-Fi/以太网网段
+  candidates.ts        严格校验桌面返回的局域网地址
+  discovery.ts         有界网段扫描与配对身份校验
+  lastroute.ts         记住已通过验证的直连地址
+  breaker.ts           对反复失败的直连地址退避
 android/               Capacitor 壳
   HerdrVaultPlugin     用 Android Keystore 加密节点凭据
+  LocalNetworkPlugin   为局域网路由读取 Wi-Fi/以太网网段
   KeepAlivePlugin      可选的前台服务
   MainActivity         文件选择器、相机授权、通知渠道
 client-tests/          单元测试、Playwright 流程、设备探针（本地）
 ```
+
+## 发布
+
+`.github/workflows/ci.yml` 会在每次推送到 `main` 时完成检查和构建。推送与版本一致的
+`v*` 标签会创建公开 GitHub Release 并上传 APK；配置了 Android keystore secrets 时
+发布签名 release APK，否则工作流会明确发布 debug 签名包，并在文件名中标注。
+
+[查看发布运行记录](https://github.com/xiaotiyanlove-star/alma-android/actions/workflows/ci.yml)。
+
+```bash
+git tag -a v0.1.19 -m "Alma Android 0.1.19"
+git push origin v0.1.19
+```
+
+标签必须与 `package.json`、`android/app/build.gradle` 中的版本一致，CI 会在打包前拒绝不一致。
+要发布可覆盖升级的正式包，请配置 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、
+`ANDROID_KEY_ALIAS` 和 `ANDROID_KEY_PASSWORD` 四个 secrets。
 
 ## 测试
 

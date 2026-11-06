@@ -30,10 +30,22 @@ keys stay on the desktop; the phone is a window onto them.
 client keeps one encrypted tunnel per desktop; identical pane IDs on two machines never
 share content or send targets, and the last desktop you used is restored on launch.
 
+**LAN first, relay as the fallback.** A desktop can be reached through the relay, or
+directly over the same local network. A verified direct address is used before the relay;
+an address that fails the encrypted handshake falls back to the relay without exposing
+the pairing key. On a relay failure, the app can ask the desktop for candidate addresses
+and scan the current private subnet while the retry path continues. See
+[Network routing](docs/network-routing.md) for the invariants this path must preserve.
+
 **Sessions and transcripts.** Workspaces, agents and their live status, chat history
 with incremental updates, and a terminal view with the keys you actually need. History
 is paginated by cursor and resumes from the last item received, so a reconnect does not
 replay or skip messages.
+
+Session rows can be swiped without opening them; delete is available from the session
+edit sheet, followed by an explicit confirmation. A Mermaid diagram keeps a reserved
+height while it renders, and a new transcript frame does not pull the page away from the
+Terminal or Source view you chose.
 
 **Model and context.** The model and reasoning effort come from the `settings` the desktop
 reads out of the transcript itself, which is authoritative; the terminal's status line is
@@ -84,6 +96,11 @@ defaulting to the one you are already working in. It uses the phone bridge's all
 process by argv) only when that path genuinely is not available.
 
 **QR pairing.** Scan the code from Alma's Remote Access screen, or paste the link.
+
+**Consistent mobile sheets.** Desktop settings, session editing and deletion,
+new-session creation, desktop selection and connection details use one bottom-sheet
+layout. The relay screen is named **Connection & relay** and shows the relay address,
+access scope and the copyable pairing credential together.
 
 **Local alerts.** A notification when an agent is waiting for you or has finished, based
 on a status diff of the live connection. Nothing is uploaded and no push service is
@@ -146,7 +163,7 @@ so a bigger attachment would fail half-way through.
 - Alma desktop with Remote Access enabled, reachable over HTTPS
 - Herdr running on that desktop
 - A Herdr integration installed for the agent you want to follow
-- To build: Node 22+, JDK 21, Android SDK 35
+- To build: Node 22+, JDK 21, Android SDK 36
 
 ## Relays
 
@@ -176,7 +193,7 @@ address.
 ## Build
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@21   # or wherever your JDK 21 lives
+export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 export ANDROID_HOME=$HOME/Library/Android/sdk
 
 npm ci
@@ -187,6 +204,11 @@ npm run android:build  # build the web app and assemble the debug APK
 The APK lands in `android/app/build/outputs/apk/debug/`. Its `versionName` comes from
 `android/app/build.gradle` and is injected into the About screen at build time, so the
 two can never disagree.
+
+The application release line in this fork is currently `0.1.x` (`0.1.19` at the time
+of writing). Older `v0.4.213-*` tags belong to the Capacitor base project, and the
+`v1.x` tags are historical repository tags; a new app release must use the exact value
+present in both `package.json` and `android/app/build.gradle`.
 
 For a browser preview without the native shell:
 
@@ -227,12 +249,38 @@ client/                The app
   prefs.ts             Language, time zone, Markdown
   i18n.ts              English dictionary keyed by the Chinese source string
   App.tsx              Screens and components
+  lan.ts               Private-subnet checks and direct WebSocket endpoint
+  localnet.ts          Android-reported Wi-Fi/Ethernet subnets
+  candidates.ts        Strict validation of LAN addresses reported by a desktop
+  discovery.ts         Bounded subnet scan and pairing-identity proof
+  lastroute.ts         Remember a verified direct address for this pairing
+  breaker.ts           Back off a direct address that repeatedly fails
 android/               Capacitor shell
   HerdrVaultPlugin     Node credentials sealed with Android Keystore
+  LocalNetworkPlugin   Wi-Fi/Ethernet subnet discovery for the LAN route
   KeepAlivePlugin      Optional foreground service
   MainActivity         File chooser, camera grant, notification channel
 client-tests/          Unit tests, Playwright flows, device probes
 ```
+
+## Releases
+
+`.github/workflows/ci.yml` builds and checks every push to `main`. Pushing a matching
+`v*` tag creates the public GitHub Release and uploads the signed APK when the Android
+keystore secrets are configured; otherwise the workflow deliberately publishes the
+debug-signed APK and labels the file accordingly.
+
+[View release runs](https://github.com/xiaotiyanlove-star/alma-android/actions/workflows/ci.yml).
+
+```bash
+git tag -a v0.1.19 -m "Alma Android 0.1.19"
+git push origin v0.1.19
+```
+
+The tag must equal the version in `package.json` and `android/app/build.gradle`; CI
+rejects a mismatch before building. Configure the four release-signing secrets
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and
+`ANDROID_KEY_PASSWORD` to publish an installable, update-compatible release APK.
 
 ## Testing
 
