@@ -68,7 +68,7 @@ certificate digest of two downloaded APKs:
 
 ```bash
 apksigner verify --print-certs alma-android-v0.1.22.apk
-apksigner verify --print-certs alma-android-v0.1.24.apk
+apksigner verify --print-certs alma-android-v0.1.25.apk
 ```
 
 The `Signer #1 certificate SHA-256 digest` must match. A different digest is the
@@ -79,10 +79,10 @@ reason an install asks the user to uninstall the old app first.
 Three values must agree exactly, or the release job stops before building:
 
 ```text
-package.json                  "version": "0.1.24"
-android/app/build.gradle      versionName "0.1.24"
-android/app/build.gradle      versionCode 24
-Git tag                       v0.1.24
+package.json                  "version": "0.1.25"
+android/app/build.gradle      versionName "0.1.25"
+android/app/build.gradle      versionCode 25
+Git tag                       v0.1.25
 ```
 
 `versionCode` must increase for every new APK; Android uses it to decide that a
@@ -113,14 +113,14 @@ Wait for the `main` CI run for the exact commit to go green, then create the tag
 ```bash
 git switch main
 git pull --ff-only
-git tag -a v0.1.24 -m "Alma Android 0.1.24"
-git push origin v0.1.24
+git tag -a v0.1.25 -m "Alma Android 0.1.25"
+git push origin v0.1.25
 ```
 
 Pushing the tag starts the release job. Track it with:
 
 ```bash
-gh run list --repo xiaotiyanlove-star/alma-android --branch v0.1.24 --limit 1
+gh run list --repo xiaotiyanlove-star/alma-android --branch v0.1.25 --limit 1
 gh run watch <run-id> --repo xiaotiyanlove-star/alma-android --exit-status
 ```
 
@@ -140,16 +140,16 @@ The tag can be moved to the corrected commit. This is only safe while no
 Release exists for that tag; check first:
 
 ```bash
-gh release view v0.1.24 --repo xiaotiyanlove-star/alma-android
+gh release view v0.1.25 --repo xiaotiyanlove-star/alma-android
 ```
 
 If it reports `release not found`, fix `main`, push, then:
 
 ```bash
-git tag -d v0.1.24
-git push origin :refs/tags/v0.1.24
-git tag -a v0.1.24 -m "Alma Android 0.1.24"
-git push origin v0.1.24
+git tag -d v0.1.25
+git push origin :refs/tags/v0.1.25
+git tag -a v0.1.25 -m "Alma Android 0.1.25"
+git push origin v0.1.25
 ```
 
 If a Release does exist, do not move the tag. Bump the version and publish a
@@ -158,23 +158,23 @@ new tag instead.
 ## 5. Verify the published APK
 
 ```bash
-gh release download v0.1.24 --repo xiaotiyanlove-star/alma-android --dir /tmp/alma-release-check --clobber
-shasum -a 256 /tmp/alma-release-check/alma-android-v0.1.24.apk
-cat /tmp/alma-release-check/alma-android-v0.1.24.apk.sha256
+gh release download v0.1.25 --repo xiaotiyanlove-star/alma-android --dir /tmp/alma-release-check --clobber
+shasum -a 256 /tmp/alma-release-check/alma-android-v0.1.25.apk
+cat /tmp/alma-release-check/alma-android-v0.1.25.apk.sha256
 ```
 
 The two hashes must match. Then check identity and signature:
 
 ```bash
 $HOME/Library/Android/sdk/build-tools/36.0.0/aapt dump badging \
-  /tmp/alma-release-check/alma-android-v0.1.24.apk | head -1
-apksigner verify --print-certs /tmp/alma-release-check/alma-android-v0.1.24.apk
+  /tmp/alma-release-check/alma-android-v0.1.25.apk | head -1
+apksigner verify --print-certs /tmp/alma-release-check/alma-android-v0.1.25.apk
 ```
 
 Expected package and version:
 
 ```text
-package: name='local.almaandroid.herdr' versionCode='24' versionName='0.1.24'
+package: name='local.almaandroid.herdr' versionCode='25' versionName='0.1.25'
 ```
 
 The in-app updater reads `releases/latest` from the public repository. Confirm
