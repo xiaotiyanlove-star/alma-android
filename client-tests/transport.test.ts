@@ -78,6 +78,25 @@ test('handshake authenticates and HTTP response travels encrypted', async () => 
   const tunnel = new EncryptedTunnel(host, () => {}, () => { const socket = new FakeSocket(); sockets.push(socket); socket.handler = (frame) => { if (frame.t === 'hreq') void socket.response(frame.id, { online: true }) }; return socket }, 1000)
   try { assert.deepEqual(await tunnel.request('/api/herdr/info'), { online: true }); assert.equal(sockets[0].frames[0].path, '/api/herdr/info') } finally { tunnel.close() }
 })
+
+test('a mutation sends the REST verb it was given, and defaults to POST otherwise', async () => {
+  // The route owns its verb. A body used to imply POST, which is right for the
+  // RPC and upload routes and wrong for `PUT /api/herdr/mutes` — that answered
+  // Express's 404 while the UI showed a generic failure.
+  const sockets: FakeSocket[] = []
+  const tunnel = new EncryptedTunnel(host, () => {}, () => {
+    const socket = new FakeSocket()
+    sockets.push(socket)
+    socket.handler = (frame) => { if (frame.t === 'hreq') void socket.response(frame.id, { ok: true }) }
+    return socket
+  }, 1_000)
+  try {
+    await tunnel.request('/api/herdr/mutes', { tab: 't1', muted: true }, { kind: 'mutation', method: 'PUT' })
+    assert.equal(sockets[0].frames.find((frame) => frame.t === 'hreq')?.method, 'PUT')
+    await tunnel.request('/api/herdr/rpc', { method: 'ping' }, { kind: 'mutation' })
+    assert.equal(sockets[0].frames.filter((frame) => frame.t === 'hreq')[1]?.method, 'POST', 'an unspecified mutation is still POST')
+  } finally { tunnel.close() }
+})
 test('wrong pairing code fails authentication', async () => {
   const tunnel = new EncryptedTunnel(host, () => {}, () => new FakeSocket(true), 1000)
   try { await assert.rejects(tunnel.connect(), /配对验证失败/) } finally { tunnel.close() }

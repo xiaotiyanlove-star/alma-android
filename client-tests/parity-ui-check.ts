@@ -37,8 +37,8 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
   const matchesHost = socket.url().includes(id)
   let keys: Awaited<ReturnType<typeof deriveSessionKeys>>, counter = 0n, chain = Promise.resolve(), chatId = ''
   const send = async (frame: any) => socket.send(Buffer.from(await sealFrame(keys.s2c, counter++, frame)))
-  const json = async (requestId: string, body: unknown) => {
-    await send({ t: 'hres', id: requestId, status: 200, headers: {} })
+  const json = async (requestId: string, body: unknown, status = 200) => {
+    await send({ t: 'hres', id: requestId, status, headers: {} })
     await send({ t: 'hchunk', id: requestId, b: base64url(new TextEncoder().encode(JSON.stringify(body))) })
     await send({ t: 'hend', id: requestId })
   }
@@ -97,6 +97,9 @@ await page.routeWebSocket('wss://relay.invalid/**', (socket) => {
         if (path === '/__alma_lan__') return json(frame.id, null)
         if (path === '/api/herdr/mutes') {
           if (frame.method === 'GET') return json(frame.id, mutes)
+          // The real Alma route is PUT. Accepting anything here is what let a
+          // POST 404 ship behind a green UI test.
+          if (frame.method !== 'PUT') return json(frame.id, { error: { code: 'not_found', message: 'Cannot POST /api/herdr/mutes' } }, 404)
           const body = JSON.parse(new TextDecoder().decode(fromBase64url(frame.b)))
           calls.push({ method: 'mutes', params: body })
           if (body.tab) { mutes.tabs = body.muted ? [body.tab] : []; }

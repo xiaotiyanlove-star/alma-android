@@ -73,6 +73,8 @@ const en: Dict = {
   '{index}/{count} · 左右滑动切换，上下滑动关闭': '{index}/{count} · swipe sideways to change, up or down to close',
   '双指缩放，双击放大，上下滑动关闭': 'Pinch to zoom, double-tap to enlarge, swipe up or down to close',
   '这张图片无法显示': 'This picture could not be shown',
+  '系统未能打开安装器，请稍后重试或从 GitHub Release 手动安装。':
+    'The system could not open its installer. Try again later, or install the APK from the GitHub Release manually.',
   '{count} 个等待你处理': '{count} waiting for you',
   '{count} 项新结果': '{count} new results',
   '开发版不通过应用内更新': 'Dev build: no in-app updates',

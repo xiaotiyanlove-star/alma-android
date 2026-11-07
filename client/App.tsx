@@ -554,6 +554,8 @@ function HostSettings({ hosts, onClose, onOpen, onLocaleChange }: { hosts: HostS
                 ? t('下载的更新包无效，请稍后重试。')
                 : reason === 'storage'
                   ? t('无法保存更新包，请检查存储空间。')
+                  : reason === 'installer'
+                    ? t('系统未能打开安装器，请稍后重试或从 GitHub Release 手动安装。')
                   : t('更新下载失败，请检查网络后重试。'))
         }
       }).catch(() => undefined)
@@ -1720,6 +1722,7 @@ function Session({ session, routePaneId, host }: { session: SessionState; routeP
 
   async function toggleMute() {
     if (!pane?.tab_id) return
+    setLocalError('')
     try { await controller.setMuted(session.hostId, { tab: pane.tab_id }, !muted) }
     catch { setLocalError(t('未能修改静音状态，请重试。')) }
   }

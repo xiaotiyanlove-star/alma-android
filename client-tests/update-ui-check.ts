@@ -46,7 +46,12 @@ try {
   await install.click()
   await page.getByText('无法启动更新，请确认已允许安装未知应用。').waitFor({ timeout: 10000 })
   const failureShown = await page.getByText('无法启动更新，请确认已允许安装未知应用。').isVisible()
-  console.log(JSON.stringify({ installVisible, failureShown, pageErrors: errors }))
+
+  // Native reports "installer" separately from "network": the APK was on disk
+  // and the system installer simply did not open. A generic connection message
+  // would send the user to check a network that worked.
+  const capability = await page.evaluate(() => (window as any).Capacitor?.isNativePlatform?.() === true)
+  console.log(JSON.stringify({ installVisible, failureShown, capability, pageErrors: errors }))
   if (!installVisible || !failureShown || errors.length) process.exitCode = 1
 } finally {
   await browser.close()

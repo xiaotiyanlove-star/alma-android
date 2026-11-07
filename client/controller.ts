@@ -1182,7 +1182,10 @@ export class Controller {
     if (!runtime) throw new Error(t('节点不存在'))
     const body = target.tab ? { tab: target.tab, muted } : target.workspace ? { workspace: target.workspace, muted } : null
     if (!body) throw new Error(t('找不到会话'))
-    const answer = await this.request<Partial<Mutes> | null>(hostId, '/api/herdr/mutes', body, { kind: 'mutation' })
+    // PUT, not POST. Alma mounts this route as PUT; POST reaches Express's 404
+    // and the tunnel reports it as a plain failure, which is why the button
+    // looked broken while the desktop was healthy.
+    const answer = await this.request<Partial<Mutes> | null>(hostId, '/api/herdr/mutes', body, { kind: 'mutation', method: 'PUT' })
     const clean = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
     // The desktop answers with the whole list, so the local copy cannot drift
     // from what it will actually honour.

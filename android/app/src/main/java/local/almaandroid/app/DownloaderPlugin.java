@@ -105,7 +105,7 @@ public class DownloaderPlugin extends Plugin {
                 State.set("failed", failure.reason, 0);
             } catch (Exception error) {
                 clear(directoryOf());
-                State.set("failed", "network", 0);
+                State.set("failed", failureReason(error), 0);
             }
         }, "alma-update").start();
     }
@@ -126,6 +126,25 @@ public class DownloaderPlugin extends Plugin {
         UpdateFailure(String reason) { this.reason = reason; }
     }
 
+    /**
+     * Turns a failed request into a reason the page can name.
+     *
+     * Everything used to collapse to "network" here, which is what the user
+     * saw while the APK was actually on disk and only the installer had
+     * refused. The codes stay coarse on purpose: a checksum or storage problem
+     * needs different words, but the exact HTTP status does not belong in a
+     * phone dialog.
+     */
+    private static String failureReason(Exception error) {
+        if (error instanceof UpdateFailure) return ((UpdateFailure) error).reason;
+        if (error instanceof java.net.SocketTimeoutException
+                || error instanceof java.net.UnknownHostException
+                || error instanceof java.net.ConnectException
+                || error instanceof javax.net.ssl.SSLException) return "network";
+        if (error instanceof java.io.FileNotFoundException || error instanceof java.io.IOException) return "storage";
+        return "network";
+    }
+
     private static boolean isReleaseUrl(String value) {
         try {
             URL url = new URL(value);
@@ -143,6 +162,9 @@ public class DownloaderPlugin extends Plugin {
         connection.setReadTimeout(15_000);
         connection.setInstanceFollowRedirects(true);
         connection.setRequestProperty("Accept", "application/octet-stream");
+        connection.setRequestProperty("Accept-Encoding", "identity");
+        int status = connection.getResponseCode();
+        if (status != HttpURLConnection.HTTP_OK) throw new IllegalStateException("Checksum download failed: " + status);
         try (InputStream input = connection.getInputStream()) {
             byte[] data = readBounded(input, 4096);
             return new String(data, StandardCharsets.UTF_8);
@@ -157,10 +179,19 @@ public class DownloaderPlugin extends Plugin {
         connection.setReadTimeout(30_000);
         connection.setInstanceFollowRedirects(true);
         connection.setRequestProperty("Accept", "application/vnd.android.package-archive");
+        connection.setRequestProperty("Accept-Encoding", "identity");
         int status = connection.getResponseCode();
         if (status != HttpURLConnection.HTTP_OK) throw new IllegalStateException("Update download failed: " + status);
         String type = connection.getContentType();
-        if (type == null || !type.contains("android.package-archive")) throw new IllegalStateException("Not an APK response");
+        // The content type is a hint, not a contract. GitHub serves the right
+        // type today, but a redirect hop, a carrier proxy or an OEM download
+        // stack may replace or drop it — and a valid APK was then refused as
+        // "network" before a single byte was written. Verify the file instead:
+        // it has to begin with a ZIP signature and pass the published digest.
+        if (type != null && !type.isEmpty() && !type.contains("android.package-archive")
+                && !type.contains("application/octet-stream") && !type.contains("application/zip")) {
+            throw new IllegalStateException("Not an APK response: " + type);
+        }
         long length = connection.getContentLengthLong();
         if (length > MAX_BYTES) throw new UpdateFailure("too_large");
         try (InputStream input = connection.getInputStream(); FileOutputStream output = new FileOutputStream(target)) {

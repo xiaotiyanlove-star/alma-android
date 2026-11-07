@@ -102,6 +102,16 @@ export interface RequestInit2 {
    * caller from having to guess and losing the content type.
    */
   responseType?: 'json' | 'bytes'
+  /**
+   * The HTTP verb for a mutation, when the route is not POST.
+   *
+   * Most mutations are POST and that stays the default. A few Alma routes are
+   * REST-shaped instead: `/api/herdr/mutes` is updated with PUT, and sending it
+   * POST reaches Express's 404 — the tunnel is healthy, the request is valid,
+   * and the desktop still refuses it. The verb belongs to the caller because
+   * only the route knows it; the transport must not guess from the body.
+   */
+  method?: 'POST' | 'PUT' | 'DELETE'
 }
 export interface Transport {
   connect(): Promise<void>
@@ -506,7 +516,12 @@ export class EncryptedTunnel implements Transport {
       // Uploads pass `init.raw` with their own headers.
       const payload = init?.raw ?? (mutation ? new TextEncoder().encode(JSON.stringify(body)) : undefined)
       const headers = init?.raw ? { ...(init.headers ?? {}) } : mutation ? { 'content-type': 'application/json' } : {}
-      void this.send({ t: 'hreq', id, method: payload ? 'POST' : 'GET', path, headers, ...(payload ? { b: payload } : {}) }).catch(() => {
+      // The verb is the caller's, not the payload's. Defaulting every body to
+      // POST was right for the RPC and upload routes and wrong for the two
+      // REST-shaped ones (`PUT /mutes`, `PUT live-activity`): those answered
+      // Express's 404 while the UI reported a vague failure.
+      const method = payload ? (init?.method ?? 'POST') : 'GET'
+      void this.send({ t: 'hreq', id, method, path, headers, ...(payload ? { b: payload } : {}) }).catch(() => {
         if (!this.pending.delete(id)) return
         clearTimeout(timer)
         reject(mutation ? new OperationUncertainError() : new Error('请求未完成，连接已断开'))
