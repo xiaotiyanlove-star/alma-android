@@ -55,3 +55,13 @@ test('the page reports the build the user actually installed', () => {
   assert.match(vite, /-dev/, 'and so does the suffix that makes the version honest')
   assert.match(readFileSync('package.json', 'utf8'), /ALMA_APP_ID=local\.almaandroid\.herdr\.dev/)
 })
+
+test('the release job signs with the alias it verified, not a hard-coded one', () => {
+  // A keystore may legally use any alias. Hard-coding `alma` in the build
+  // environment made the preceding keytool check meaningless: it verified the
+  // configured alias and signing then used a different one.
+  const workflow = readFileSync('.github/workflows/ci.yml', 'utf8')
+  const releaseStep = workflow.match(/- name: Build signed release APK[\s\S]*?- name:/)?.[0] ?? ''
+  assert.match(releaseStep, /ALMA_RELEASE_KEY_ALIAS: \$\{\{ secrets\.ANDROID_KEY_ALIAS \}\}/)
+  assert.doesNotMatch(releaseStep, /ALMA_RELEASE_KEY_ALIAS: alma\b/)
+})

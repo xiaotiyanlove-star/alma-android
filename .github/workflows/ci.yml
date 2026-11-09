@@ -191,7 +191,10 @@ jobs:
         env:
           ALMA_RELEASE_STORE_FILE: ${{ runner.temp }}/keystore/release.jks
           ALMA_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ALMA_RELEASE_KEY_ALIAS: alma
+          # The previous check proves this alias exists in the keystore. Hard
+          # coding it here made a green secret check lie: a keystore whose alias
+          # was not literally `alma` passed verification and then failed signing.
+          ALMA_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ALMA_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./android/gradlew -p android assembleRelease
 

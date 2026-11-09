@@ -59,7 +59,13 @@ The publishing workflow is `.github/workflows/ci.yml`. Pushing a `v*` tag starts
 
 The complete operational runbook — secret setup, version bump, tagging,
 post-publish verification, troubleshooting, and the Git-history check — is in
-[releasing.md](./releasing.md).
+[releasing.md](./releasing.md). That document has two separate workflows:
+
+- **Development preview:** a `.dev` APK built locally and shared through a
+  temporary trycloudflare quick tunnel. It installs beside the official app and
+  does not consume a version number.
+- **Official release:** a version bump on `main`, green CI, a `vX.Y.Z` tag, CI
+  signing, a public GitHub Release, and post-publish signature/checksum checks.
 
 The current application release line is `0.1.x`. Historical `v0.4.213-*` and
 `v1.x` tags do not describe the current application package version.
