@@ -9,7 +9,7 @@
  */
 import { launchBrowser } from './browser.ts'
 import { addDesktop, goHome } from './helpers.ts'
-import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/crypto.ts'
+import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/connection/crypto.ts'
 
 const CODE_A = base64url(new Uint8Array(32).fill(81))
 const CODE_B = base64url(new Uint8Array(32).fill(82))

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MediaCache } from '../client/media-cache.ts'
+import { MediaCache } from '../client/session/media-cache.ts'
 
 test('media cache coalesces concurrent reads for one host and path', async () => {
   const cache = new MediaCache()

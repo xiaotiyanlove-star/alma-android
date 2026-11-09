@@ -1,7 +1,7 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import './locale.ts'
-import { BREAKER_COOLDOWN_MS, BREAKER_THRESHOLD, clearAllBreakers, directAllowed, recordDirect } from '../client/breaker.ts'
+import { BREAKER_COOLDOWN_MS, BREAKER_THRESHOLD, clearAllBreakers, directAllowed, recordDirect } from '../client/connection/breaker.ts'
 
 beforeEach(() => { clearAllBreakers() })
 

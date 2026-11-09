@@ -1,5 +1,5 @@
-import { routingId } from './crypto'
-import type { Host } from './model'
+import { routingId } from '../connection/crypto'
+import type { Host } from '../core/model'
 
 export async function parsePairing(name: string, input: string): Promise<Host> {
   const url = new URL(input.trim())

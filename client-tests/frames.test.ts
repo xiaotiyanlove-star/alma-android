@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { BINARY_FRAMES_FIELD, MARKER, decodeInnerFrame, encodeInnerFrame } from '../client/frames.ts'
-import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openBytes, sealBytes } from '../client/crypto.ts'
+import { BINARY_FRAMES_FIELD, MARKER, decodeInnerFrame, encodeInnerFrame } from '../client/connection/frames.ts'
+import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openBytes, sealBytes } from '../client/connection/crypto.ts'
 
 const bytes = (...values: number[]) => new Uint8Array(values)
 const text = (value: number[]) => new TextDecoder().decode(new Uint8Array(value))

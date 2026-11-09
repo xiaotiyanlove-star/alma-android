@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs'
  * wrong produces Express's 404: a healthy tunnel, a valid payload, and a
  * control that looks broken. This pins the two that are known to differ.
  */
-const controller = readFileSync('client/controller.ts', 'utf8')
+const controller = readFileSync('client/core/controller.ts', 'utf8')
 
 test('muting uses PUT, the verb Alma mounts that route with', () => {
   assert.match(controller, /\/api\/herdr\/mutes', body, \{ kind: 'mutation', method: 'PUT' \}/)

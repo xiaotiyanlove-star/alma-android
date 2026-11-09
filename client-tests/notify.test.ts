@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import './locale.ts'
-import { AlertTracker } from '../client/notify.ts'
-import type { HostState, Pane } from '../client/model.ts'
+import { AlertTracker } from '../client/app/notify.ts'
+import type { HostState, Pane } from '../client/core/model.ts'
 
 const host = (panes: Array<Partial<Pane>>, id = 'h1'): HostState => ({
   host: { id, name: `节点 ${id}`, relayUrl: 'https://r.invalid', connectCode: 'x', addedAt: 0 },

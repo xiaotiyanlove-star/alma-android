@@ -11,7 +11,7 @@
  *
  * Answers and pictures are never folded. They are what the user reads.
  */
-import type { ChatItem, ImageRef } from './model'
+import type { ChatItem, ImageRef } from '../core/model'
 
 /** What a step was, in the terms the summary line counts. */
 export type WorkKind = 'command' | 'edit' | 'read' | 'search' | 'fetch' | 'subagent' | 'other'

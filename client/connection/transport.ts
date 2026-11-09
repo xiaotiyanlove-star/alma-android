@@ -1,6 +1,6 @@
 import { base64url, constantTimeEqual, createKeyPair, deriveSessionKeys, fromBase64url, openBytes, routingId, sealBytes } from './crypto'
 import { BINARY_FRAMES_FIELD, decodeInnerFrame, encodeInnerFrame } from './frames'
-import type { Host } from './model'
+import type { Host } from '../core/model'
 import { lanUrl, usableLanAddress, type LanAddress } from './lan'
 
 /**
@@ -26,7 +26,7 @@ const DIRECT_HANDSHAKE_MS = 3_000
  */
 const DIRECT_GATE_MS = 2_000
 import { withDeadline } from './deadline'
-import { t } from './i18n'
+import { t } from '../platform/i18n'
 
 type Frame = Record<string, any>
 export interface SocketLike {

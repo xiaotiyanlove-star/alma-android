@@ -1,12 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import './locale.ts'
-import { Controller } from '../client/controller.ts'
-import { EncryptedTunnel } from '../client/transport.ts'
-import { base64url } from '../client/crypto.ts'
-import type { Host } from '../client/model.ts'
-import type { HostStorage } from '../client/storage.ts'
-import type { Transport } from '../client/transport.ts'
+import { Controller } from '../client/core/controller.ts'
+import { EncryptedTunnel } from '../client/connection/transport.ts'
+import { base64url } from '../client/connection/crypto.ts'
+import type { Host } from '../client/core/model.ts'
+import type { HostStorage } from '../client/platform/storage.ts'
+import type { Transport } from '../client/connection/transport.ts'
 
 /**
  * Recovering a connection, and the ways it used to fail permanently.

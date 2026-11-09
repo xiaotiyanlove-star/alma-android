@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { extractPairingLink } from '../client/ScanPairs.tsx'
+import { extractPairingLink } from '../client/ui/ScanPairs.tsx'
 
 const link = 'alma://connect?u=https%3A%2F%2Frelay.example.workers.dev&k=abcDEF123_xyz&e2e=1'
 
@@ -25,7 +25,7 @@ test('rejects unrelated QR content', () => {
 })
 
 test('a saved desktop can be turned back into the link that paired it', async () => {
-  const { pairingLink, parsePairing } = await import('../client/pairing.ts')
+  const { pairingLink, parsePairing } = await import('../client/platform/pairing.ts')
   const link = `alma://connect?u=https%3A%2F%2Frelay.example&k=${'K'.repeat(43)}&e2e=1`
   const host = await parsePairing('家', link)
   const again = pairingLink(host)
@@ -37,7 +37,7 @@ test('a saved desktop can be turned back into the link that paired it', async ()
 })
 
 test('a re-exported link is still an e2e pairing link', async () => {
-  const { pairingLink, parsePairing } = await import('../client/pairing.ts')
+  const { pairingLink, parsePairing } = await import('../client/platform/pairing.ts')
   const host = await parsePairing('x', `alma://connect?u=https%3A%2F%2Fr.example&k=${'M'.repeat(32)}&e2e=1`)
   const url = new URL(pairingLink(host))
   assert.equal(url.protocol, 'alma:')

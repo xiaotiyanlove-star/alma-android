@@ -35,12 +35,12 @@ disable or bypass the relay retry path.
 Three rules exist because their absence each caused a permanent failure, and
 none of them widens what may be dialled:
 
-- **Every bridge wait has a ceiling.** `withDeadline` in `client/deadline.ts`
+- **Every bridge wait has a ceiling.** `withDeadline` in `client/connection/deadline.ts`
   backs both `deviceSubnets()` and the transport's `allowDirect` gate. A native
   callback lost while the page is frozen used to leave a promise pending
   forever; because the gate is awaited before the relay is dialled, that became
   "encrypted connection timed out" on every reconnect until the app restarted.
-- **A path suspension is short and in memory.** `client/breaker.ts` holds the
+- **A path suspension is short and in memory.** `client/connection/breaker.ts` holds the
   verdict for three minutes in a map, not in `localStorage`. A persisted
   half-hour suspension, combined with a cached address, kept a session on the
   relay for the rest of the day and survived a restart.
@@ -51,7 +51,7 @@ none of them widens what may be dialled:
 
 ## Returning to the app
 
-`client/lifecycle.ts` no longer replaces the tunnel on a timer. A return asks the
+`client/app/lifecycle.ts` no longer replaces the tunnel on a timer. A return asks the
 open socket a question (`verify`); only a release (`suspend`, after 30 minutes
 hidden) leads to `resume`. Guessing from elapsed time meant every return after a
 minute tore down a working connection, which cost a route transition to the

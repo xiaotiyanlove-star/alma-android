@@ -1,5 +1,5 @@
-import type { AgentSettings, Pane, TranscriptGap } from './model'
-import type { ChatPage } from './protocol'
+import type { AgentSettings, Pane, TranscriptGap } from '../core/model'
+import type { ChatPage } from '../core/protocol'
 
 /** Narrows the desktop's transcript settings without inventing a value. */
 export function readSettings(value: ChatPage['settings']): AgentSettings | undefined {

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { branchFromPane, gitBranchFromStatus } from '../client/git-branch.ts'
+import { branchFromPane, gitBranchFromStatus } from '../client/session/git-branch.ts'
 
 test('reads the current branch including an upstream suffix', () => {
   assert.equal(gitBranchFromStatus('## review/important-fixes...origin/review/important-fixes\n'), 'review/important-fixes')

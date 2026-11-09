@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { answerKeys, bracketedTerminalText, protocolKeys, terminalKeys, validTerminalKeys } from '../client/operations.ts'
+import { answerKeys, bracketedTerminalText, protocolKeys, terminalKeys, validTerminalKeys } from '../client/core/operations.ts'
 
 test('terminal key names are canonical protocol values', () => {
   assert.deepEqual(terminalKeys(['Up', 'Escape', 'C-c']), ['up', 'esc', 'ctrl+c'])

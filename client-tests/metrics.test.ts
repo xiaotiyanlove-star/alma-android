@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Metrics } from '../client/metrics.ts'
+import { Metrics } from '../client/core/metrics.ts'
 
 test('retries are counted per five-minute window', () => {
   const m = new Metrics()

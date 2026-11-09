@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import './locale.ts'
-import { paneTitle, tabLabelOf } from '../client/session-title.ts'
-import type { Pane, Snapshot } from '../client/model.ts'
+import { paneTitle, tabLabelOf } from '../client/session/session-title.ts'
+import type { Pane, Snapshot } from '../client/core/model.ts'
 
 const pane = (over: Partial<Pane>): Pane => ({ pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'claude', ...over })
 

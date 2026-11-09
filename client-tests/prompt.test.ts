@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { moveKeys, needsSpace, parsePrompt, samePrompt } from '../client/prompt.ts'
+import { moveKeys, needsSpace, parsePrompt, samePrompt } from '../client/core/prompt.ts'
 
 const menu = (cursorLine: number, extra = '') => `
 ╭──────────────────────────────╮

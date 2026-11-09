@@ -1,6 +1,6 @@
 import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
-import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/crypto.ts'
+import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/connection/crypto.ts'
 
 // Three panes with no transcript: a shell, an agent that has not reported an
 // id yet, and an agent that has started work but still has never reported one.

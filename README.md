@@ -227,46 +227,78 @@ Browser preview has no Keystore, so nodes live in memory and disappear on reload
 ## Layout
 
 ```
-client/                The app
-  transport.ts         E2E tunnel: P-256 + HKDF + AES-GCM, HTTP/WS multiplexing
-  frames.ts            Inner frame codec (JSON/base64 and optional binary form)
-  crypto.ts            Crypto primitives (adapted from lazyeo/alma-android, MIT)
-  controller.ts        Per-desktop routing, mutations and host lifecycle
-  session-loader.ts    Session identity, subscriptions, history and warmup
-  session-rules.ts     Settings narrowing and transcript-gap classification
-  transcript-cache.ts  Bounded transcript paint cache
-  media-cache.ts       Host-scoped, bounded remote image cache
-  protocol.ts          Strict parsers for long-lived desktop responses
-  operations.ts        Terminal key and menu-answer encodings
-  prompt.ts            Terminal menu parsing and drift detection
-  router.ts            Navigation stack shared by the UI and the Back button
-  lifecycle.ts         Foreground/background connection policy
-  metrics.ts           Local stale-detection and retry counts
-  network.ts           OS network changes, so a handover redials at once
-  backoff.ts           Reconnect and session-refresh pacing
-  attachments.ts       Upload helpers and message composition
-  commands.ts          Per-agent slash commands offered in the composer
-  subagents.ts         Running background agents, derived from transcript tool rows
-  pending-link.ts      Staging and reading an alma://connect deep link
-  session-info.ts      Model and context, parsed from the agent's status line
-  notify.ts            Status diffing and local notifications
-  keepalive.ts         Foreground service toggle
-  drafts.ts            Per-desktop, per-session message drafts
-  prefs.ts             Language, time zone, Markdown
-  i18n.ts              English dictionary keyed by the Chinese source string
-  App.tsx              Screens and components
-  lan.ts               Private-subnet checks and direct WebSocket endpoint
-  localnet.ts          Android-reported Wi-Fi/Ethernet subnets
-  candidates.ts        Strict validation of LAN addresses reported by a desktop
-  discovery.ts         Bounded subnet scan and pairing-identity proof
-  lastroute.ts         Remember a verified direct address for this pairing
-  breaker.ts           Back off a direct address that repeatedly fails
-android/               Capacitor shell
-  HerdrVaultPlugin     Node credentials sealed with Android Keystore
-  LocalNetworkPlugin   Wi-Fi/Ethernet subnet discovery for the LAN route
-  KeepAlivePlugin      Optional foreground service
-  MainActivity         File chooser, camera grant, notification channel
-client-tests/          Unit tests, Playwright flows, device probes
+client/                  The app
+  index.html             Vite entry page
+  app/                   Shell of the page: entry, screens, styles, navigation
+    main.tsx             Mounts App; wiring for Back, deep links, theme
+    App.tsx              Screens and components
+    router.ts            Navigation stack shared by the UI and the Back button
+    lifecycle.ts         Foreground/background connection policy
+    notify.ts            Status diffing and local notifications
+    updates.ts           In-app update check against public GitHub Releases
+    version.ts           Build metadata baked in by Vite
+  core/                  The state machine and the protocols it speaks
+    model.ts             Shared types for hosts, sessions, panes and chat
+    controller.ts        Per-desktop routing, mutations and host lifecycle
+    protocol.ts          Strict parsers for long-lived desktop responses
+    operations.ts        Terminal key and menu-answer encodings
+    prompt.ts            Terminal menu parsing and drift detection
+    metrics.ts           Local stale-detection and retry counts
+  connection/            Everything that gets a byte to the desktop
+    transport.ts         E2E tunnel: P-256 + HKDF + AES-GCM, HTTP/WS multiplexing
+    frames.ts            Inner frame codec (JSON/base64 and optional binary form)
+    crypto.ts            Crypto primitives (adapted from lazyeo/alma-android, MIT)
+    backoff.ts           Reconnect and session-refresh pacing
+    breaker.ts           Back off a direct address that repeatedly fails
+    deadline.ts          Ceiling on native-bridge promises that may never settle
+    keepalive.ts         Foreground service toggle
+    network.ts           OS network changes, so a handover redials at once
+    lan.ts               Private-subnet checks and direct WebSocket endpoint
+    localnet.ts          Android-reported Wi-Fi/Ethernet subnets
+    candidates.ts        Strict validation of LAN addresses reported by a desktop
+    discovery.ts         Bounded subnet scan and pairing-identity proof
+    lastroute.ts         Remember a verified direct address for this pairing
+    lanprefs.ts          The local-discovery switch
+  session/               One desktop's sessions and transcripts
+    session-loader.ts    Session identity, subscriptions, history and warmup
+    session-rules.ts     Settings narrowing and transcript-gap classification
+    session-info.ts      Model and context, parsed from the agent's status line
+    session-groups.ts    Session list headings and their rows
+    session-title.ts     What a session is called, and why
+    session-directory.ts Default working directory for a new session
+    transcript-cache.ts  Bounded transcript paint cache
+    media-cache.ts       Host-scoped, bounded remote image cache
+    local-media.ts       Pictures picked or shot on this phone
+    timeline.ts          Transcript folding into what the reader should see
+    subagents.ts         Running background agents, from transcript tool rows
+    unread.ts            Which sessions have news not yet seen
+    attachments.ts       Upload helpers and message composition
+    drafts.ts            Per-desktop, per-session message drafts
+    git-branch.ts        Branch shown for a session
+  agents/                What the coding agents look like and accept
+    agents.ts            Product names and brand colours
+    agent-marks.ts       The four agent marks
+    commands.ts          Per-agent slash commands offered in the composer
+    assets/              Agent artwork
+  ui/                    Presentational components
+    Markdown.tsx         Markdown rendering
+    CodeBlock.tsx        Code blocks and the copy button
+    Mermaid.tsx          Lazy Mermaid diagrams
+    ImageViewer.tsx      Full-screen picture viewer
+    ScanPairs.tsx        QR scanning for a pairing link
+  platform/              Device preferences and credentials
+    prefs.ts             Language, time zone, theme, Markdown
+    i18n.ts              English dictionary keyed by the Chinese source string
+    storage.ts           Host vault, backed by Android Keystore
+    pairing.ts           Pairing-link validation
+    pending-link.ts      Staging and reading an alma://connect deep link
+  app/styles.css         One stylesheet for every screen
+android/                 Capacitor shell
+  HerdrVaultPlugin       Node credentials sealed with Android Keystore
+  LocalNetworkPlugin     Wi-Fi/Ethernet subnet discovery for the LAN route
+  KeepAlivePlugin        Optional foreground service
+  MainActivity           File chooser, camera grant, notification channel
+client-tests/            Unit tests, Playwright flows, device probes
 ```
 
 ## Releases

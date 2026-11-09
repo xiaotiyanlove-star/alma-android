@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import './locale.ts'
-import { probeTargets, scannableSubnet } from '../client/lan.ts'
+import { probeTargets, scannableSubnet } from '../client/connection/lan.ts'
 
 test('only home-sized subnets are scanned', () => {
   assert.equal(scannableSubnet({ address: '192.168.1.42', prefixLength: 24 }), true)

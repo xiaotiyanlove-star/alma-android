@@ -1,5 +1,5 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
-import type { Host } from './model'
+import type { Host } from '../core/model'
 import { validHosts } from './pairing'
 interface Vault { load(): Promise<{ value: string | null }>; save(options: { value: string }): Promise<void> }
 const vault = registerPlugin<Vault>('HerdrVault')

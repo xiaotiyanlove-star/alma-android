@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { countWork, imagePaths, isThinking, timeline, transcriptImages, withoutImagePaths, workKind } from '../client/timeline.ts'
+import { countWork, imagePaths, isThinking, timeline, transcriptImages, withoutImagePaths, workKind } from '../client/session/timeline.ts'
 
 const tool = (id: string, name: string, done = true, text?: string, input?: Record<string, unknown>) =>
   ({ id, kind: 'tool', time: '2026-11-02T00:00:00Z', text, tool: { id, name, done, input } })

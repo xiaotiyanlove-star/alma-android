@@ -1,5 +1,5 @@
-import type { Pane, Snapshot } from './model'
-import { t } from './i18n'
+import type { Pane, Snapshot } from '../core/model'
+import { t } from '../platform/i18n'
 
 /**
  * One heading in the session list, and the rows under it.
