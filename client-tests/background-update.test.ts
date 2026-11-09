@@ -64,3 +64,13 @@ test('the result notification has its own id, so stopping the service cannot era
   assert.match(result.slice(0, 2000), /notify\(RESULT_NOTIFICATION_ID/)
   assert.match(service.slice(service.indexOf('private void notifyFailure')).slice(0, 2000), /notify\(RESULT_NOTIFICATION_ID/)
 })
+
+test('the progress text is formatted, not string-replaced', () => {
+  // `update_text` is "已完成 %d%%": `%%` is an escaped percent for Android's
+  // own formatter. Calling `getString(id)` without arguments skips that
+  // formatter and returns the raw `%%`, so the shade showed "已完成 42%%".
+  // Passing the value through `getString(id, args)` is what un-escapes it.
+  assert.match(strings, /<string name="update_text">[^<]*%d%%[^<]*<\/string>/)
+  assert.match(service, /getString\(R\.string\.update_text, percent\)/)
+  assert.doesNotMatch(service, /getString\(R\.string\.update_text\)\.replace/)
+})
