@@ -100,13 +100,20 @@ must not disturb the installed official app. This is **not** a release.
 
 ### Build
 
-From the repository root, with Java 21 available:
+From the repository root, with Java 21 available and the Android SDK located
+(`ANDROID_HOME` exported, or `sdk.dir` in `android/local.properties`):
 
 ```bash
 npm ci
 npm run test:all
 npm run android:dev
 ```
+
+`npm run test:all` drives the Playwright flows against
+`http://127.0.0.1:5174`, so it needs the dev server running first (`npm run dev`
+in another terminal) or `APP_PORT` pointing at one already listening. Without
+either, every UI flow fails on navigation — which reads like a broken build
+rather than a missing server.
 
 `android:dev` builds the web bundle with
 `ALMA_APP_ID=local.almaandroid.herdr.dev` and then assembles `Debug`; Gradle
