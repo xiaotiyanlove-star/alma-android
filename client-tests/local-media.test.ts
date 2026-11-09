@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { addLocalMedia, clearLocalMedia, evictOldestLocalMedia, localCopy, localMediaOwner } from '../client/local-media.ts'
+import { addLocalMedia, clearLocalMedia, evictOldestLocalMedia, localCopy, localMediaOwner } from '../client/session/local-media.ts'
 
 const created: string[] = []
 const url = () => {

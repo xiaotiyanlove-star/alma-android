@@ -5,8 +5,8 @@
  * labels rows by this, and two panes that share a terminal title must still be
  * told apart by their pane id everywhere that matters.
  */
-import type { Pane, Snapshot } from './model'
-import { stripAnsi } from './prompt'
+import type { Pane, Snapshot } from '../core/model'
+import { stripAnsi } from '../core/prompt'
 
 /**
  * What a session is called.

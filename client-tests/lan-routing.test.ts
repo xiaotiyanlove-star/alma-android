@@ -1,10 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import './locale.ts'
-import { Controller } from '../client/controller.ts'
-import type { Host } from '../client/model.ts'
-import type { HostStorage } from '../client/storage.ts'
-import type { Transport } from '../client/transport.ts'
+import { Controller } from '../client/core/controller.ts'
+import type { Host } from '../client/core/model.ts'
+import type { HostStorage } from '../client/platform/storage.ts'
+import type { Transport } from '../client/connection/transport.ts'
 
 /**
  * Local-network routing with more than one paired desktop on the same subnet.

@@ -8,7 +8,7 @@
  */
 import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
-import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/crypto.ts'
+import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/connection/crypto.ts'
 
 const code = base64url(new Uint8Array(32).fill(73))
 const DIAGRAM = ['flowchart TD', '  A["手机无法访问桌面"] --> B{"Relay 在线?"}', '  B -->|否| C["检查容器与证书"]', '  B -->|是| D["检查配对"]'].join('\n')

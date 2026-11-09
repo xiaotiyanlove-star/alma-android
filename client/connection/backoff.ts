@@ -17,7 +17,7 @@
  * redial on the same second and the surge keeps the relay saturated.
  * "Full jitter" (a random point in the whole window) spreads load best.
  */
-import { t } from './i18n'
+import { t } from '../platform/i18n'
 
 /** The burst stage: fast enough to cover a tunnel, still gentle on battery. */
 export const FAST_DELAYS = [1_000, 2_000, 4_000, 8_000] as const

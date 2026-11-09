@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Loader2, X } from 'lucide-react'
-import { t, tWith } from './i18n'
+import { t, tWith } from '../platform/i18n'
 
 /**
  * A full-screen picture: pinch and double-tap to zoom, swipe between pictures.

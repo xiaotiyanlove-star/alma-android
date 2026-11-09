@@ -1,10 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import './locale.ts'
-import { Controller } from '../client/controller.ts'
-import type { Host } from '../client/model.ts'
-import type { Transport } from '../client/transport.ts'
-import { parsePrompt } from '../client/prompt.ts'
+import { Controller } from '../client/core/controller.ts'
+import type { Host } from '../client/core/model.ts'
+import type { Transport } from '../client/connection/transport.ts'
+import { parsePrompt } from '../client/core/prompt.ts'
 
 const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
 const menu = (cursor: number, question = 'Run this command?') => [

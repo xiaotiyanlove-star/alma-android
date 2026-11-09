@@ -1,6 +1,6 @@
 import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
-import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, routingId, sealFrame } from '../client/crypto.ts'
+import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, routingId, sealFrame } from '../client/connection/crypto.ts'
 
 const code = base64url(new Uint8Array(32).fill(6))
 const SCREEN = [

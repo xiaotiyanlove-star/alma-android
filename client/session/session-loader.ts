@@ -4,13 +4,13 @@
  * The loader owns only session lifetime. Transports, host runtimes, mutation
  * uncertainty, LAN discovery and host persistence stay in Controller.
  */
-import type { ChatItem, SessionState, Snapshot } from './model'
-import { sessionDelay } from './backoff'
-import { t } from './i18n'
-import { mergeChatItems, readChatItem, readChatPage, readQueued } from './protocol'
+import type { ChatItem, SessionState, Snapshot } from '../core/model'
+import { sessionDelay } from '../connection/backoff'
+import { t } from '../platform/i18n'
+import { mergeChatItems, readChatItem, readChatPage, readQueued } from '../core/protocol'
 import { readSettings, settingsChanged, transcriptGap } from './session-rules'
 import { TranscriptCache } from './transcript-cache'
-import type { TunnelSocket } from './transport'
+import type { TunnelSocket } from '../connection/transport'
 
 export interface SessionPage {
   sessionId?: string

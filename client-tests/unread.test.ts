@@ -15,7 +15,7 @@ const store = new Map<string, string>()
   length: 0,
 } as unknown as Storage
 
-const { acknowledge, isPaneUnread, pruneUnread, unreadPanes, unreadSummary } = await import('../client/unread.ts')
+const { acknowledge, isPaneUnread, pruneUnread, unreadPanes, unreadSummary } = await import('../client/session/unread.ts')
 
 const host = (panes: { pane_id: string; agent_status?: string }[]) => ({
   host: { id: 'h1', name: 'desktop', relayUrl: '', connectCode: '', addedAt: 0 },

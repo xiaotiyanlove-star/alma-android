@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import './locale.ts'
-import { sessionGroups, workspaceForDirectory } from '../client/session-groups.ts'
-import type { Snapshot } from '../client/model.ts'
+import { sessionGroups, workspaceForDirectory } from '../client/session/session-groups.ts'
+import type { Snapshot } from '../client/core/model.ts'
 
 const ALMA = '/Users/bx/Personal/alma-android'
 const TMP = '/private/tmp'

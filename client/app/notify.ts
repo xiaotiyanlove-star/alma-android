@@ -1,6 +1,6 @@
 import { Capacitor } from '@capacitor/core'
-import { t } from './i18n'
-import type { HostState, Pane } from './model'
+import { t } from '../platform/i18n'
+import type { HostState, Pane } from '../core/model'
 
 export type AlertKind = 'blocked' | 'done' | 'offline'
 export interface Alert {

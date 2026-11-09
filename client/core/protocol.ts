@@ -6,7 +6,7 @@
  * out of the screens while preserving fields the current model understands.
  */
 import type { ChatItem, ImageRef, Pane, Snapshot, Tab, Workspace } from './model'
-import type { UploadResponse } from './attachments'
+import type { UploadResponse } from '../session/attachments'
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined

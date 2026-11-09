@@ -161,43 +161,77 @@ npm run dev            # http://127.0.0.1:5174
 ## 目录
 
 ```
-client/                应用源码
-  transport.ts         端到端加密隧道：P-256 + HKDF + AES-GCM，HTTP/WS 多路复用
-  frames.ts            内层帧编解码（JSON/base64 与可选二进制形式）
-  crypto.ts            加密原语（改编自 lazyeo/alma-android，MIT）
-  controller.ts        按桌面维护的路由、mutation 与主机生命周期
-  session-loader.ts    会话身份的订阅、历史读取与预热
-  session-rules.ts     settings 收敛与 transcript gap 分类
-  transcript-cache.ts  有上限的会话预热缓存
-  media-cache.ts       按主机隔离、有上限的远端图片缓存
-  protocol.ts          远端长生命周期响应的严格解析
-  operations.ts        终端按键与菜单回答编码
-  prompt.ts            终端菜单解析与漂移检测
-  router.ts            界面与返回键共用的导航栈
-  lifecycle.ts         前后台连接策略
-  backoff.ts           有上限的重连节奏
-  attachments.ts       上传与消息拼装
-  commands.ts          按 agent 提供输入框里的斜杠命令
-  subagents.ts         运行中的后台 agent，从转录的工具调用行推导
-  pending-link.ts      alma://connect 深链的暂存与读取
-  session-info.ts      从 agent 状态行解析模型与上下文
-  notify.ts            状态差分与本地通知
-  keepalive.ts         前台服务开关
-  drafts.ts            按桌面、按会话保存的草稿
-  prefs.ts             语言、时区、Markdown
-  i18n.ts              以中文原文为键的英文字典
-  App.tsx              页面与组件
-  lan.ts               私有网段判断与局域网 WebSocket 端点
-  localnet.ts          Android 上报的 Wi-Fi/以太网网段
-  candidates.ts        严格校验桌面返回的局域网地址
-  discovery.ts         有界网段扫描与配对身份校验
-  lastroute.ts         记住已通过验证的直连地址
-  breaker.ts           对反复失败的直连地址退避
-android/               Capacitor 壳
-  HerdrVaultPlugin     用 Android Keystore 加密节点凭据
-  LocalNetworkPlugin   为局域网路由读取 Wi-Fi/以太网网段
-  KeepAlivePlugin      可选的前台服务
-  MainActivity         文件选择器、相机授权、通知渠道
+client/                 应用源码
+  index.html            Vite 入口页面
+  app/                  页面外壳：入口、页面、样式、导航
+    main.tsx            挂载 App；返回键、深链与主题的接线
+    App.tsx             页面与组件
+    router.ts           界面与返回键共用的导航栈
+    lifecycle.ts        前后台连接策略
+    notify.ts           状态差分与本地通知
+    updates.ts          对照 GitHub Release 的应用内更新检查
+    version.ts          Vite 注入的构建信息
+  core/                 状态机与它所说的协议
+    model.ts            主机、会话、面板与消息的共享类型
+    controller.ts       按桌面维护的路由、mutation 与主机生命周期
+    protocol.ts         远端长生命周期响应的严格解析
+    operations.ts       终端按键与菜单回答编码
+    prompt.ts           终端菜单解析与漂移检测
+    metrics.ts          本地卡顿检测与重试计数
+  connection/           把字节送到桌面的一切
+    transport.ts        端到端加密隧道：P-256 + HKDF + AES-GCM，HTTP/WS 多路复用
+    frames.ts           内层帧编解码（JSON/base64 与可选二进制形式）
+    crypto.ts           加密原语（改编自 lazyeo/alma-android，MIT）
+    backoff.ts          有上限的重连节奏
+    breaker.ts          对反复失败的直连地址退避
+    deadline.ts         给可能永不结算的原生桥回调设上限
+    keepalive.ts        前台服务开关
+    network.ts          系统网络变更，切换网络后立刻重拨
+    lan.ts              私有网段判断与局域网 WebSocket 端点
+    localnet.ts         Android 上报的 Wi-Fi/以太网网段
+    candidates.ts       严格校验桌面返回的局域网地址
+    discovery.ts        有界网段扫描与配对身份校验
+    lastroute.ts        记住已通过验证的直连地址
+    lanprefs.ts         局域网发现开关
+  session/              单个桌面的会话与转录
+    session-loader.ts   会话身份的订阅、历史读取与预热
+    session-rules.ts    settings 收敛与 transcript gap 分类
+    session-info.ts     从 agent 状态行解析模型与上下文
+    session-groups.ts   会话列表的分组标题与行
+    session-title.ts    会话叫什么，以及为什么
+    session-directory.ts 新会话的默认工作目录
+    transcript-cache.ts 有上限的会话预热缓存
+    media-cache.ts      按主机隔离、有上限的远端图片缓存
+    local-media.ts      在本机拍摄或选择的图片
+    timeline.ts         把转录折叠成读者真正要看的内容
+    subagents.ts        运行中的后台 agent，从转录的工具调用行推导
+    unread.ts           哪些会话有未看的新消息
+    attachments.ts      上传与消息拼装
+    drafts.ts           按桌面、按会话保存的草稿
+    git-branch.ts       会话所在分支
+  agents/               各编码 agent 的外观与可用命令
+    agents.ts           产品名与品牌色
+    agent-marks.ts      四个 agent 标记
+    commands.ts         按 agent 提供输入框里的斜杠命令
+    assets/             agent 图标素材
+  ui/                   展示类组件
+    Markdown.tsx        Markdown 渲染
+    CodeBlock.tsx       代码块与复制按钮
+    Mermaid.tsx         按需加载的 Mermaid 图表
+    ImageViewer.tsx     全屏看图
+    ScanPairs.tsx       扫码配对
+  platform/             设备偏好与凭据
+    prefs.ts            语言、时区、主题、Markdown
+    i18n.ts             以中文原文为键的英文字典
+    storage.ts          由 Android Keystore 保护的节点凭据
+    pairing.ts          配对链接校验
+    pending-link.ts     alma://connect 深链的暂存与读取
+  app/styles.css        所有页面共用的一份样式表
+android/                Capacitor 壳
+  HerdrVaultPlugin      用 Android Keystore 加密节点凭据
+  LocalNetworkPlugin    为局域网路由读取 Wi-Fi/以太网网段
+  KeepAlivePlugin       可选的前台服务
+  MainActivity          文件选择器、相机授权、通知渠道
 client-tests/          单元测试、Playwright 流程、设备探针（本地）
 ```
 

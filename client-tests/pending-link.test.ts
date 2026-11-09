@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { looksLikePairingLink, rememberPairingLink, takePendingLink } from '../client/pending-link.ts'
+import { looksLikePairingLink, rememberPairingLink, takePendingLink } from '../client/platform/pending-link.ts'
 
 const link = (relay = 'https://relay.invalid') => `alma://connect?u=${encodeURIComponent(relay)}&k=${'A'.repeat(43)}&e2e=1`
 

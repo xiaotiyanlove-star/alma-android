@@ -4,7 +4,7 @@
  * The cache is a paint aid only: callers must refresh from the live transcript
  * after reading it. It never decides whether a transcript is current.
  */
-import type { ChatItem, SessionState } from './model'
+import type { ChatItem, SessionState } from '../core/model'
 
 export interface StoredTranscript {
   sessionId?: string

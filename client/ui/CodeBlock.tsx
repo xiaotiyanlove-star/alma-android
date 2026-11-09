@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { Check, Copy } from 'lucide-react'
 import { Capacitor } from '@capacitor/core'
 import { Clipboard } from '@capacitor/clipboard'
-import { t } from './i18n'
+import { t } from '../platform/i18n'
 import { Mermaid, isMermaid } from './Mermaid'
 
 /** The language react-markdown put on the code element, if any. */

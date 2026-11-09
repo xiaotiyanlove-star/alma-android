@@ -1,10 +1,10 @@
 import ReactDOM from 'react-dom/client'
 import { App } from './App'
 import './styles.css'
-import { controller } from './controller'
+import { controller } from '../core/controller'
 import { back, replace } from './router'
-import { rememberPairingLink } from './pending-link'
-import { applyTheme } from './prefs'
+import { rememberPairingLink } from '../platform/pending-link'
+import { applyTheme } from '../platform/prefs'
 
 // Before the first paint: a light frame around a dark page (or the reverse)
 // shows up as a flash on every launch.

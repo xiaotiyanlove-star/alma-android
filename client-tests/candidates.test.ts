@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { candidateKey, LAN_CANDIDATE_PATH, parseLanCandidate, usableCandidateHosts } from '../client/candidates.ts'
+import { candidateKey, LAN_CANDIDATE_PATH, parseLanCandidate, usableCandidateHosts } from '../client/connection/candidates.ts'
 
 test('the desktop’s answer is read strictly', () => {
   assert.deepEqual(parseLanCandidate({ port: 23019, hosts: ['192.168.1.20'] }), { port: 23019, hosts: ['192.168.1.20'] })

@@ -12,10 +12,10 @@
  *
  * The marks belong to their products; this client is unaffiliated with them.
  */
-import claude from './assets/agents/claude.png'
-import codex from './assets/agents/codex.png'
-import pi from './assets/agents/pi.png'
-import terminal from './assets/agents/terminal.png'
+import claude from './assets/claude.png'
+import codex from './assets/codex.png'
+import pi from './assets/pi.png'
+import terminal from './assets/terminal.png'
 
 export type AgentMarkKind = 'claude' | 'codex' | 'pi' | 'terminal'
 

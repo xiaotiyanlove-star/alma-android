@@ -10,7 +10,7 @@ const store = new Map<string, string>()
 }
 ;Object.defineProperty(globalThis, 'navigator', { value: { language: 'zh-CN' }, configurable: true, writable: true })
 
-const prefs = await import('../client/prefs.ts')
+const prefs = await import('../client/platform/prefs.ts')
 const { formatTime, localeChoice, setLocaleChoice, timeZoneChoice, setTimeZoneChoice, resolvedTimeZone, markdownEnabled, setMarkdownEnabled } = prefs
 
 const reset = () => store.clear()
@@ -70,7 +70,7 @@ test('markdown preference round-trips', () => {
 })
 
 test('the appearance choice stores nothing when it follows the system', async () => {
-  const { themeChoice, setThemeChoice, resolvedTheme } = await import('../client/prefs.ts')
+  const { themeChoice, setThemeChoice, resolvedTheme } = await import('../client/platform/prefs.ts')
   setThemeChoice('dark')
   assert.equal(themeChoice(), 'dark')
   assert.equal(resolvedTheme(), 'dark', 'an explicit choice wins over the system')

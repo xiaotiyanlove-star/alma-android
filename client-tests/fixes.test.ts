@@ -3,11 +3,11 @@ import assert from 'node:assert/strict'
 
 import { localeStore as store } from './locale.ts'
 
-const { loadDraft, saveDraft, clearDraft } = await import('../client/drafts.ts')
-const { parseSessionInfo } = await import('../client/session-info.ts')
-const { detailInfo, mergedHeaderInfo } = await import('../client/session-info.ts')
-const { t } = await import('../client/i18n.ts')
-const { setLocaleChoice } = await import('../client/prefs.ts')
+const { loadDraft, saveDraft, clearDraft } = await import('../client/session/drafts.ts')
+const { parseSessionInfo } = await import('../client/session/session-info.ts')
+const { detailInfo, mergedHeaderInfo } = await import('../client/session/session-info.ts')
+const { t } = await import('../client/platform/i18n.ts')
+const { setLocaleChoice } = await import('../client/platform/prefs.ts')
 
 test('drafts are scoped per desktop and session', () => {
   store.clear()
@@ -110,13 +110,13 @@ test('an untranslated string falls back to the source, never a key', () => {
 test('every Chinese UI string used in the app has an English entry', async () => {
   const { readFileSync, readdirSync } = await import('node:fs')
   const source = readdirSync('client', { recursive: true })
-    .filter((name): name is string => typeof name === 'string' && /\.(?:ts|tsx)$/.test(name) && name !== 'i18n.ts')
+    .filter((name): name is string => typeof name === 'string' && /\.(?:ts|tsx)$/.test(name) && !/i18n\.ts$/.test(name))
     .map((name) => readFileSync(`client/${name}`, 'utf8'))
     .join('\n')
   const used = new Set([
     ...[...source.matchAll(/(?:t|tWith)\('([^']*[一-鿿][^']*)'/g)].map((m) => m[1]),
   ])
-  const dict = readFileSync('client/i18n.ts', 'utf8')
+  const dict = readFileSync('client/platform/i18n.ts', 'utf8')
   const missing = [...used].filter((key) => !dict.includes(`'${key}':`))
   assert.deepEqual(missing, [], 'add these to the English dictionary')
 })

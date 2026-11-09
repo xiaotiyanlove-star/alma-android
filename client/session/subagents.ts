@@ -7,7 +7,7 @@
  * the only structured source; the terminal prints a similar list but in a
  * layout that differs per agent and per version.
  */
-import type { ChatItem } from './model'
+import type { ChatItem } from '../core/model'
 
 export interface RunningAgent {
   /** Tool-use id: stable per dispatch, unique within the session. */

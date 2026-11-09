@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { FRAME_LIMIT_BYTES, imageRequestPath, looksLikeImage, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, MAX_ATTACHMENTS, buildMessage, checkFile, resolveMediaType, sniffMediaType, uploadRoute } from '../client/attachments.ts'
+import { FRAME_LIMIT_BYTES, imageRequestPath, looksLikeImage, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, MAX_ATTACHMENTS, buildMessage, checkFile, resolveMediaType, sniffMediaType, uploadRoute } from '../client/session/attachments.ts'
 
 test('images take the image route, everything else the generic one', () => {
   assert.equal(uploadRoute('image/png'), '/api/attachments/image')

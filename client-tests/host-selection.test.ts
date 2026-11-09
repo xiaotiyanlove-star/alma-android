@@ -1,10 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import './locale.ts'
-import { Controller } from '../client/controller.ts'
-import type { Host } from '../client/model.ts'
-import type { HostStorage } from '../client/storage.ts'
-import type { Transport } from '../client/transport.ts'
+import { Controller } from '../client/core/controller.ts'
+import type { Host } from '../client/core/model.ts'
+import type { HostStorage } from '../client/platform/storage.ts'
+import type { Transport } from '../client/connection/transport.ts'
 
 const host = (id: string): Host => ({ id, name: id, relayUrl: `https://${id}.invalid`, connectCode: id.repeat(43), addedAt: 0 })
 const A = host('A'), B = host('B'), C = host('C')

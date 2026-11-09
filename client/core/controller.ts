@@ -1,26 +1,26 @@
 import type { AppState, ChatItem, Host, Mutes, SessionState, Snapshot } from './model'
-import { parsePairing } from './pairing'
-import { t, tWith } from './i18n'
-import { isOnLocalNetwork, lanUrl, usableLanAddress, type LanAddress } from './lan'
-import { deviceSubnets } from './localnet'
-import { directAllowed, recordDirect } from './breaker'
-import { discoverDesktop, identifiesAs } from './discovery'
-import { LAN_CANDIDATE_PATH, candidateKey, parseLanCandidate, usableCandidateHosts, type LanCandidate } from './candidates'
-import { forgetAllRoutes, forgetRoute, lastRoute, rememberRoute } from './lastroute'
-import { lanDiscoveryEnabled } from './lanprefs'
-import { forgetSubnets } from './localnet'
-import { clearAllBreakers } from './breaker'
-import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, sessionDelay, type RetryContext } from './backoff'
+import { parsePairing } from '../platform/pairing'
+import { t, tWith } from '../platform/i18n'
+import { isOnLocalNetwork, lanUrl, usableLanAddress, type LanAddress } from '../connection/lan'
+import { deviceSubnets } from '../connection/localnet'
+import { directAllowed, recordDirect } from '../connection/breaker'
+import { discoverDesktop, identifiesAs } from '../connection/discovery'
+import { LAN_CANDIDATE_PATH, candidateKey, parseLanCandidate, usableCandidateHosts, type LanCandidate } from '../connection/candidates'
+import { forgetAllRoutes, forgetRoute, lastRoute, rememberRoute } from '../connection/lastroute'
+import { lanDiscoveryEnabled } from '../connection/lanprefs'
+import { forgetSubnets } from '../connection/localnet'
+import { clearAllBreakers } from '../connection/breaker'
+import { MAX_RETRIES, isPermanentFailure, nextDelay, retriesLeft, sessionDelay, type RetryContext } from '../connection/backoff'
 import { metrics } from './metrics'
-import { imageRequestPath, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, uploadRoute, type UploadedFile } from './attachments'
+import { imageRequestPath, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_MB, uploadRoute, type UploadedFile } from '../session/attachments'
 import { moveKeys, needsSpace, optionForIntent, parsePrompt, promptFingerprint, samePrompt, stripAnsi, type Prompt } from './prompt'
-import { parseSessionInfo } from './session-info'
+import { parseSessionInfo } from '../session/session-info'
 import { readChatPage, mergeChatItems, readMediaResponse, readSnapshot, readUploadResponse } from './protocol'
-import { MediaCache } from './media-cache'
+import { MediaCache } from '../session/media-cache'
 import { answerKeys, bracketedTerminalText, protocolKeys, terminalKeys, validTerminalKeys } from './operations'
-import { SessionLoader, type SessionLoaderHost, type SessionTransport } from './session-loader'
-import { readSettings } from './session-rules'
-export { transcriptGap } from './session-rules'
+import { SessionLoader, type SessionLoaderHost, type SessionTransport } from '../session/session-loader'
+import { readSettings } from '../session/session-rules'
+export { transcriptGap } from '../session/session-rules'
 
 /** How often a desktop with no known local address is looked for. */
 const DISCOVERY_INTERVAL_MS = 10 * 60_000
@@ -45,8 +45,8 @@ const DISCOVERY_MISS_MS = 30 * 60_000
 const ASK_INTERVAL_MS = 60_000
 /** Deadline for the foreground liveness read; a healthy desktop answers at once. */
 const VERIFY_TIMEOUT_MS = 5_000
-import { hostStorage, type HostStorage } from './storage'
-import { EncryptedTunnel, OperationUncertainError, RejectedError, type RequestInit2, type Transport, type TunnelError, type TunnelSocket } from './transport'
+import { hostStorage, type HostStorage } from '../platform/storage'
+import { EncryptedTunnel, OperationUncertainError, RejectedError, type RequestInit2, type Transport, type TunnelError, type TunnelSocket } from '../connection/transport'
 
 /**
  * One page of a transcript.

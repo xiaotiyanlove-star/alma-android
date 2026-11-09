@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { t } from './i18n'
+import { t } from '../platform/i18n'
 import { CopyButton } from './CodeBlock'
 
 /**

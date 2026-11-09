@@ -2,7 +2,7 @@
 // Checks the clipboard actually receives the text, not just that a button exists.
 import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
-import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/crypto.ts'
+import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/connection/crypto.ts'
 
 const code = base64url(new Uint8Array(32).fill(91))
 const REPLY = '第一段回答，用来验证整条回复的复制。\n\n```ts\nconst answer = 42\n```\n\n第二段。'

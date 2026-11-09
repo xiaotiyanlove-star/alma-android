@@ -1,10 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import './locale.ts'
-import { EncryptedTunnel, OperationUncertainError, type SocketLike } from '../client/transport.ts'
-import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openBytes, openFrame, sealBytes, sealFrame } from '../client/crypto.ts'
-import { decodeInnerFrame, encodeInnerFrame } from '../client/frames.ts'
-import { parsePairing } from '../client/pairing.ts'
+import { EncryptedTunnel, OperationUncertainError, type SocketLike } from '../client/connection/transport.ts'
+import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openBytes, openFrame, sealBytes, sealFrame } from '../client/connection/crypto.ts'
+import { decodeInnerFrame, encodeInnerFrame } from '../client/connection/frames.ts'
+import { parsePairing } from '../client/platform/pairing.ts'
 
 const code = base64url(new Uint8Array(32).fill(7))
 const host = { id: 'test-host', name: 'Test', relayUrl: 'https://relay.invalid', connectCode: code, addedAt: 0 }

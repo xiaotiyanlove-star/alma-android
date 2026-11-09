@@ -1,4 +1,4 @@
-import type { Snapshot } from './model'
+import type { Snapshot } from '../core/model'
 
 /**
  * The directory a new session should start in.

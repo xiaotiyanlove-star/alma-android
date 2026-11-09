@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mergeChatItems, readChatItem, readChatPage, readMediaResponse, readQueued, readSnapshot, readUploadResponse } from '../client/protocol.ts'
+import { mergeChatItems, readChatItem, readChatPage, readMediaResponse, readQueued, readSnapshot, readUploadResponse } from '../client/core/protocol.ts'
 
 test('a chat page drops malformed rows but preserves valid ones', () => {
   const page = readChatPage({

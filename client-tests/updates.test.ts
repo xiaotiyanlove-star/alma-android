@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { RELEASE_TIMEOUT_MS, checkForUpdate, compareVersions } from '../client/updates.ts'
+import { RELEASE_TIMEOUT_MS, checkForUpdate, compareVersions } from '../client/app/updates.ts'
 
 test('versions compare numerically, not as strings', () => {
   assert.ok(compareVersions('0.1.10', '0.1.9') > 0)

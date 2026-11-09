@@ -8,7 +8,7 @@
  */
 import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
-import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/crypto.ts'
+import { base64url, createKeyPair, deriveSessionKeys, fromBase64url, openFrame, sealFrame } from '../client/connection/crypto.ts'
 
 const code = base64url(new Uint8Array(32).fill(77))
 const CWD = '/Users/dev/projects/alma-android'

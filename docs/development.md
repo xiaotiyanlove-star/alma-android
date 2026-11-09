@@ -78,7 +78,7 @@ construction, subnet gate, or pairing-identity proof to work around discovery.
 
 ## In-app updates
 
-`client/updates.ts` reads the repository's latest GitHub Release and compares its
+`client/app/updates.ts` reads the repository's latest GitHub Release and compares its
 tag with the version baked into the web bundle. `DownloaderPlugin.java` in the
 Android shell downloads only an asset URL from this repository, verifies the
 published SHA-256, and hands the APK to the system installer through the existing

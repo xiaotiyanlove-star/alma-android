@@ -11,7 +11,7 @@
  * a revisit while the agent is still thinking does not swallow the `done` that
  * arrives afterwards.
  */
-import type { HostState } from './model'
+import type { HostState } from '../core/model'
 
 const KEY = 'herdr.unread'
 

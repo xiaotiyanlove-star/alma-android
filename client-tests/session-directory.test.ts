@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { defaultSessionCwd } from '../client/session-directory.ts'
-import type { Snapshot } from '../client/model.ts'
+import { defaultSessionCwd } from '../client/session/session-directory.ts'
+import type { Snapshot } from '../client/core/model.ts'
 
 const snapshot: Snapshot = {
   workspaces: [{ workspace_id: 'w1', cwd: '/workspace' }],

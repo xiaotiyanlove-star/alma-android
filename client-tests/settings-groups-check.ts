@@ -1,6 +1,6 @@
 import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
-import { base64url } from '../client/crypto.ts'
+import { base64url } from '../client/connection/crypto.ts'
 
 const link = (n: number) => `alma://connect?u=https://relay.invalid&k=${base64url(new Uint8Array(32).fill(n))}&e2e=1`
 

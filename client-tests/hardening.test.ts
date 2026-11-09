@@ -1,11 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Controller } from '../client/controller.ts'
-import type { Host, HostState } from '../client/model.ts'
-import type { HostStorage } from '../client/storage.ts'
-import { EncryptedTunnel, OperationUncertainError, RejectedError, TunnelError, type SocketLike } from '../client/transport.ts'
-import { createKeyPair, deriveSessionKeys, openBytes, sealBytes } from '../client/crypto.ts'
-import { MAX_RETRIES, isPermanentFailure } from '../client/backoff.ts'
+import { Controller } from '../client/core/controller.ts'
+import type { Host, HostState } from '../client/core/model.ts'
+import type { HostStorage } from '../client/platform/storage.ts'
+import { EncryptedTunnel, OperationUncertainError, RejectedError, TunnelError, type SocketLike } from '../client/connection/transport.ts'
+import { createKeyPair, deriveSessionKeys, openBytes, sealBytes } from '../client/connection/crypto.ts'
+import { MAX_RETRIES, isPermanentFailure } from '../client/connection/backoff.ts'
 
 const host: Host = { id: 'A', name: 'A', relayUrl: 'https://a.invalid', connectCode: 'A'.repeat(43), addedAt: 0 }
 

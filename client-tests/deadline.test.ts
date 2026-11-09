@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { withDeadline } from '../client/deadline.ts'
+import { withDeadline } from '../client/connection/deadline.ts'
 
 test('an answer that arrives in time is passed through untouched', async () => {
   assert.equal(await withDeadline(Promise.resolve('yes'), 100, 'no'), 'yes')

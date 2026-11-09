@@ -1,6 +1,6 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { forgetAllRoutes, forgetRoute, lastRoute, rememberRoute } from '../client/lastroute.ts'
+import { forgetAllRoutes, forgetRoute, lastRoute, rememberRoute } from '../client/connection/lastroute.ts'
 
 // localStorage shim: these run in node.
 const store = new Map<string, string>()

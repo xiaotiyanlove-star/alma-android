@@ -2,8 +2,8 @@
 // and prove the copied text re-pairs to the same desktop.
 import { launchBrowser } from './browser.ts'
 import { addDesktop } from './helpers.ts'
-import { base64url } from '../client/crypto.ts'
-import { parsePairing } from '../client/pairing.ts'
+import { base64url } from '../client/connection/crypto.ts'
+import { parsePairing } from '../client/platform/pairing.ts'
 
 const code = base64url(new Uint8Array(32).fill(81))
 const browser = await launchBrowser()

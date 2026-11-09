@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { back, closeOverlay, getOverlay, getRoute, openOverlay, push, replace, resetForTests } from '../client/router.ts'
+import { back, closeOverlay, getOverlay, getRoute, openOverlay, push, replace, resetForTests } from '../client/app/router.ts'
 
 const settings = () => ({ name: 'settings' } as const)
 const session = (paneId = 'w1:p1') => ({ name: 'session', hostId: 'A', paneId } as const)

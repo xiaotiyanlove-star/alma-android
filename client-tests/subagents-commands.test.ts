@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { backgroundAgents, runningAgents } from '../client/subagents.ts'
-import { COMMANDS, commandsFor, filterCommands, slashQuery } from '../client/commands.ts'
-import type { ChatItem } from '../client/model.ts'
+import { backgroundAgents, runningAgents } from '../client/session/subagents.ts'
+import { COMMANDS, commandsFor, filterCommands, slashQuery } from '../client/agents/commands.ts'
+import type { ChatItem } from '../client/core/model.ts'
 
 const agent = (id: string, done: boolean, description: string, background = true): ChatItem => ({
   id: `row-${id}`,

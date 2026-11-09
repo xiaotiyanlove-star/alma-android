@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { linkKind, shouldRedial } from '../client/network.ts'
+import { linkKind, shouldRedial } from '../client/connection/network.ts'
 
 test('link types are normalised to the ones that change routing', () => {
   assert.equal(linkKind('wifi'), 'wifi')

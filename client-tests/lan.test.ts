@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ipv4ToInt, isLanHost, isOnLocalNetwork, isSameSubnet, lanUrl, prefixMask, usableLanAddress } from '../client/lan.ts'
+import { ipv4ToInt, isLanHost, isOnLocalNetwork, isSameSubnet, lanUrl, prefixMask, usableLanAddress } from '../client/connection/lan.ts'
 
 test('only private ranges count as local', () => {
   for (const ip of ['10.0.0.1', '10.255.255.254', '172.16.0.1', '172.31.255.254', '192.168.0.1', '192.168.1.10', '169.254.1.1']) {
