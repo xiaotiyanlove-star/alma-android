@@ -318,7 +318,7 @@ public class UpdateDownloadService extends Service {
         return new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_stat_herdr)
                 .setContentTitle(getString(R.string.update_title))
-                .setContentText(getString(R.string.update_text).replace("%d", String.valueOf(percent)))
+                .setContentText(getString(R.string.update_text, percent))
                 .setProgress(100, percent, false)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setOngoing(true)
