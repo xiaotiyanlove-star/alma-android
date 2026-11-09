@@ -11,6 +11,8 @@
     <!-- 后台保持连接：前台服务 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Android 13+ requires an explicit notification while an update downloads. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 应用内更新：把已下载并校验过的 APK 交给系统安装器。 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
@@ -52,6 +54,14 @@
 
         <service
             android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- One short-lived service per update. It posts download progress,
+             survives the activity being hidden, and stops itself when the
+             verified APK is ready. -->
+        <service
+            android:name=".UpdateDownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 

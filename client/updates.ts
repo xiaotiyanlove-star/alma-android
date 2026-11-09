@@ -10,6 +10,7 @@ import { APP_VERSION } from './version'
 
 export const RELEASE_REPO = 'xiaotiyanlove-star/alma-android'
 export const RELEASE_API = `https://api.github.com/repos/${RELEASE_REPO}/releases/latest`
+export const RELEASE_TIMEOUT_MS = 12_000
 
 export interface ReleaseInfo {
   version: string
@@ -73,10 +74,24 @@ function newerRelease(value: unknown, current: string): ReleaseInfo | undefined 
 }
 
 export async function checkForUpdate(current = APP_VERSION, signal?: AbortSignal): Promise<UpdateResult> {
-  const response = await fetch(RELEASE_API, {
-    headers: { Accept: 'application/vnd.github+json' },
-    signal,
-  })
+  // A mobile WebView can lose a request without settling it; without a ceiling
+  // the button stayed disabled forever and looked like an update that found
+  // nothing. One short request is enough for GitHub's public API.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), RELEASE_TIMEOUT_MS)
+  // `AbortSignal.any` is newer than the oldest WebView this app supports.
+  // Forwarding the caller's cancellation by hand keeps the same semantics.
+  if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true })
+  const combined = controller.signal
+  let response: Response
+  try {
+    response = await fetch(RELEASE_API, {
+      headers: { Accept: 'application/vnd.github+json' },
+      signal: combined,
+    })
+  } finally {
+    clearTimeout(timer)
+  }
   if (!response.ok) throw new Error(`Update check failed (${response.status})`)
   const release = newerRelease(await response.json(), current)
   return { available: Boolean(release), current, release }

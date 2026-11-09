@@ -13,4 +13,12 @@
     <string name="keepalive_channel_description">在 agent 工作期间短暂保持连接，或按设置长期保持</string>
     <string name="keepalive_title">正在保持连接</string>
     <string name="keepalive_text">agent 结束或按设置停止后自动退出</string>
+    <string name="update_channel_name">应用更新下载</string>
+    <string name="update_channel_description">下载新版本时会短暂显示进度，完成后自动消失</string>
+    <string name="update_title">正在下载 Alma 更新</string>
+    <string name="update_text">已完成 %d%%</string>
+    <string name="update_failed_title">Alma 更新下载失败</string>
+    <string name="update_failed_text">打开应用查看原因并重试</string>
+    <string name="update_ready_title">Alma 更新已下载</string>
+    <string name="update_ready_text">点按打开安装器</string>
 </resources>

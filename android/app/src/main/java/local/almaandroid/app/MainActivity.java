@@ -49,6 +49,58 @@ import java.util.Locale;
 public class MainActivity extends BridgeActivity implements DownloaderPlugin.Installer {
 
     /**
+     * A weak reference is enough: the service owns the transfer, and must not
+     * keep a destroyed Activity (and its whole WebView) alive just to hand it
+     * an installer intent.
+     */
+    private static java.lang.ref.WeakReference<MainActivity> live;
+
+    /**
+     * The verified APK waiting for a foreground to hand to the installer.
+     *
+     * Android refuses to start an installer from the background. A download
+     * that finishes while the user is elsewhere therefore leaves its file here,
+     * shows a tap-to-install notification, and this activity installs it on the
+     * next resume — including the resume caused by that notification.
+     */
+    static volatile File pendingInstall;
+
+    /** Application context, used to post a notification with no activity up. */
+    private static android.content.Context liveContext;
+
+    /**
+     * Whether an Alma window is currently in front.
+     *
+     * This is the condition that decides whether the installer can be started:
+     * Android blocks activity launches from a background app, so the check has
+     * to mirror the system's idea of foreground rather than "is the object
+     * still allocated".
+     */
+    private static volatile boolean resumed;
+
+    /**
+     * Called by {@link UpdateDownloadService} after the APK has passed its
+     * digest check. A null activity means the user was elsewhere; the page
+     * shows the verified state on return and starts the installer then.
+     */
+    static boolean installUpdateIfAlive(File apk) {
+        MainActivity activity = live == null ? null : live.get();
+        // Being alive is not enough: Android refuses an activity launch from a
+        // background app ("Background activity launch blocked"), and attempting
+        // it left the finished download with no visible next step. Only a
+        // resumed activity may drive the installer; anything else parks the file
+        // and relies on the notification.
+        if (activity == null || !resumed) {
+            pendingInstall = apk;
+            if (activity != null) UpdateDownloadService.notifyReady(activity);
+            else if (liveContext != null) UpdateDownloadService.notifyReady(liveContext);
+            return true;
+        }
+        activity.installUpdate(apk);
+        return true;
+    }
+
+    /**
      * 与 renderer 的 --surface 一致。
      *
      * 这是 WebView 上下边距露出的那块底色，紧贴页面头部，所以要和页面表面
@@ -144,6 +196,8 @@ public class MainActivity extends BridgeActivity implements DownloaderPlugin.Ins
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        live = new java.lang.ref.WeakReference<>(this);
+        liveContext = getApplicationContext();
         registerPlugin(HerdrVaultPlugin.class);
         registerPlugin(KeepAlivePlugin.class);
         registerPlugin(LocalNetworkPlugin.class);
@@ -235,6 +289,24 @@ public class MainActivity extends BridgeActivity implements DownloaderPlugin.Ins
                 DownloaderPlugin.State.set("failed", "installer", 0);
             }
         });
+    }
+
+    /**
+     * Runs the installer that a background download could not start.
+     *
+     * Android blocks an app from launching another activity while it is in the
+     * background, so a finished download parks its file in
+     * {@link #pendingInstall} and shows a tap-to-install notification. Both the
+     * notification tap and an ordinary return to the app land here.
+     */
+    @Override
+    public void onResume() {
+        super.onResume();
+        resumed = true;
+        File waiting = pendingInstall;
+        if (waiting == null) return;
+        pendingInstall = null;
+        installUpdate(waiting);
     }
 
     /**
@@ -385,7 +457,17 @@ public class MainActivity extends BridgeActivity implements DownloaderPlugin.Ins
     }
 
     @Override
+    public void onPause() {
+        resumed = false;
+        super.onPause();
+    }
+
+    @Override
     public void onDestroy() {
+        resumed = false;
+        if (live != null && live.get() == this) live = null;
+        // The file itself stays: it is the download the user asked for, and the
+        // next launch installs it. Only the reference to a dead activity goes.
         android.webkit.PermissionRequest pending = pendingCameraRequest;
         pendingCameraRequest = null;
         if (pending != null) {
