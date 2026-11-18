@@ -122,6 +122,8 @@ public class MainActivity extends BridgeActivity implements DownloaderPlugin.Ins
     /** A consumed `alma://connect` link, waiting for a page that can take it. */
     private String pendingPairingLink;
     private android.webkit.PermissionRequest pendingCameraRequest;
+    /** APK waiting for the user to finish the unknown-sources permission flow. */
+    private boolean installPermissionFlow;
 
     /** Set while the page is waiting for the user to pick files. */
     private android.webkit.ValueCallback<Uri[]> pendingFileChooser;
@@ -187,8 +189,12 @@ public class MainActivity extends BridgeActivity implements DownloaderPlugin.Ins
             pendingCameraRequest = null;
             if (pending == null) return;
             try {
-                if (granted) pending.grant(pending.getResources());
-                else pending.deny();
+                if (granted && !isFinishing()
+                        && (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1 || !isDestroyed())) {
+                    pending.grant(new String[]{android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                } else {
+                    pending.deny();
+                }
             } catch (RuntimeException ignored) {
                 // The user may have closed the scanner while the dialog was up.
             }
@@ -270,13 +276,20 @@ public class MainActivity extends BridgeActivity implements DownloaderPlugin.Ins
                 // exact system page rather than failing with no explanation.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                         && !getPackageManager().canRequestPackageInstalls()) {
-                    DownloaderPlugin.State.set("failed", "permission", 0);
+                    // Keep the verified APK reachable across the settings Activity.
+                    // The user may grant the permission and return without tapping
+                    // the update button again.
+                    pendingInstall = apk;
+                    installPermissionFlow = true;
+                    DownloaderPlugin.State.set("installing", "permission", 100);
                     Intent settings = new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                             Uri.parse("package:" + getPackageName()))
                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     startActivity(settings);
                     return;
                 }
+                installPermissionFlow = false;
+                pendingInstall = null;
                 Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", apk);
                 Intent intent = new Intent(Intent.ACTION_VIEW)
                         .setDataAndType(uri, "application/vnd.android.package-archive")
@@ -304,9 +317,29 @@ public class MainActivity extends BridgeActivity implements DownloaderPlugin.Ins
         super.onResume();
         resumed = true;
         File waiting = pendingInstall;
-        if (waiting == null) return;
-        pendingInstall = null;
-        installUpdate(waiting);
+        if (waiting != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    && !getPackageManager().canRequestPackageInstalls()) {
+                // Returning without granting access is a terminal result for
+                // this attempt. Drop the pending hand-off so a later retry
+                // starts a fresh, visible install flow.
+                if (installPermissionFlow) {
+                    installPermissionFlow = false;
+                    pendingInstall = null;
+                    DownloaderPlugin.State.set("failed", "permission", 0);
+                }
+                return;
+            }
+            pendingInstall = null;
+            installPermissionFlow = false;
+            installUpdate(waiting);
+            return;
+        }
+        // The system installer can be cancelled. Do not leave the renderer
+        // polling an update forever after it returns to the app.
+        if ("installing".equals(DownloaderPlugin.State.phase)) {
+            DownloaderPlugin.State.set("idle", "", 0);
+        }
     }
 
     /**
@@ -417,11 +450,39 @@ public class MainActivity extends BridgeActivity implements DownloaderPlugin.Ins
     }
 
 
+    private void handleCameraRequest(final android.webkit.PermissionRequest request) {
+        if (isFinishing() || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed())) {
+            request.deny();
+            return;
+        }
+        boolean wantsVideo = false;
+        for (String resource : request.getResources()) {
+            if (android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) {
+                wantsVideo = true;
+                break;
+            }
+        }
+        if (!wantsVideo) {
+            request.deny();
+            return;
+        }
+        boolean granted = ContextCompat.checkSelfPermission(MainActivity.this,
+                Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+        if (granted) {
+            request.grant(new String[]{android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+            return;
+        }
+        if (pendingCameraRequest != null) {
+            try { pendingCameraRequest.deny(); } catch (RuntimeException ignored) { }
+        }
+        pendingCameraRequest = request;
+        cameraPermission.launch(Manifest.permission.CAMERA);
+    }
+
+
     /**
-     * Capacitor owns the WebChromeClient. Wrap it so a camera request is
-     * granted immediately when the runtime permission already exists; a
-     * pending activity-result round trip can otherwise leave getUserMedia
-     * waiting forever.
+     * Capacitor owns the WebChromeClient. Wrap it so camera requests use the
+     * Android runtime permission without losing the existing file chooser.
      */
     private void installCameraBridge() {
         if (webView == null) return;
@@ -434,28 +495,24 @@ public class MainActivity extends BridgeActivity implements DownloaderPlugin.Ins
 
             @Override
             public void onPermissionRequest(final android.webkit.PermissionRequest request) {
+                // WebView normally invokes this on the main thread, but keeping
+                // the hand-off explicit also protects ROMs that dispatch the
+                // callback from their renderer bridge thread.
                 boolean wantsVideo = false;
                 for (String resource : request.getResources()) {
-                    if (resource.contains("VIDEO_CAPTURE")) wantsVideo = true;
+                    if (android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) {
+                        wantsVideo = true;
+                        break;
+                    }
                 }
-                if (!wantsVideo) {
-                    if (original != null) original.onPermissionRequest(request);
-                    else request.deny();
+                if (!wantsVideo && original != null) {
+                    original.onPermissionRequest(request);
                     return;
                 }
-                boolean granted = ContextCompat.checkSelfPermission(MainActivity.this,
-                        Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
-                if (granted) {
-                    request.grant(request.getResources());
-                } else {
-                    if (pendingCameraRequest != null) pendingCameraRequest.deny();
-                    pendingCameraRequest = request;
-                    cameraPermission.launch(Manifest.permission.CAMERA);
-                }
+                runOnUiThread(() -> handleCameraRequest(request));
             }
         });
     }
-
     @Override
     public void onPause() {
         resumed = false;

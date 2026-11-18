@@ -199,10 +199,10 @@ The three release values must agree exactly, or the release job stops before
 building:
 
 ```text
-package.json                  "version": "0.1.27"
-android/app/build.gradle      versionName "0.1.27"
+package.json                  "version": "0.1.28"
+android/app/build.gradle      versionName "0.1.28"
 android/app/build.gradle      versionCode 27
-Git tag                       v0.1.27
+Git tag                       v0.1.28
 ```
 
 `versionCode` must increase for every new APK; Android uses it to decide that a
@@ -251,14 +251,14 @@ Wait for the `main` CI run for the exact commit to go green, then create the tag
 ```bash
 git switch main
 git pull --ff-only
-git tag -a v0.1.27 -m "Alma Android 0.1.27"
-git push origin v0.1.27
+git tag -a v0.1.28 -m "Alma Android 0.1.28"
+git push origin v0.1.28
 ```
 
 Pushing the tag starts the release job. Track it with:
 
 ```bash
-gh run list --repo xiaotiyanlove-star/alma-android --branch v0.1.27 --limit 1
+gh run list --repo xiaotiyanlove-star/alma-android --branch v0.1.28 --limit 1
 gh run watch <run-id> --repo xiaotiyanlove-star/alma-android --exit-status
 ```
 
@@ -279,16 +279,16 @@ A failed tag run leaves the public tag on the commit it was pushed from. Fix
 exists for that tag:
 
 ```bash
-gh release view v0.1.27 --repo xiaotiyanlove-star/alma-android
+gh release view v0.1.28 --repo xiaotiyanlove-star/alma-android
 ```
 
 If it reports `release not found`:
 
 ```bash
-git tag -d v0.1.27
-git push origin :refs/tags/v0.1.27
-git tag -a v0.1.27 -m "Alma Android 0.1.27"
-git push origin v0.1.27
+git tag -d v0.1.28
+git push origin :refs/tags/v0.1.28
+git tag -a v0.1.28 -m "Alma Android 0.1.28"
+git push origin v0.1.28
 ```
 
 If a Release does exist, do not move the tag. Bump the version and publish a
@@ -297,23 +297,23 @@ new tag instead.
 ## 7. Verify the published APK
 
 ```bash
-gh release download v0.1.27 --repo xiaotiyanlove-star/alma-android --dir /tmp/alma-release-check --clobber
-shasum -a 256 /tmp/alma-release-check/alma-android-v0.1.27.apk
-cat /tmp/alma-release-check/alma-android-v0.1.27.apk.sha256
+gh release download v0.1.28 --repo xiaotiyanlove-star/alma-android --dir /tmp/alma-release-check --clobber
+shasum -a 256 /tmp/alma-release-check/alma-android-v0.1.28.apk
+cat /tmp/alma-release-check/alma-android-v0.1.28.apk.sha256
 ```
 
 The two hashes must match. Then check identity and signature:
 
 ```bash
 $HOME/Library/Android/sdk/build-tools/36.0.0/aapt dump badging \
-  /tmp/alma-release-check/alma-android-v0.1.27.apk | head -1
-apksigner verify --print-certs /tmp/alma-release-check/alma-android-v0.1.27.apk
+  /tmp/alma-release-check/alma-android-v0.1.28.apk | head -1
+apksigner verify --print-certs /tmp/alma-release-check/alma-android-v0.1.28.apk
 ```
 
 Expected package and version:
 
 ```text
-package: name='local.almaandroid.herdr' versionCode='27' versionName='0.1.27'
+package: name='local.almaandroid.herdr' versionCode='27' versionName='0.1.28'
 ```
 
 The in-app updater reads `releases/latest` from the public repository. Confirm
